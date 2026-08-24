@@ -151,7 +151,7 @@ fn split_uri(uri: Option<&str>) -> (Option<String>, Option<String>) {
             None => (Some(without_fragment.to_owned()), None),
         }
     })
-    .map_or((None, None), |value| value)
+    .unwrap_or((None, None))
 }
 
 /// Streams newline-delimited AWS WAF JSON records. Invalid records are yielded
