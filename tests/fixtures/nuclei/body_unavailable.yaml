@@ -1,0 +1,16 @@
+id: synthetic-cve-2024-10005
+info:
+  name: Synthetic Body-Dependent Request
+  severity: high
+  classification:
+    cve-id: CVE-2024-10005
+http:
+  - method: POST
+    path:
+      - '{{BaseURL}}/vulnerable/upload'
+    body: 'payload=marker-10005'
+    matchers:
+      - type: word
+        part: body
+        words:
+          - accepted

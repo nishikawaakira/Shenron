@@ -1,0 +1,32 @@
+{
+  "nuclei_revision": "fixture-nuclei",
+  "templates": [
+    {
+      "template_id": "validated-http",
+      "cves": ["CVE-2024-10001"],
+      "template_path": "http/cves/validated.yaml",
+      "protocol": "http",
+      "detectability": "HIGH",
+      "conversion_status": "SUPPORTED",
+      "validation_status": "passed"
+    },
+    {
+      "template_id": "observable-http",
+      "cves": ["CVE-2024-10002"],
+      "template_path": "http/cves/unsupported.yaml",
+      "protocol": "http",
+      "detectability": "MEDIUM",
+      "conversion_status": "UNSUPPORTED",
+      "validation_status": "not_tested"
+    },
+    {
+      "template_id": "network-only",
+      "cves": ["CVE-2024-10003"],
+      "template_path": "network/cves/non-http.yaml",
+      "protocol": "non_http",
+      "detectability": "UNDETECTABLE",
+      "conversion_status": "UNSUPPORTED",
+      "validation_status": "not_tested"
+    }
+  ]
+}

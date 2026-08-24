@@ -1,0 +1,20 @@
+{
+  "generator_version": "0.1.0",
+  "profile": "demo",
+  "seed": 42,
+  "events_requested": 15,
+  "valid_events": 11,
+  "expected_parser_errors": 0,
+  "attack_rate": 0.01,
+  "hosts": 3,
+  "source_ips": 32,
+  "start_timestamp_ms": 1735689600000,
+  "duration_ms": 3600000,
+  "ja4_distribution": {
+    "common": "t13d1516h2_333333333333_444444444444",
+    "malicious_only": "t13d1516h2_8daaf6152771_02713d6af862",
+    "shared": "t13d1516h2_111111111111_222222222222"
+  },
+  "rule_revision": "project-native-tests",
+  "telemetry_format": "aws-waf"
+}

@@ -1,0 +1,13 @@
+title: Known Suspicious JA4 Fingerprint
+id: known-suspicious-ja4
+status: experimental
+description: Deterministic fixture that demonstrates JA4 as a normal normalized field.
+logsource:
+  category: webserver
+  product: aws
+  service: waf
+detection:
+  selection:
+    ja4: t13d1516h2_8daaf6152771_02713d6af862
+  condition: selection
+level: high

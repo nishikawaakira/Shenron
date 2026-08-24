@@ -1,0 +1,15 @@
+title: Synthetic JA4 and URI Compound Rule
+id: test-ja4-uri
+status: experimental
+description: Original validation-only compound rule.
+logsource:
+  category: webserver
+  product: aws
+  service: waf
+detection:
+  selection_ja4:
+    ja4: t13d1516h2_111111111111_222222222222
+  selection_uri:
+    cs-uri-stem: /vulnerable/admin
+  condition: selection_ja4 and selection_uri
+level: high

@@ -1,0 +1,15 @@
+id: synthetic-cve-2024-10003
+info:
+  name: Synthetic Generic Endpoint
+  severity: low
+  classification:
+    cve-id: CVE-2024-10003
+http:
+  - method: GET
+    path:
+      - '{{BaseURL}}'
+    matchers:
+      - type: word
+        part: body
+        words:
+          - product version

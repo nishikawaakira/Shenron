@@ -1,0 +1,16 @@
+id: synthetic-cve-2024-10002
+info:
+  name: Synthetic Raw CVE Request
+  severity: high
+  tags: cve,CVE-2024-10002
+http:
+  - raw:
+      - |
+        POST /vulnerable/raw?mode=check#fragment-10002 HTTP/1.1
+        Host: {{Hostname}}
+        X-Synthetic-Mode: raw-10002
+
+    matchers:
+      - type: status
+        status:
+          - 200

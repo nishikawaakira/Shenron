@@ -1,0 +1,11 @@
+{
+  "status": "complete",
+  "nuclei_revision": "48a4f865127cb9e6b113c6bb493c984978009fd4",
+  "comparison_input": "../../telemetry/48a4f865127cb9e6b113c6bb493c984978009fd4/comparison.json",
+  "kev_input": "../../kev/2026-08-21/coverage.json",
+  "method": "Static analysis of the existing Nuclei Detection IR; no template execution or network targeting. Header values are excluded from report artifacts.",
+  "baseline": {
+    "nginx_apache_observable": 2198,
+    "aws_waf_observable": 2622
+  }
+}

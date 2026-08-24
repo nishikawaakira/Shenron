@@ -1,0 +1,8 @@
+{
+  "templates": [
+    {"template_id":"demo-cve-2099-0001","cves":["CVE-2099-0001"],"conversion_status":"SUPPORTED","validation_status":"passed"},
+    {"template_id":"demo-cve-2099-0002","cves":["CVE-2099-0002"],"conversion_status":"SUPPORTED","validation_status":"passed"},
+    {"template_id":"demo-cve-2099-0003","cves":["CVE-2099-0003"],"conversion_status":"SUPPORTED","validation_status":"passed"},
+    {"template_id":"demo-cve-2099-0004","cves":["CVE-2099-0004"],"conversion_status":"SUPPORTED","validation_status":"passed"}
+  ]
+}

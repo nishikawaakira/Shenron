@@ -1,0 +1,30 @@
+{
+  "benchmark_version": 1,
+  "benchmark_timestamp_utc": "2026-08-24T06:41:31Z",
+  "shenlon_revision": "unavailable: workspace is not a Git repository",
+  "nuclei_templates": {
+    "repository": "https://github.com/projectdiscovery/nuclei-templates.git",
+    "revision": "48a4f865127cb9e6b113c6bb493c984978009fd4",
+    "commit_date_utc": "2026-08-24T06:28:54Z"
+  },
+  "configuration": {
+    "supported_log_source": "aws-waf",
+    "detectability_policy_version": "1",
+    "seed": 42,
+    "template_execution": false,
+    "network_access": false,
+    "mutation_profile": "one deterministic header-order/casing and query-prefix mutation per converted request branch",
+    "near_miss_profile": "one deterministic path alteration per converted request branch"
+  },
+  "artifacts": {
+    "storage": "external local workspace; intentionally not committed because reports contain per-template upstream-derived metadata",
+    "baseline": {
+      "path": "/private/tmp/shenlon-nuclei.7iTABM/coverage-00-baseline.json",
+      "sha256": "904aea13b67233af68a0d9b84b7eb2059bd2cb5c92d965e43e76a4f195329243"
+    },
+    "literal_path_alternatives": {
+      "path": "/private/tmp/shenlon-nuclei.7iTABM/coverage-01-literal-path-alternatives-final.json",
+      "sha256": "d87960615d60f70f3d34f473fcdb76a69848c99833068798bf8f1091846c31f1"
+    }
+  }
+}

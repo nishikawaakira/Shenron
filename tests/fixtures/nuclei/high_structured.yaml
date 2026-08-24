@@ -1,0 +1,18 @@
+id: synthetic-cve-2024-10001
+info:
+  name: Synthetic Structured CVE Request
+  severity: high
+  classification:
+    cve-id: CVE-2024-10001
+  tags: cve,rce
+http:
+  - method: GET
+    path:
+      - '{{BaseURL}}/vulnerable/execute?cmd=probe'
+    headers:
+      X-Synthetic-Exploit: marker-10001
+    matchers:
+      - type: word
+        part: body
+        words:
+          - marker

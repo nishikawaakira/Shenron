@@ -1,0 +1,13 @@
+title: Synthetic WAF Label Match
+id: test-waf-label
+status: experimental
+description: Original validation-only multi-label test.
+logsource:
+  category: webserver
+  product: aws
+  service: waf
+detection:
+  selection:
+    waf_labels: project:synthetic-malicious
+  condition: selection
+level: medium

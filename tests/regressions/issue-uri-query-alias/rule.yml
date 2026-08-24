@@ -1,0 +1,11 @@
+title: Query Alias Regression
+id: regression-uri-query
+logsource:
+  category: webserver
+  product: aws
+  service: waf
+detection:
+  selection:
+    cs-uri-query|contains: '../../'
+  condition: selection
+level: high

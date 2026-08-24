@@ -1,0 +1,10 @@
+id: synthetic-cve-2024-10008
+info:
+  name: Synthetic Multiple Literal Paths
+  severity: high
+  tags: cve,CVE-2024-10008
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/first-literal-path"
+      - "{{BaseURL}}/second-literal-path?mode=alternate"

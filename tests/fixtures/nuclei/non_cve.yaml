@@ -1,0 +1,9 @@
+id: synthetic-http-non-cve
+info:
+  name: Synthetic Non CVE Template
+  severity: info
+  tags: discovery
+http:
+  - method: GET
+    path:
+      - '{{BaseURL}}/health'

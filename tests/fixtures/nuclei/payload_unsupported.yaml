@@ -1,0 +1,15 @@
+id: synthetic-cve-2024-10006
+info:
+  name: Synthetic Payload Expansion Request
+  severity: high
+  classification:
+    cve-id: CVE-2024-10006
+http:
+  - method: GET
+    path:
+      - '{{BaseURL}}/vulnerable?item={{payload}}'
+    payloads:
+      payload:
+        - one
+        - two
+    attack: batteringram

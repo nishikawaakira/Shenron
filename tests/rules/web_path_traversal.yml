@@ -1,0 +1,13 @@
+title: Synthetic Path Traversal Request
+id: test-path-traversal
+status: experimental
+description: Original validation-only query string test.
+logsource:
+  category: webserver
+  product: aws
+  service: waf
+detection:
+  selection:
+    cs-uri-query|contains: '../../'
+  condition: selection
+level: high

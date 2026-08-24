@@ -1,0 +1,13 @@
+id: synthetic-cve-2024-10007
+info:
+  name: Synthetic Stateful Flow
+  severity: high
+  classification:
+    cve-id: CVE-2024-10007
+http:
+  - method: GET
+    path:
+      - '{{BaseURL}}/session/start'
+  - method: GET
+    path:
+      - '{{BaseURL}}/vulnerable/final?token=example'

@@ -1,0 +1,9 @@
+title: Deliberately Unsupported Regex Rule
+id: unsupported-regex
+logsource:
+  category: webserver
+detection:
+  selection:
+    cs-uri-stem|re: '^/admin/.+$'
+  condition: selection
+level: medium

@@ -1,0 +1,11 @@
+{"event_id":"evt-000001","expected":{"class":"benign","cves":[],"expected_rule_ids":[],"expected_match":false}}
+{"event_id":"evt-000002","expected":{"class":"benign","cves":[],"expected_rule_ids":[],"expected_match":false}}
+{"event_id":"evt-000003","expected":{"class":"malicious","cves":[],"expected_rule_ids":[],"expected_match":false}}
+{"event_id":"evt-000004","expected":{"class":"malicious","cves":[],"expected_rule_ids":[],"expected_match":false}}
+{"event_id":"evt-000005","expected":{"class":"malicious","cves":[],"expected_rule_ids":[],"expected_match":false}}
+{"event_id":"evt-000006","expected":{"class":"malicious","cves":[],"expected_rule_ids":[],"expected_match":false}}
+{"event_id":"evt-000007","expected":{"class":"benign","cves":[],"expected_rule_ids":[],"expected_match":false}}
+{"event_id":"evt-000008","expected":{"class":"benign","cves":[],"expected_rule_ids":[],"expected_match":false}}
+{"event_id":"evt-000009","expected":{"class":"benign","cves":[],"expected_rule_ids":[],"expected_match":false}}
+{"event_id":"evt-000010","expected":{"class":"benign","cves":[],"expected_rule_ids":[],"expected_match":false}}
+{"event_id":"evt-000011","expected":{"class":"malicious","cves":[],"expected_rule_ids":[],"expected_match":false}}

@@ -1,0 +1,16 @@
+{
+  "status": "complete",
+  "shenlon_revision": "unavailable_no_git_metadata_in_workspace",
+  "nuclei_revision": "48a4f865127cb9e6b113c6bb493c984978009fd4",
+  "generated_at": "2026-08-24",
+  "frozen_aws_waf_benchmark": "../../nuclei/48a4f865127cb9e6b113c6bb493c984978009fd4/final.json",
+  "telemetry_profiles": ["aws-waf", "nginx-combined", "apache-combined", "nginx-combined+host", "nginx-security"],
+  "detectability_policy": "same pinned corpus and Detection IR; source requirements are evaluated only against documented capabilities",
+  "synthetic_generator_version": "Cargo package version recorded by webhunt-lab manifests",
+  "synthetic_seed": 42,
+  "checkout_verification": {
+    "command": "git -C /private/tmp/shenlon-nuclei-exact-checkout rev-parse HEAD",
+    "head": "48a4f865127cb9e6b113c6bb493c984978009fd4"
+  },
+  "reason": "The exact object was recovered by an object-addressed fetch and benchmarked from a detached checkout. No moving or substitute template corpus was used."
+}

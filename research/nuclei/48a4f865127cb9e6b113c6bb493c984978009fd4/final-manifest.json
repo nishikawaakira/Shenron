@@ -1,0 +1,19 @@
+{
+  "benchmark_version": 1,
+  "phase": "frozen",
+  "nuclei_revision": "48a4f865127cb9e6b113c6bb493c984978009fd4",
+  "supported_log_source": "aws-waf",
+  "detectability_policy_version": "1",
+  "current_checkpoint": {
+    "http_cve_templates": 4347,
+    "observable_templates": 2622,
+    "convertible_templates": 1577,
+    "validated_templates": 1577,
+    "validated_request_branches": 1852
+  },
+  "decision": "No further Nuclei feature iteration: every observable-but-unsupported current template requires multi-request state, request-body semantics, or OAST verification.",
+  "full_report": {
+    "path": "final.json",
+    "sha256": "d87960615d60f70f3d34f473fcdb76a69848c99833068798bf8f1091846c31f1"
+  }
+}

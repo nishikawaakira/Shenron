@@ -1,0 +1,10 @@
+{
+  "templates": [
+    {
+      "template_id": "synthetic-cve-2024-10001",
+      "cves": ["CVE-2024-10001"],
+      "conversion_status": "SUPPORTED",
+      "validation_status": "passed"
+    }
+  ]
+}

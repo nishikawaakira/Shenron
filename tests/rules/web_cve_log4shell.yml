@@ -1,0 +1,17 @@
+title: Log4Shell Request-Side Exploit Attempt
+id: cve-2021-44228-request-side
+status: experimental
+description: Original test rule for an observable JNDI lookup marker.
+tags:
+  - cve.2021.44228
+logsource:
+  category: webserver
+  product: aws
+  service: waf
+detection:
+  selection:
+    cs-uri|contains: '${jndi:'
+  keywords:
+    - '${jndi:'
+  condition: selection and keywords
+level: high

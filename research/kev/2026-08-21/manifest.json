@@ -1,0 +1,22 @@
+{
+  "shenlon_revision": "unavailable: workspace is not a Git repository",
+  "nuclei_revision": "48a4f865127cb9e6b113c6bb493c984978009fd4",
+  "cisa_kev": {
+    "source": "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json",
+    "retrieved_utc": "2026-08-24T07:01:06Z",
+    "catalog_version": "2026.08.21",
+    "catalog_date_released": "2026-08-21T17:46:43.6019Z",
+    "sha256": "137884960e3f801665bfa47694e703fbc4dd1c738df5e0e5af12d325a5f8a9d5"
+  },
+  "benchmark_configuration": {
+    "supported_log_source": "aws-waf",
+    "detectability_policy_version": "1",
+    "template_execution": false,
+    "network_access_during_analysis": false,
+    "web_relevance_method": "explicit HTTP/HTTPS/web evidence in CISA short description or Nuclei HTTP template; only-non-HTTP evidence is NOT_WEB_RELEVANT; all other entries are UNKNOWN"
+  },
+  "coverage_report": {
+    "path": "coverage.json",
+    "sha256": "7fba3dc0b1f4a74be0fa197c820413ee0bd7036833a56f8484b19320934bf5c8"
+  }
+}
