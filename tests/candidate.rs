@@ -389,6 +389,7 @@ fn batch_build_excludes_already_blocked_aws_waf_findings() {
     let (candidates, stats) = build_batch_from_findings(
         &[finding("ALLOW", "/unblocked"), finding("BLOCK", "/blocked")],
         TelemetryProfile::AwsWaf,
+        false,
     );
     assert_eq!(stats.candidates, 1);
     assert_eq!(stats.excluded_blocked_findings, 1);
@@ -409,6 +410,7 @@ fn batch_build_excludes_already_blocked_aws_waf_findings() {
     let (candidates, stats) = build_batch_from_findings(
         &[finding("BLOCK", "/blocked")],
         TelemetryProfile::NginxCombined,
+        false,
     );
     assert_eq!(stats.excluded_blocked_findings, 0);
     assert_eq!(candidates.len(), 1);
@@ -444,6 +446,7 @@ fn batch_candidate_ids_are_sequential_within_each_cve() {
             finding("CVE-2024-10001", "/first"),
         ],
         TelemetryProfile::NginxCombined,
+        false,
     );
     let ids = candidates
         .iter()
@@ -457,4 +460,40 @@ fn batch_candidate_ids_are_sequential_within_each_cve() {
             "shenron-cve-2024-10002-001",
         ]
     );
+}
+
+#[test]
+fn batch_build_excludes_response_unverified_unless_explicitly_included() {
+    let finding = FindingExplanation {
+        template_id: "uri-only-template".to_owned(),
+        cves: vec!["CVE-2099-0002".to_owned()],
+        detectability: Detectability::High,
+        request_specificity: RequestSpecificity::ResponseUnverified,
+        timestamp: None,
+        source_ip: None,
+        host: None,
+        method: Some("GET".to_owned()),
+        uri_path: Some("/uri-only".to_owned()),
+        uri_query: None,
+        waf_action: None,
+        waf_rule_id: None,
+        waf_rule_type: None,
+        waf_labels: Vec::new(),
+        waf_non_terminating_rule_ids: Vec::new(),
+        headers: Vec::new(),
+        ja3: None,
+        ja4: None,
+        request_id: None,
+    };
+    let findings = vec![finding];
+    let (candidates, stats) =
+        build_batch_from_findings(&findings, TelemetryProfile::NginxCombined, false);
+    assert!(candidates.is_empty());
+    assert_eq!(stats.excluded_response_unverified_findings, 1);
+    assert_eq!(stats.skipped_incomplete_findings, 0);
+
+    let (candidates, stats) =
+        build_batch_from_findings(&findings, TelemetryProfile::NginxCombined, true);
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(stats.excluded_response_unverified_findings, 0);
 }

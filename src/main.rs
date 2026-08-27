@@ -73,7 +73,7 @@ enum Command {
 
 #[derive(Debug, Subcommand)]
 enum CandidateCommand {
-    /// Build narrow candidates from private hunt findings. AWS WAF BLOCK findings are excluded.
+    /// Build narrow candidates from private hunt findings. AWS WAF BLOCK and URI-only findings are excluded by default.
     Build {
         #[arg(long)]
         from_findings: PathBuf,
@@ -81,6 +81,9 @@ enum CandidateCommand {
         output: PathBuf,
         #[arg(long, value_enum)]
         telemetry: InputFormat,
+        /// Include URI-only response-unverified findings. Use only after human review or with additional evidence.
+        #[arg(long)]
+        include_response_unverified: bool,
     },
     /// Evaluate a candidate against local historical telemetry and write a new candidate file.
     Replay {
@@ -341,17 +344,21 @@ fn main() -> Result<()> {
                 from_findings,
                 output,
                 telemetry,
+                include_response_unverified,
             } => {
                 let findings = explain_private_findings(&from_findings)?;
-                let (candidates, stats) =
-                    build_batch_from_findings(&findings, telemetry.telemetry_profile());
+                let (candidates, stats) = build_batch_from_findings(
+                    &findings,
+                    telemetry.telemetry_profile(),
+                    include_response_unverified,
+                );
                 if candidates.is_empty() {
                     anyhow::bail!(
-                        "no candidate patterns could be built from the supplied findings"
+                        "no candidate patterns could be built from the supplied findings; response-unverified findings are excluded by default (pass --include-response-unverified only after human review or with additional evidence)"
                     );
                 }
                 save_batch(&candidates, &output)?;
-                println!("Candidates written: {}\nOutput directory: {}\nAWS WAF BLOCK findings excluded: {}\nFindings skipped for missing method/path: {}\nRecommended initial action: COUNT\nHistorical replay: required before preventive export.", stats.candidates, output.display(), stats.excluded_blocked_findings, stats.skipped_incomplete_findings);
+                println!("Candidates written: {}\nOutput directory: {}\nAWS WAF BLOCK findings excluded: {}\nResponse-unverified findings excluded: {}\nFindings skipped for missing method/path: {}\nRecommended initial action: COUNT\nHistorical replay: required before preventive export.", stats.candidates, output.display(), stats.excluded_blocked_findings, stats.excluded_response_unverified_findings, stats.skipped_incomplete_findings);
                 Ok(())
             }
             CandidateCommand::Replay {

@@ -14,8 +14,11 @@ use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::event::{TelemetryProfile, WebEvent};
 use crate::production::FindingExplanation;
+use crate::{
+    event::{TelemetryProfile, WebEvent},
+    nuclei::RequestSpecificity,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -156,18 +159,23 @@ pub fn load(path: &Path) -> Result<DefensiveCandidate> {
 pub struct BatchBuildStats {
     pub candidates: usize,
     pub excluded_blocked_findings: usize,
+    pub excluded_response_unverified_findings: usize,
     pub skipped_incomplete_findings: usize,
 }
-/// Builds one narrow candidate per CVE and exact request pattern. For AWS WAF,
-/// terminating BLOCK findings are intentionally excluded: they are already
-/// protected according to the available WAF outcome evidence.
+/// Builds one narrow candidate per CVE and exact request pattern. Exclusion
+/// order is deliberate: AWS WAF terminating BLOCK findings are already
+/// protected according to available action evidence; then response-unverified
+/// URI-only matches are excluded unless explicitly included; then findings
+/// without a method or path cannot form a narrow condition.
 pub fn build_batch_from_findings(
     findings: &[FindingExplanation],
     telemetry_profile: TelemetryProfile,
+    include_response_unverified: bool,
 ) -> (Vec<DefensiveCandidate>, BatchBuildStats) {
     let mut groups =
         BTreeMap::<(String, String, String, Option<String>), Vec<&FindingExplanation>>::new();
     let mut excluded_blocked_findings = 0;
+    let mut excluded_response_unverified_findings = 0;
     let mut skipped_incomplete_findings = 0;
     for finding in findings {
         if telemetry_profile == TelemetryProfile::AwsWaf
@@ -177,6 +185,12 @@ pub fn build_batch_from_findings(
                 .is_some_and(|action| action.eq_ignore_ascii_case("BLOCK"))
         {
             excluded_blocked_findings += 1;
+            continue;
+        }
+        if !include_response_unverified
+            && finding.request_specificity == RequestSpecificity::ResponseUnverified
+        {
+            excluded_response_unverified_findings += 1;
             continue;
         }
         let (Some(method), Some(path)) = (&finding.method, &finding.uri_path) else {
@@ -254,6 +268,7 @@ pub fn build_batch_from_findings(
     let stats = BatchBuildStats {
         candidates: candidates.len(),
         excluded_blocked_findings,
+        excluded_response_unverified_findings,
         skipped_incomplete_findings,
     };
     (candidates, stats)

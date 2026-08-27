@@ -7,6 +7,7 @@ See [AWS WAF JSON](exporters/aws-waf.md), [Terraform](exporters/terraform.md), a
 ```bash
 # Build one candidate per CVE and exact request pattern. For AWS WAF, BLOCK
 # findings are excluded by default because they already have a recorded control outcome.
+# URI-only response-unverified findings are also excluded by default.
 shenron candidate build --from-findings ./hunt/private-findings.jsonl \
   --telemetry aws-waf --output ./candidates/
 
@@ -22,6 +23,8 @@ shenron candidate export --candidate ./candidates/candidate-replayed.json \
 ```
 
 Replay measures known-threat coverage only by comparing source-finding request IDs with matching historical events. `known_threat_findings_matched` is the number of unique known request IDs seen again; `other_historical_matches` counts matching events with another or no request ID. Coverage is `null` when the source findings have no request IDs, rather than claiming complete coverage.
+
+URI-only `response-unverified` findings do not create candidates by default. Request telemetry cannot reproduce Nuclei response confirmation, so converting URI-only matches directly into blocking conditions creates an elevated over-blocking risk. Include them only after human review or with additional evidence by passing `--include-response-unverified` to `shenron candidate build`; this changes candidate selection only and does not make the finding an attack or compromise determination.
 
 `threat_coverage` is `known_threat_findings_matched` divided by `known_threat_findings` — the total source-finding count, not the number of request IDs. So a source finding that carries no request ID, or several findings that share one ID, lowers the ratio: those findings cannot be confirmed individually in the replay input and are reported under `known_threat_findings_missed` rather than matched. Read coverage as a conservative lower bound on how many known findings were re-observed, not as a false-positive rate.
 
