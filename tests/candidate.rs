@@ -9,7 +9,7 @@ use shenron::{
         CompatibilityStatus, DefensiveCandidate, DefensiveCondition, RecommendedAction,
     },
     event::TelemetryProfile,
-    nuclei::Detectability,
+    nuclei::{Detectability, RequestSpecificity},
     production::FindingExplanation,
 };
 use tempfile::tempdir;
@@ -369,6 +369,7 @@ fn batch_build_excludes_already_blocked_aws_waf_findings() {
         template_id: "demo-template".to_owned(),
         cves: vec!["CVE-2099-0001".to_owned()],
         detectability: Detectability::High,
+        request_specificity: RequestSpecificity::RequestSpecific,
         timestamp: None,
         source_ip: None,
         host: None,
@@ -419,6 +420,7 @@ fn batch_candidate_ids_are_sequential_within_each_cve() {
         template_id: format!("template-{cve}"),
         cves: vec![cve.to_owned()],
         detectability: Detectability::High,
+        request_specificity: RequestSpecificity::RequestSpecific,
         timestamp: None,
         source_ip: None,
         host: None,

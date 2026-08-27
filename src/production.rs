@@ -18,7 +18,10 @@ use walkdir::WalkDir;
 use crate::{
     access_log::{AccessLogFormat, AccessLogLines},
     event::{HttpHeader, TelemetryProfile, WebEvent},
-    nuclei::{validated_detections, ConversionStatus, Detectability, ValidatedNucleiDetection},
+    nuclei::{
+        validated_detections, ConversionStatus, Detectability, RequestSpecificity,
+        ValidatedNucleiDetection,
+    },
     waf::{maybe_gzip_reader, WafLines},
 };
 
@@ -86,7 +89,9 @@ pub struct HuntMetrics {
     pub parse_errors: usize,
     pub earliest_timestamp: Option<String>,
     pub latest_timestamp: Option<String>,
-    pub exploitation_attempt_findings: usize,
+    pub cve_related_request_matches: usize,
+    pub request_specific_matches: usize,
+    pub response_unverified_matches: usize,
     pub unique_cves_observed: usize,
     pub unique_cisa_kevs_observed: usize,
     pub unique_source_clusters: usize,
@@ -162,6 +167,8 @@ struct PrivateFinding {
     template_id: String,
     cves: Vec<String>,
     detectability: Detectability,
+    #[serde(default)]
+    request_specificity: RequestSpecificity,
     timestamp: Option<String>,
     source_ip: Option<String>,
     host: Option<String>,
@@ -190,6 +197,7 @@ pub struct FindingExplanation {
     pub template_id: String,
     pub cves: Vec<String>,
     pub detectability: Detectability,
+    pub request_specificity: RequestSpecificity,
     pub timestamp: Option<String>,
     pub source_ip: Option<String>,
     pub host: Option<String>,
@@ -228,6 +236,7 @@ pub fn explain_private_findings(path: &Path) -> anyhow::Result<Vec<FindingExplan
             template_id: finding.template_id,
             cves: finding.cves,
             detectability: finding.detectability,
+            request_specificity: finding.request_specificity,
             timestamp: finding.timestamp,
             source_ip: finding.source_ip,
             host: finding.host,
@@ -384,19 +393,27 @@ pub fn hunt(
                 serde_json::to_writer(&mut private, &private_finding(detection, &event))?;
                 private.write_all(b"\n")?;
             }
-            let mut observed_cves = BTreeMap::<String, Detectability>::new();
+            let mut observed_cves = BTreeMap::<String, (Detectability, RequestSpecificity)>::new();
             for detection in &matches {
                 for cve in &detection.cves {
                     observed_cves
                         .entry(cve.clone())
                         .and_modify(|current| {
-                            *current = strongest(*current, detection.detectability)
+                            current.0 = strongest(current.0, detection.detectability);
+                            current.1 =
+                                strongest_specificity(current.1, detection.request_specificity());
                         })
-                        .or_insert(detection.detectability);
+                        .or_insert((detection.detectability, detection.request_specificity()));
                 }
             }
-            for (cve, detectability) in observed_cves {
-                metrics.exploitation_attempt_findings += 1;
+            for (cve, (detectability, request_specificity)) in observed_cves {
+                metrics.cve_related_request_matches += 1;
+                match request_specificity {
+                    RequestSpecificity::RequestSpecific => metrics.request_specific_matches += 1,
+                    RequestSpecificity::ResponseUnverified => {
+                        metrics.response_unverified_matches += 1
+                    }
+                }
                 match detectability {
                     Detectability::High => metrics.high_confidence_findings += 1,
                     Detectability::Medium => metrics.medium_confidence_findings += 1,
@@ -467,7 +484,7 @@ pub fn hunt(
         .collect();
     Ok(SanitizedHuntReport {
         report_kind: "SANITIZED_RESEARCH_OUTPUT".to_owned(),
-        safety_note: if metrics.waf_outcome_available { "A protection gap means only that a matched exploitation attempt was not blocked according to available AWS WAF action evidence; it does not establish exploitation success." } else { "WAF outcome is unavailable for this telemetry source, so no protection-gap rate is calculated." }.to_owned() + " No raw request values, source IPs, hostnames, JA3, JA4, or headers are included here.",
+        safety_note: if metrics.waf_outcome_available { "A protection gap means only that a CVE-related request match was not blocked according to available AWS WAF action evidence; it does not establish exploitation success." } else { "WAF outcome is unavailable for this telemetry source, so no protection-gap rate is calculated." }.to_owned() + " No raw request values, source IPs, hostnames, JA3, JA4, or headers are included here.",
         metrics,
         cve_findings,
     })
@@ -513,6 +530,7 @@ fn private_finding(detection: &ValidatedNucleiDetection, event: &WebEvent) -> Pr
         template_id: detection.template_id.clone(),
         cves: detection.cves.clone(),
         detectability: detection.detectability,
+        request_specificity: detection.request_specificity(),
         timestamp: event.timestamp.map(|time| time.to_rfc3339()),
         source_ip: event.source_ip.clone(),
         host: event.host.clone(),
@@ -573,6 +591,18 @@ fn strongest(left: Detectability, right: Detectability) -> Detectability {
         right
     } else {
         left
+    }
+}
+
+fn strongest_specificity(
+    left: RequestSpecificity,
+    right: RequestSpecificity,
+) -> RequestSpecificity {
+    match (left, right) {
+        (RequestSpecificity::RequestSpecific, _) | (_, RequestSpecificity::RequestSpecific) => {
+            RequestSpecificity::RequestSpecific
+        }
+        _ => RequestSpecificity::ResponseUnverified,
     }
 }
 

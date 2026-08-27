@@ -482,7 +482,7 @@ fn print_hunt(report: &SanitizedHuntReport, sanitized_path: &Path) {
     } else {
         "WAF outcome:                unavailable for this telemetry source".to_owned()
     };
-    println!("Read-only production hunt complete.\nPrivate findings:            written under the supplied output directory\nSanitized report:            {}\n\n{}\n\nRequests analyzed:           {}\nFiles analyzed:              {}\nParse errors:                {}\nCVE exploitation attempts:   {}\nUnique CVEs observed:        {}\nUnique CISA KEVs observed:   {}\nSource clusters:             {}\nJA4 fingerprints:            {}\nHIGH findings:               {}\nMEDIUM findings:             {}\nLOW findings:                {}\n\n{}", sanitized_path.display(), time_range, metrics.total_requests_analyzed, metrics.files_analyzed, metrics.parse_errors, metrics.exploitation_attempt_findings, metrics.unique_cves_observed, metrics.unique_cisa_kevs_observed, metrics.unique_source_clusters, metrics.unique_ja4_fingerprints, metrics.high_confidence_findings, metrics.medium_confidence_findings, metrics.low_confidence_findings, outcomes);
+    println!("Read-only production hunt complete.\nPrivate findings:            written under the supplied output directory\nSanitized report:            {}\n\n{}\n\nRequests analyzed:           {}\nFiles analyzed:              {}\nParse errors:                {}\nCVE-related request matches: {}\n  Request-specific:          {}\n  Response-unverified:       {}\nUnique CVEs observed:        {}\nUnique CISA KEVs observed:   {}\nSource clusters:             {}\nJA4 fingerprints:            {}\nDetection-match confidence (template detectability; NOT attack/compromise confidence):\n  HIGH:                      {}\n  MEDIUM:                    {}\n  LOW:                       {}\n\n{}", sanitized_path.display(), time_range, metrics.total_requests_analyzed, metrics.files_analyzed, metrics.parse_errors, metrics.cve_related_request_matches, metrics.request_specific_matches, metrics.response_unverified_matches, metrics.unique_cves_observed, metrics.unique_cisa_kevs_observed, metrics.unique_source_clusters, metrics.unique_ja4_fingerprints, metrics.high_confidence_findings, metrics.medium_confidence_findings, metrics.low_confidence_findings, outcomes);
 }
 
 fn print_explanations(
@@ -519,11 +519,12 @@ fn print_explanations(
     }
     for (index, finding) in displayed.iter().enumerate() {
         println!(
-            "\n[{}]\nCVE: {}\nNuclei template: {}\nConfidence: {:?}\nTimestamp: {}\nWAF action: {}",
+            "\n[{}]\nCVE: {}\nNuclei template: {}\nTemplate detectability: {:?}\nRequest specificity: {}\nTimestamp: {}\nWAF action: {}",
             index + 1,
             finding.cves.join(", "),
             terminal_safe(&finding.template_id),
             finding.detectability,
+            finding.request_specificity.label(),
             finding
                 .timestamp
                 .as_deref()

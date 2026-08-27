@@ -2,7 +2,7 @@ use std::{fs, path::Path};
 
 use shenron::nuclei::{
     combined_header_dependencies, compare_telemetry, coverage, inventory, ConversionStatus,
-    Detectability,
+    Detectability, RequestSpecificity,
 };
 use tempfile::tempdir;
 
@@ -83,6 +83,38 @@ fn classifies_detectability_separately_from_conversion() {
             .conversion_reason
             .as_deref(),
         Some("multi_request_unsupported")
+    );
+}
+
+#[test]
+fn classifies_request_specificity_from_detection_ir_shape() {
+    let approved = [
+        "synthetic-cve-2024-10001",
+        "synthetic-cve-2024-10002",
+        "synthetic-cve-2024-10008",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect();
+    let detections =
+        shenron::nuclei::validated_detections(Path::new("tests/fixtures/nuclei"), &approved);
+    assert!(detections
+        .iter()
+        .filter(|detection| detection.template_id == "synthetic-cve-2024-10001")
+        .all(|detection| detection.request_specificity() == RequestSpecificity::RequestSpecific));
+    assert!(detections
+        .iter()
+        .filter(|detection| detection.template_id == "synthetic-cve-2024-10002")
+        .all(|detection| detection.request_specificity() == RequestSpecificity::RequestSpecific));
+    assert_eq!(
+        detections
+            .iter()
+            .find(|detection| {
+                detection.template_id == "synthetic-cve-2024-10008"
+                    && detection.request_specificity() == RequestSpecificity::ResponseUnverified
+            })
+            .map(|detection| detection.request_specificity()),
+        Some(RequestSpecificity::ResponseUnverified)
     );
 }
 

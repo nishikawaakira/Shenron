@@ -37,7 +37,13 @@ fn hunt_uses_validated_matchers_and_separates_sensitive_output() {
     )
     .unwrap();
     assert_eq!(report.metrics.total_requests_analyzed, 2);
-    assert_eq!(report.metrics.exploitation_attempt_findings, 2);
+    assert_eq!(report.metrics.cve_related_request_matches, 2);
+    assert_eq!(report.metrics.request_specific_matches, 2);
+    assert_eq!(report.metrics.response_unverified_matches, 0);
+    assert_eq!(
+        report.metrics.request_specific_matches + report.metrics.response_unverified_matches,
+        report.metrics.cve_related_request_matches
+    );
     assert_eq!(report.metrics.unique_cves_observed, 1);
     assert_eq!(report.metrics.unique_cisa_kevs_observed, 1);
     assert_eq!(report.metrics.blocked, 1);
@@ -158,6 +164,9 @@ fn nginx_hunt_preserves_status_context_without_claiming_a_waf_outcome() {
     )
     .unwrap();
     assert!(!report.metrics.waf_outcome_available);
+    assert_eq!(report.metrics.cve_related_request_matches, 1);
+    assert_eq!(report.metrics.request_specific_matches, 0);
+    assert_eq!(report.metrics.response_unverified_matches, 1);
     assert_eq!(
         report.cve_findings[0].response_status_counts.get(&404),
         Some(&1)
@@ -221,7 +230,13 @@ fn hunt_filters_an_inclusive_utc_time_range_before_matching() {
     assert_eq!(report.metrics.total_requests_analyzed, 1);
     assert_eq!(report.metrics.requests_outside_time_range, 1);
     assert_eq!(report.metrics.requests_without_timestamp_excluded, 0);
-    assert_eq!(report.metrics.exploitation_attempt_findings, 1);
+    assert_eq!(report.metrics.cve_related_request_matches, 1);
+    assert_eq!(report.metrics.request_specific_matches, 1);
+    assert_eq!(report.metrics.response_unverified_matches, 0);
+    assert_eq!(
+        report.metrics.request_specific_matches + report.metrics.response_unverified_matches,
+        report.metrics.cve_related_request_matches
+    );
     assert_eq!(report.metrics.blocked, 1);
     assert_eq!(
         report.metrics.filter_from.as_deref(),

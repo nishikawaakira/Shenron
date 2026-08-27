@@ -27,6 +27,29 @@ pub enum Detectability {
     Unknown,
 }
 
+/// How resistant a request-side match is to an incidental URI-only match.
+/// This is neither attack severity nor evidence of exploitation or compromise.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RequestSpecificity {
+    /// The request includes a query, fragment, or explicit header requirement.
+    RequestSpecific,
+    /// Only method and path matched; Nuclei response confirmation is absent.
+    #[default]
+    ResponseUnverified,
+}
+
+impl RequestSpecificity {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::RequestSpecific => "request-specific",
+            Self::ResponseUnverified => {
+                "response-unverified (URI match only; Nuclei response confirmation not reproducible)"
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ConversionStatus {
@@ -216,11 +239,25 @@ impl ValidatedNucleiDetection {
     pub fn matches(&self, event: &WebEvent) -> bool {
         self.detection.matches(event)
     }
+
+    /// Request-side specificity only. It intentionally does not claim that an
+    /// attack occurred, a product is vulnerable, or a response was verified.
+    pub fn request_specificity(&self) -> RequestSpecificity {
+        self.detection.request_specificity()
+    }
 }
 
 impl NucleiDetection {
     fn is_generic_root_probe(&self) -> bool {
         self.path == "/" && self.query.is_none() && self.headers.is_empty()
+    }
+
+    fn request_specificity(&self) -> RequestSpecificity {
+        if self.query.is_some() || self.fragment.is_some() || !self.headers.is_empty() {
+            RequestSpecificity::RequestSpecific
+        } else {
+            RequestSpecificity::ResponseUnverified
+        }
     }
 
     fn matches(&self, event: &WebEvent) -> bool {

@@ -57,7 +57,7 @@ fn demo_corpora_regenerate_byte_for_byte_and_keep_documented_hunt_counts() {
         .unwrap();
         assert_eq!(result.metrics.total_requests_analyzed, 11);
         assert_eq!(
-            result.metrics.exploitation_attempt_findings,
+            result.metrics.cve_related_request_matches,
             expected_findings
         );
         assert_eq!(result.metrics.unique_cves_observed, expected_cves);
