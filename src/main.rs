@@ -513,9 +513,7 @@ fn parse_positive_usize(value: &str) -> std::result::Result<usize, String> {
 
 fn parse_triage_duration(value: &str) -> std::result::Result<Duration, String> {
     if value.len() < 2 {
-        return Err(format!(
-            "invalid duration {value:?}; use a positive integer with s, m, h, or d"
-        ));
+        return Err(triage_duration_error(value));
     }
     let (amount, suffix) = value.split_at(value.len() - 1);
     let multiplier = match suffix {
@@ -523,21 +521,54 @@ fn parse_triage_duration(value: &str) -> std::result::Result<Duration, String> {
         "m" => 60,
         "h" => 60 * 60,
         "d" => 24 * 60 * 60,
-        _ => {
-            return Err(format!(
-                "invalid duration {value:?}; use a positive integer with s, m, h, or d"
-            ))
-        }
+        _ => return Err(triage_duration_error(value)),
     };
     let seconds = amount
         .parse::<u64>()
         .ok()
         .filter(|amount| *amount > 0)
         .and_then(|amount| amount.checked_mul(multiplier))
-        .ok_or_else(|| {
-            format!("invalid duration {value:?}; use a positive integer with s, m, h, or d")
-        })?;
+        .ok_or_else(|| triage_duration_error(value))?;
+    if seconds > MAX_TRIAGE_WINDOW_SECONDS {
+        return Err(triage_duration_error(value));
+    }
     Ok(Duration::from_secs(seconds))
+}
+
+fn triage_duration_error(value: &str) -> String {
+    format!(
+        "invalid duration {value:?}; use a positive integer with s, m, h, or d (maximum {MAX_TRIAGE_WINDOW_DAYS}d)"
+    )
+}
+
+#[cfg(test)]
+mod duration_tests {
+    use super::{parse_triage_duration, Duration, MAX_TRIAGE_WINDOW_SECONDS};
+
+    #[test]
+    fn accepts_bounded_triage_window_durations() {
+        assert_eq!(parse_triage_duration("10m"), Ok(Duration::from_secs(600)));
+        assert_eq!(
+            parse_triage_duration("1h"),
+            Ok(Duration::from_secs(60 * 60))
+        );
+        assert_eq!(
+            parse_triage_duration("2d"),
+            Ok(Duration::from_secs(2 * 24 * 60 * 60))
+        );
+        assert_eq!(
+            parse_triage_duration("3650d"),
+            Ok(Duration::from_secs(MAX_TRIAGE_WINDOW_SECONDS))
+        );
+    }
+
+    #[test]
+    fn rejects_excessive_or_unrepresentable_triage_windows() {
+        for value in ["4000d", "18446744073709551615d"] {
+            let error = parse_triage_duration(value).unwrap_err();
+            assert!(error.contains("maximum 3650d"));
+        }
+    }
 }
 
 fn print_inspection(report: &InspectionReport) {
@@ -774,6 +805,8 @@ fn print_explanation_summary(findings: &[shenron::production::FindingExplanation
 const SOURCE_IP_TRIAGE_MINIMUM_REQUEST_PATTERNS: usize = 3;
 const SOURCE_IP_TRIAGE_MINIMUM_TEMPLATE_PATTERNS: usize = 2;
 const SOURCE_IP_TRIAGE_MINIMUM_REPEATED_PATTERNS: usize = 10;
+const MAX_TRIAGE_WINDOW_DAYS: u64 = 3650;
+const MAX_TRIAGE_WINDOW_SECONDS: u64 = MAX_TRIAGE_WINDOW_DAYS * 24 * 60 * 60;
 
 #[derive(Clone, Copy)]
 struct TriagePolicy {
@@ -868,8 +901,9 @@ impl SourceIpSummary {
     }
 
     fn windowed_triage_basis(&self, policy: TriagePolicy) -> Option<&'static str> {
-        let window = chrono::Duration::from_std(policy.window?)
-            .expect("supported CLI durations fit chrono's duration range");
+        // CLI parsing bounds durations, but preserve fail-closed behavior if a
+        // non-CLI caller supplies a duration chrono cannot represent.
+        let window = chrono::Duration::from_std(policy.window?).ok()?;
         let mut observations = self
             .observations
             .iter()
