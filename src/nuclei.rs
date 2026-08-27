@@ -313,8 +313,11 @@ impl NucleiDetection {
             .map(|(_, value)| value.as_str())
             .unwrap_or("-");
         let escape = |value: &str| value.replace('\\', "\\\\").replace('"', "\\\"");
+        let vhost_prefix = matches!(format, AccessLogFormat::ApacheVhostCombined)
+            .then_some("nuclei.synthetic.test:443 ")
+            .unwrap_or_default();
         let line = format!(
-            "198.51.100.200 - - [01/Jan/2025:00:00:00 +0000] \"{} {} HTTP/1.1\" 404 0 \"{}\" \"{}\"",
+            "{vhost_prefix}198.51.100.200 - - [01/Jan/2025:00:00:00 +0000] \"{} {} HTTP/1.1\" 404 0 \"{}\" \"{}\"",
             self.method,
             escape(&target),
             escape(referer),
@@ -672,6 +675,11 @@ fn telemetry_report(
                 TelemetryProfile::ApacheCombined => item.detections.iter().all(|detection| {
                     detection
                         .synthetic_combined_event(AccessLogFormat::ApacheCombined)
+                        .is_ok_and(|event| detection.matches(&event))
+                }),
+                TelemetryProfile::ApacheVhostCombined => item.detections.iter().all(|detection| {
+                    detection
+                        .synthetic_combined_event(AccessLogFormat::ApacheVhostCombined)
                         .is_ok_and(|event| detection.matches(&event))
                 }),
                 // These profiles model logging changes, not a currently

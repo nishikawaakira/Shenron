@@ -13,6 +13,7 @@ pub enum LogSource {
     AwsWaf,
     NginxCombined,
     ApacheCombined,
+    ApacheVhostCombined,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
@@ -22,6 +23,8 @@ pub enum TelemetryProfile {
     AwsWaf,
     NginxCombined,
     ApacheCombined,
+    /// Apache `other_vhosts_access.log` / vhost-prefixed Combined Log Format.
+    ApacheVhostCombined,
     /// Counterfactual analysis only: standard nginx combined plus an
     /// intentionally configured Host field.
     NginxCombinedHost,
@@ -101,6 +104,10 @@ impl TelemetryProfile {
                 waf_action: false,
                 waf_labels: false,
                 request_body: false,
+            },
+            Self::ApacheVhostCombined => TelemetryCapabilities {
+                host: true,
+                ..Self::ApacheCombined.capabilities()
             },
             Self::NginxCombinedHost => TelemetryCapabilities {
                 host: true,

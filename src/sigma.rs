@@ -329,9 +329,12 @@ fn source_matches(logsource: &Logsource, source: LogSource) -> bool {
             .product
             .as_deref()
             .is_none_or(|product| product.eq_ignore_ascii_case("nginx")),
-        LogSource::ApacheCombined => logsource.product.as_deref().is_none_or(|product| {
-            product.eq_ignore_ascii_case("apache") || product.eq_ignore_ascii_case("apache_httpd")
-        }),
+        LogSource::ApacheCombined | LogSource::ApacheVhostCombined => {
+            logsource.product.as_deref().is_none_or(|product| {
+                product.eq_ignore_ascii_case("apache")
+                    || product.eq_ignore_ascii_case("apache_httpd")
+            })
+        }
     }
 }
 

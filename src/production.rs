@@ -645,6 +645,7 @@ fn is_input_file(path: &Path, telemetry_profile: TelemetryProfile) -> bool {
         ),
         TelemetryProfile::NginxCombined
         | TelemetryProfile::ApacheCombined
+        | TelemetryProfile::ApacheVhostCombined
         | TelemetryProfile::NginxCombinedHost
         | TelemetryProfile::NginxSecurity => matches!(
             path.extension().and_then(|extension| extension.to_str()),
@@ -686,6 +687,11 @@ where
         }
         TelemetryProfile::ApacheCombined => {
             for item in AccessLogLines::new(reader, AccessLogFormat::ApacheCombined) {
+                callback(item.map_err(|error| error.to_string()))?;
+            }
+        }
+        TelemetryProfile::ApacheVhostCombined => {
+            for item in AccessLogLines::new(reader, AccessLogFormat::ApacheVhostCombined) {
                 callback(item.map_err(|error| error.to_string()))?;
             }
         }

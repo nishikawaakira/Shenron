@@ -185,6 +185,7 @@ enum InputFormat {
     AwsWaf,
     Nginx,
     Apache,
+    ApacheVhost,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -238,6 +239,7 @@ impl InputFormat {
             Self::AwsWaf => TelemetryProfile::AwsWaf,
             Self::Nginx => TelemetryProfile::NginxCombined,
             Self::Apache => TelemetryProfile::ApacheCombined,
+            Self::ApacheVhost => TelemetryProfile::ApacheVhostCombined,
         }
     }
 }
@@ -736,6 +738,13 @@ fn scan(
             )?,
             InputFormat::Apache => scan_events(
                 AccessLogLines::new(reader, AccessLogFormat::ApacheCombined),
+                &path,
+                &ruleset.supported,
+                &mut writer,
+                &mut stats,
+            )?,
+            InputFormat::ApacheVhost => scan_events(
+                AccessLogLines::new(reader, AccessLogFormat::ApacheVhostCombined),
                 &path,
                 &ruleset.supported,
                 &mut writer,

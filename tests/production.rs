@@ -166,6 +166,43 @@ fn nginx_hunt_preserves_status_context_without_claiming_a_waf_outcome() {
 }
 
 #[test]
+fn apache_vhost_hunt_preserves_vhost_without_claiming_a_waf_outcome() {
+    let directory = tempdir().unwrap();
+    let input = directory.path().join("other_vhosts_access.log");
+    fs::write(
+        &input,
+        r#"api.example.test:443 198.51.100.9 - - [24/Aug/2026:11:20:30 +0000] "GET /first-literal-path HTTP/1.1" 404 42 "-" "example-agent""#,
+    )
+    .unwrap();
+    let nuclei_report = directory.path().join("nuclei-report.json");
+    fs::write(
+        &nuclei_report,
+        r#"{"templates":[{"template_id":"synthetic-cve-2024-10008","cves":["CVE-2024-10008"],"conversion_status":"SUPPORTED","validation_status":"passed"}]}"#,
+    )
+    .unwrap();
+    let kev_report = directory.path().join("kev-report.json");
+    fs::write(&kev_report, r#"{"entries":[]}"#).unwrap();
+    let inspection = inspect(&input, TelemetryProfile::ApacheVhostCombined, 10).unwrap();
+    assert_eq!(inspection.fields_available.host, 1);
+    let report = hunt(
+        &input,
+        Path::new("tests/fixtures/nuclei"),
+        &nuclei_report,
+        &kev_report,
+        &directory.path().join("results"),
+        TelemetryProfile::ApacheVhostCombined,
+        HuntTimeRange::default(),
+    )
+    .unwrap();
+    assert!(!report.metrics.waf_outcome_available);
+    assert_eq!(report.cve_findings[0].unique_hosts, 1);
+    assert_eq!(
+        report.cve_findings[0].response_status_counts.get(&404),
+        Some(&1)
+    );
+}
+
+#[test]
 fn hunt_filters_an_inclusive_utc_time_range_before_matching() {
     let output = tempdir().unwrap();
     let report = hunt(

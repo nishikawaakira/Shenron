@@ -1,7 +1,9 @@
 //! Streaming nginx and Apache Combined Log Format parsing.
 //!
-//! Both standard formats have the same field shape. Custom formats are
-//! deliberately out of scope; callers select the expected source explicitly.
+//! Standard nginx/Apache formats have the same field shape. Apache's
+//! `other_vhosts_access.log` vhost-prefixed Combined Log Format is an explicit
+//! additional source, because it supplies a server host that standard Combined
+//! logs do not contain.
 
 use std::{
     io::{BufRead, BufReader, Read},
@@ -22,6 +24,7 @@ pub const MAX_COMBINED_LINE_BYTES: usize = 64 * 1024;
 pub enum AccessLogFormat {
     NginxCombined,
     ApacheCombined,
+    ApacheVhostCombined,
 }
 
 #[derive(Debug, Error)]
@@ -38,13 +41,22 @@ pub fn parse_combined_line(
     raw: &str,
     format: AccessLogFormat,
 ) -> Result<WebEvent, AccessLogParseError> {
-    let captures = combined_regex()
-        .captures(raw)
-        .ok_or(AccessLogParseError::Format)?;
-    let timestamp = DateTime::parse_from_str(&captures[2], "%d/%b/%Y:%H:%M:%S %z")
+    let captures = match format {
+        AccessLogFormat::NginxCombined | AccessLogFormat::ApacheCombined => combined_regex(),
+        AccessLogFormat::ApacheVhostCombined => apache_vhost_combined_regex(),
+    }
+    .captures(raw)
+    .ok_or(AccessLogParseError::Format)?;
+    let field = |name| {
+        captures
+            .name(name)
+            .map(|capture| capture.as_str())
+            .ok_or(AccessLogParseError::Format)
+    };
+    let timestamp = DateTime::parse_from_str(field("timestamp")?, "%d/%b/%Y:%H:%M:%S %z")
         .map_err(|_| AccessLogParseError::Timestamp)?
         .with_timezone(&chrono::Utc);
-    let request = decode_log_value(&captures[3]).ok_or(AccessLogParseError::Format)?;
+    let request = decode_log_value(field("request")?).ok_or(AccessLogParseError::Format)?;
     let mut parts = request.split_whitespace();
     let method = parts.next().ok_or(AccessLogParseError::Request)?;
     let target = parts.next().ok_or(AccessLogParseError::Request)?;
@@ -57,10 +69,14 @@ pub fn parse_combined_line(
         return Err(AccessLogParseError::Request);
     }
     let (uri_path, uri_query, uri_fragment) = split_target(target);
-    let status = parse_optional(&captures[4]);
-    let response_bytes = parse_optional(&captures[5]);
-    let referer = value_or_none(&captures[6]).and_then(|value| decode_log_value(&value));
-    let user_agent = value_or_none(&captures[7]).and_then(|value| decode_log_value(&value));
+    let status = parse_optional(field("status")?);
+    let response_bytes = parse_optional(field("response_bytes")?);
+    let referer = value_or_none(field("referer")?).and_then(|value| decode_log_value(&value));
+    let user_agent = value_or_none(field("user_agent")?).and_then(|value| decode_log_value(&value));
+    let host = match format {
+        AccessLogFormat::ApacheVhostCombined => parse_vhost(field("vhost")?)?,
+        AccessLogFormat::NginxCombined | AccessLogFormat::ApacheCombined => None,
+    };
     // These are the only request headers represented by the standard combined
     // format. Keeping them as headers lets the shared Detection IR evaluate
     // User-Agent/Referer requirements without pretending arbitrary headers
@@ -80,10 +96,10 @@ pub fn parse_combined_line(
     }
     Ok(WebEvent {
         timestamp: Some(timestamp),
-        source_ip: Some(captures[1].to_owned()),
+        source_ip: Some(field("source_ip")?.to_owned()),
         source_port: None,
         country: None,
-        host: None,
+        host,
         method: Some(method.to_owned()),
         uri: Some(target.to_owned()),
         uri_path: Some(uri_path),
@@ -106,6 +122,7 @@ pub fn parse_combined_line(
         log_source: match format {
             AccessLogFormat::NginxCombined => LogSource::NginxCombined,
             AccessLogFormat::ApacheCombined => LogSource::ApacheCombined,
+            AccessLogFormat::ApacheVhostCombined => LogSource::ApacheVhostCombined,
         },
         raw: raw.to_owned(),
     })
@@ -115,10 +132,28 @@ fn combined_regex() -> &'static Regex {
     static REGEX: OnceLock<Regex> = OnceLock::new();
     REGEX.get_or_init(|| {
         Regex::new(
-            r#"^(\S+) \S+ \S+ \[([^\]]+)\] "((?:\\.|[^"])*)" (\d{3}|-) (\d+|-) "((?:\\.|[^"])*)" "((?:\\.|[^"])*)"$"#,
+            r#"^(?P<source_ip>\S+) \S+ \S+ \[(?P<timestamp>[^\]]+)\] "(?P<request>(?:\\.|[^"])*)" (?P<status>\d{3}|-) (?P<response_bytes>\d+|-) "(?P<referer>(?:\\.|[^"])*)" "(?P<user_agent>(?:\\.|[^"])*)"$"#,
         )
         .expect("valid combined log regex")
     })
+}
+
+fn apache_vhost_combined_regex() -> &'static Regex {
+    static REGEX: OnceLock<Regex> = OnceLock::new();
+    REGEX.get_or_init(|| {
+        Regex::new(
+            r#"^(?P<vhost>\S+) (?P<source_ip>\S+) \S+ \S+ \[(?P<timestamp>[^\]]+)\] "(?P<request>(?:\\.|[^"])*)" (?P<status>\d{3}|-) (?P<response_bytes>\d+|-) "(?P<referer>(?:\\.|[^"])*)" "(?P<user_agent>(?:\\.|[^"])*)"$"#,
+        )
+        .expect("valid Apache vhost combined log regex")
+    })
+}
+
+fn parse_vhost(value: &str) -> Result<Option<String>, AccessLogParseError> {
+    let (host, port) = value.rsplit_once(':').ok_or(AccessLogParseError::Format)?;
+    if host.is_empty() || port.parse::<u16>().is_err() {
+        return Err(AccessLogParseError::Format);
+    }
+    Ok(Some(host.to_owned()))
 }
 
 fn parse_optional<T: std::str::FromStr>(value: &str) -> Option<T> {
@@ -254,6 +289,20 @@ mod tests {
         assert_eq!(nginx.uri_path, apache.uri_path);
         assert_eq!(nginx.uri_query, apache.uri_query);
         assert_eq!(nginx.user_agent, apache.user_agent);
+    }
+
+    #[test]
+    fn parses_apache_vhost_combined_and_preserves_host() {
+        let event = parse_combined_line(
+            r#"api.example.test:443 198.51.100.9 - - [24/Aug/2026:11:20:30 +0000] "GET /foo/bar?id=123 HTTP/1.1" 200 42 "https://example.test/" "example-agent""#,
+            AccessLogFormat::ApacheVhostCombined,
+        )
+        .unwrap();
+        assert_eq!(event.host.as_deref(), Some("api.example.test"));
+        assert_eq!(event.source_ip.as_deref(), Some("198.51.100.9"));
+        assert_eq!(event.uri_path.as_deref(), Some("/foo/bar"));
+        assert_eq!(event.uri_query.as_deref(), Some("id=123"));
+        assert_eq!(event.log_source, LogSource::ApacheVhostCombined);
     }
 
     #[test]
