@@ -696,7 +696,7 @@ where
     Ok(())
 }
 
-fn ensure_separate_output(input: &Path, output: &Path) -> anyhow::Result<()> {
+pub(crate) fn ensure_separate_output(input: &Path, output: &Path) -> anyhow::Result<()> {
     let input =
         fs::canonicalize(input).with_context(|| format!("resolving {}", input.display()))?;
     let output = if output.is_absolute() {

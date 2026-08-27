@@ -12,6 +12,7 @@ shenron candidate build --from-findings ./hunt/private-findings.jsonl \
 
 # Replay a reviewed candidate against the complete local historical source.
 # It writes a new file.
+# The output must be outside the immutable raw-input tree.
 shenron candidate replay --candidate ./candidates/shenron-cve-202x-xxxxx-001.json \
   --input ./historical-logs --format aws-waf --output ./candidates/candidate-replayed.json
 

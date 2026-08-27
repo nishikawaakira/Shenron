@@ -285,7 +285,9 @@ pub fn replay(
     mut candidate: DefensiveCandidate,
     input: &Path,
     telemetry_profile: TelemetryProfile,
+    output: &Path,
 ) -> Result<DefensiveCandidate> {
+    crate::production::ensure_separate_output(input, output)?;
     let mut evaluated = 0_u64;
     let known_request_ids = candidate
         .source_findings

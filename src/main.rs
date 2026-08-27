@@ -357,6 +357,7 @@ fn main() -> Result<()> {
                     load_candidate(&candidate)?,
                     &input,
                     format.telemetry_profile(),
+                    &output,
                 )?;
                 save_candidate(&candidate, &output)?;
                 println!("Historical replay complete. Candidate written: {}\nRequests evaluated: {}\nOther historical matches: {}\nPreventive export remains COUNT-only.", output.display(), candidate.evidence.historical_requests_evaluated, candidate.evidence.other_historical_matches);

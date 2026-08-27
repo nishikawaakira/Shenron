@@ -2,6 +2,7 @@ use std::{fs, path::Path};
 
 use assert_cmd::Command;
 use chrono::Utc;
+use predicates::str::contains;
 use shenron::{
     candidate::{
         build_batch_from_findings, compatibility, export, replay, Backend, CandidateEvidence,
@@ -178,6 +179,7 @@ fn cli_export_defaults_to_the_candidates_aws_waf_telemetry_profile() {
 
 #[test]
 fn replay_measures_known_request_ids_and_other_matching_events() {
+    let output = tempdir().unwrap();
     let mut candidate = candidate(DefensiveCondition::UriEquals {
         value: "/vulnerable/execute".to_owned(),
     });
@@ -192,6 +194,7 @@ fn replay_measures_known_request_ids_and_other_matching_events() {
         candidate,
         Path::new("tests/fixtures/production/waf.jsonl"),
         TelemetryProfile::AwsWaf,
+        &output.path().join("replayed.json"),
     )
     .unwrap();
     assert_eq!(replayed.evidence.historical_requests_evaluated, 2);
@@ -203,6 +206,7 @@ fn replay_measures_known_request_ids_and_other_matching_events() {
 
 #[test]
 fn replay_does_not_claim_coverage_without_known_request_ids() {
+    let output = tempdir().unwrap();
     let mut candidate = candidate(DefensiveCondition::UriEquals {
         value: "/vulnerable/execute".to_owned(),
     });
@@ -217,12 +221,76 @@ fn replay_does_not_claim_coverage_without_known_request_ids() {
         candidate,
         Path::new("tests/fixtures/production/waf.jsonl"),
         TelemetryProfile::AwsWaf,
+        &output.path().join("replayed.json"),
     )
     .unwrap();
     assert_eq!(replayed.evidence.known_threat_findings_matched, 0);
     assert_eq!(replayed.evidence.known_threat_findings_missed, 1);
     assert_eq!(replayed.evidence.other_historical_matches, 2);
     assert_eq!(replayed.evidence.threat_coverage, None);
+}
+
+#[test]
+fn replay_refuses_an_output_inside_the_raw_input_tree() {
+    let directory = tempdir().unwrap();
+    let input = directory.path().join("raw");
+    fs::create_dir(&input).unwrap();
+    fs::copy(
+        "tests/fixtures/production/waf.jsonl",
+        input.join("events.jsonl"),
+    )
+    .unwrap();
+    assert!(replay(
+        candidate(DefensiveCondition::UriEquals {
+            value: "/vulnerable/execute".to_owned(),
+        }),
+        &input,
+        TelemetryProfile::AwsWaf,
+        &input.join("candidate-replayed.json"),
+    )
+    .is_err());
+}
+
+#[test]
+fn cli_replay_refuses_an_output_inside_the_raw_input_tree() {
+    let directory = tempdir().unwrap();
+    let input = directory.path().join("raw");
+    fs::create_dir(&input).unwrap();
+    fs::copy(
+        "tests/fixtures/production/waf.jsonl",
+        input.join("events.jsonl"),
+    )
+    .unwrap();
+    let candidate_path = directory.path().join("candidate.json");
+    fs::write(
+        &candidate_path,
+        serde_json::to_vec(&candidate(DefensiveCondition::UriEquals {
+            value: "/vulnerable/execute".to_owned(),
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let output = input.join("candidate-replayed.json");
+
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "candidate",
+            "replay",
+            "--candidate",
+            candidate_path.to_str().unwrap(),
+            "--input",
+            input.to_str().unwrap(),
+            "--format",
+            "aws-waf",
+            "--output",
+            output.to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .stderr(contains(
+            "output directory must be separate from immutable raw input",
+        ));
 }
 
 #[test]
