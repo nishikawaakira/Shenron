@@ -3,7 +3,11 @@
 //! Exporters never deploy a control. Preventive exports require recorded
 //! historical replay evidence and refuse any non-faithful translation.
 
-use std::{collections::BTreeMap, fs, path::Path};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fs,
+    path::Path,
+};
 
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
@@ -330,10 +334,10 @@ pub fn build_batch_from_findings(
                 evidence: CandidateEvidence {
                     historical_requests_evaluated: 0,
                     known_threat_findings: known,
-                    known_threat_findings_matched: known,
-                    known_threat_findings_missed: 0,
+                    known_threat_findings_matched: 0,
+                    known_threat_findings_missed: known,
                     other_historical_matches: 0,
-                    threat_coverage: Some(1.0),
+                    threat_coverage: None,
                     first_seen: timestamps.iter().min().cloned(),
                     last_seen: timestamps.iter().max().cloned(),
                     replay_completed: false,
@@ -380,22 +384,37 @@ pub fn replay(
     telemetry_profile: TelemetryProfile,
 ) -> Result<DefensiveCandidate> {
     let mut evaluated = 0_u64;
-    let mut matched = 0_u64;
+    let known_request_ids = candidate
+        .source_findings
+        .iter()
+        .filter_map(|finding| finding.request_id.clone())
+        .collect::<BTreeSet<_>>();
+    let mut matched_known_request_ids = BTreeSet::new();
+    let mut other_historical_matches = 0_u64;
     for path in crate::production::input_files(input, telemetry_profile)? {
         crate::production::stream_events(&path, telemetry_profile, |event| {
             if let Ok(event) = event {
                 evaluated += 1;
-                matched += u64::from(candidate.conditions.matches(&event));
+                if candidate.conditions.matches(&event) {
+                    match event.request_id.as_ref() {
+                        Some(request_id) if known_request_ids.contains(request_id) => {
+                            matched_known_request_ids.insert(request_id.clone());
+                        }
+                        _ => other_historical_matches += 1,
+                    }
+                }
             }
             Ok(())
         })?;
     }
     let known = candidate.evidence.known_threat_findings;
+    let matched_known = matched_known_request_ids.len() as u64;
     candidate.evidence.historical_requests_evaluated = evaluated;
-    candidate.evidence.known_threat_findings_matched = known;
-    candidate.evidence.known_threat_findings_missed = 0;
-    candidate.evidence.other_historical_matches = matched.saturating_sub(known);
-    candidate.evidence.threat_coverage = (known != 0).then_some(1.0);
+    candidate.evidence.known_threat_findings_matched = matched_known;
+    candidate.evidence.known_threat_findings_missed = known.saturating_sub(matched_known);
+    candidate.evidence.other_historical_matches = other_historical_matches;
+    candidate.evidence.threat_coverage =
+        (known != 0 && !known_request_ids.is_empty()).then(|| matched_known as f64 / known as f64);
     candidate.evidence.replay_completed = true;
     candidate.telemetry_profile = telemetry_profile;
     Ok(candidate)

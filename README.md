@@ -50,6 +50,8 @@ shenron candidate build --from-findings ./hunt/private-findings.jsonl \
   --telemetry aws-waf --output ./candidates/
 
 # Replay an individual reviewed candidate against the full local historical log set.
+# Coverage is measured from source-finding request IDs; it remains unavailable
+# when those IDs were not recorded.
 shenron candidate replay --candidate ./candidates/shenron-cve-202x-xxxxx-001.json \
   --input ./historical-logs --format aws-waf \
   --output ./candidates/candidate-replayed.json

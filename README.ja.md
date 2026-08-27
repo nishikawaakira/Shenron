@@ -76,6 +76,7 @@ shenron candidate build \
   --telemetry aws-waf --output ./candidates/
 
 # candidate を選んで履歴ログ全体で replay します。元ファイルは上書きしません。
+# coverage は source finding の request ID と実測イベントで算出し、ID がなければ未算出です。
 shenron candidate replay \
   --candidate ./candidates/shenron-cve-202x-xxxxx-001.json \
   --input ./historical-logs --format aws-waf \

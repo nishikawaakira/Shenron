@@ -1,10 +1,10 @@
-use std::fs;
+use std::{fs, path::Path};
 
 use assert_cmd::Command;
 use chrono::Utc;
 use shenron::{
     candidate::{
-        build_batch_from_findings, compatibility, export, Backend, CandidateEvidence,
+        build_batch_from_findings, compatibility, export, replay, Backend, CandidateEvidence,
         CompatibilityStatus, DefensiveCandidate, DefensiveCondition, RecommendedAction,
     },
     event::TelemetryProfile,
@@ -174,6 +174,55 @@ fn cli_export_defaults_to_the_candidates_aws_waf_telemetry_profile() {
         .assert()
         .success();
     assert!(output.exists());
+}
+
+#[test]
+fn replay_measures_known_request_ids_and_other_matching_events() {
+    let mut candidate = candidate(DefensiveCondition::UriEquals {
+        value: "/vulnerable/execute".to_owned(),
+    });
+    candidate.source_findings = vec![shenron::candidate::FindingReference {
+        template_id: "synthetic-cve-2024-10001".to_owned(),
+        timestamp: None,
+        request_id: Some("production-allow".to_owned()),
+    }];
+    candidate.evidence.known_threat_findings = 1;
+
+    let replayed = replay(
+        candidate,
+        Path::new("tests/fixtures/production/waf.jsonl"),
+        TelemetryProfile::AwsWaf,
+    )
+    .unwrap();
+    assert_eq!(replayed.evidence.historical_requests_evaluated, 2);
+    assert_eq!(replayed.evidence.known_threat_findings_matched, 1);
+    assert_eq!(replayed.evidence.known_threat_findings_missed, 0);
+    assert_eq!(replayed.evidence.other_historical_matches, 1);
+    assert_eq!(replayed.evidence.threat_coverage, Some(1.0));
+}
+
+#[test]
+fn replay_does_not_claim_coverage_without_known_request_ids() {
+    let mut candidate = candidate(DefensiveCondition::UriEquals {
+        value: "/vulnerable/execute".to_owned(),
+    });
+    candidate.source_findings = vec![shenron::candidate::FindingReference {
+        template_id: "synthetic-cve-2024-10001".to_owned(),
+        timestamp: None,
+        request_id: None,
+    }];
+    candidate.evidence.known_threat_findings = 1;
+
+    let replayed = replay(
+        candidate,
+        Path::new("tests/fixtures/production/waf.jsonl"),
+        TelemetryProfile::AwsWaf,
+    )
+    .unwrap();
+    assert_eq!(replayed.evidence.known_threat_findings_matched, 0);
+    assert_eq!(replayed.evidence.known_threat_findings_missed, 1);
+    assert_eq!(replayed.evidence.other_historical_matches, 2);
+    assert_eq!(replayed.evidence.threat_coverage, None);
 }
 
 #[test]

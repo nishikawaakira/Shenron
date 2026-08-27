@@ -20,4 +20,6 @@ shenron candidate export --candidate ./candidates/candidate-replayed.json \
   --backend aws-waf-json --priority 100 --output ./exports/candidate.aws-waf.json
 ```
 
+Replay measures known-threat coverage only by comparing source-finding request IDs with matching historical events. `known_threat_findings_matched` is the number of unique known request IDs seen again; `other_historical_matches` counts matching events with another or no request ID. Coverage is `null` when the source findings have no request IDs, rather than claiming complete coverage.
+
 Compatibility, explanation, and export use the candidate's recorded telemetry profile unless `--telemetry` explicitly overrides it. This prevents an AWS WAF candidate from being accidentally evaluated as standard nginx telemetry.
