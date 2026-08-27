@@ -252,6 +252,50 @@ fn compatibility_uses_supported_leaf_count_for_status() {
 }
 
 #[test]
+fn export_allows_token_uri_but_refuses_sensitive_headers_and_jwts() {
+    let directory = tempdir().unwrap();
+    let oauth_candidate = candidate(DefensiveCondition::UriEquals {
+        value: "/oauth/token".to_owned(),
+    });
+    assert!(export(
+        &oauth_candidate,
+        Backend::AwsWafJson,
+        TelemetryProfile::AwsWaf,
+        &directory.path().join("oauth.json"),
+        Some(1),
+        99_001,
+    )
+    .is_ok());
+
+    let authorization_candidate = candidate(DefensiveCondition::HeaderEquals {
+        name: "Authorization".to_owned(),
+        value: "Basic not-a-secret".to_owned(),
+    });
+    assert!(export(
+        &authorization_candidate,
+        Backend::AwsWafJson,
+        TelemetryProfile::AwsWaf,
+        &directory.path().join("authorization.json"),
+        Some(2),
+        99_001,
+    )
+    .is_err());
+
+    let jwt_candidate = candidate(DefensiveCondition::QueryContains {
+        value: "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0".to_owned(),
+    });
+    assert!(export(
+        &jwt_candidate,
+        Backend::AwsWafJson,
+        TelemetryProfile::AwsWaf,
+        &directory.path().join("jwt.json"),
+        Some(3),
+        99_001,
+    )
+    .is_err());
+}
+
+#[test]
 fn batch_build_excludes_already_blocked_aws_waf_findings() {
     let finding = |action: &str, path: &str| FindingExplanation {
         template_id: "demo-template".to_owned(),

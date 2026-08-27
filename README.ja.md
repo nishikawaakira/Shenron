@@ -97,7 +97,7 @@ shenron candidate export \
 
 `aws-waf-json` と `terraform-aws-waf` は予防的 control の候補です。初期 action は必ず `COUNT` で、Shenron は deploy しません。`ossec` は nginx / Apache combined log の raw representation 向け検知 control であり、WAF rule でも request block 機能でもありません。
 
-JA4 のように選択した telemetry/backend が忠実に表現できない条件は、削除して広いルールにするのではなく export を拒否します。token、secret、cookie、authorization 値らしき条件も export を拒否します。
+JA4 のように選択した telemetry/backend が忠実に表現できない条件は、削除して広いルールにするのではなく export を拒否します。`Authorization`、`Cookie`、API key などの秘匿ヘッダ名、または bearer/JWT らしき値を含む条件も export を拒否します。`/oauth/token` のような URI の語だけでは拒否しません。
 
 ## ドキュメント
 

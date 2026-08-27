@@ -7,6 +7,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
     path::Path,
+    sync::OnceLock,
 };
 
 use anyhow::{bail, Context, Result};
@@ -74,31 +75,6 @@ impl DefensiveCondition {
             }
             Self::Or { conditions } => conditions.iter().any(|c| c.matches(event)),
             Self::Not { condition } => !condition.matches(event),
-        }
-    }
-    fn values<'a>(&'a self, output: &mut Vec<&'a str>) {
-        match self {
-            Self::UriEquals { value }
-            | Self::UriContains { value }
-            | Self::UriStartsWith { value }
-            | Self::QueryEquals { value }
-            | Self::QueryContains { value }
-            | Self::MethodEquals { value }
-            | Self::HostEquals { value }
-            | Self::Ja3Equals { value }
-            | Self::Ja4Equals { value }
-            | Self::UserAgentEquals { value }
-            | Self::UserAgentContains { value } => output.push(value),
-            Self::HeaderEquals { name, value } | Self::HeaderContains { name, value } => {
-                output.push(name);
-                output.push(value);
-            }
-            Self::And { conditions } | Self::Or { conditions } => {
-                for c in conditions {
-                    c.values(output);
-                }
-            }
-            Self::Not { condition } => condition.values(output),
         }
     }
 }
@@ -788,25 +764,65 @@ fn ensure_new(path: &Path) -> Result<()> {
     Ok(())
 }
 fn reject_sensitive(c: &DefensiveCandidate) -> Result<()> {
-    let mut values = Vec::new();
-    c.conditions.values(&mut values);
-    if values.iter().any(|v| {
-        let v = v.to_ascii_lowercase();
-        [
-            "authorization",
-            "cookie",
-            "token",
-            "secret",
-            "api-key",
-            "apikey",
-            "bearer ",
-        ]
-        .iter()
-        .any(|needle| v.contains(needle))
-    }) {
+    if condition_contains_sensitive_value(&c.conditions) {
         bail!("export refused: candidate condition appears to contain a credential, token, cookie, or personal secret");
     }
     Ok(())
+}
+
+fn condition_contains_sensitive_value(condition: &DefensiveCondition) -> bool {
+    match condition {
+        DefensiveCondition::HeaderEquals { name, value }
+        | DefensiveCondition::HeaderContains { name, value } => {
+            sensitive_header_name(name) || sensitive_value(value)
+        }
+        DefensiveCondition::UriEquals { value }
+        | DefensiveCondition::UriContains { value }
+        | DefensiveCondition::UriStartsWith { value }
+        | DefensiveCondition::QueryEquals { value }
+        | DefensiveCondition::QueryContains { value }
+        | DefensiveCondition::MethodEquals { value }
+        | DefensiveCondition::HostEquals { value }
+        | DefensiveCondition::Ja3Equals { value }
+        | DefensiveCondition::Ja4Equals { value }
+        | DefensiveCondition::UserAgentEquals { value }
+        | DefensiveCondition::UserAgentContains { value } => sensitive_value(value),
+        DefensiveCondition::And { conditions } | DefensiveCondition::Or { conditions } => {
+            conditions.iter().any(condition_contains_sensitive_value)
+        }
+        DefensiveCondition::Not { condition } => condition_contains_sensitive_value(condition),
+    }
+}
+
+fn sensitive_header_name(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "authorization"
+            | "proxy-authorization"
+            | "cookie"
+            | "set-cookie"
+            | "x-api-key"
+            | "api-key"
+            | "apikey"
+            | "x-auth-token"
+            | "x-access-token"
+    )
+}
+
+fn sensitive_value(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    lower.contains("authorization")
+        || lower.contains("cookie")
+        || lower.contains("bearer ")
+        || jwt_pattern().is_match(value)
+}
+
+fn jwt_pattern() -> &'static regex::Regex {
+    static PATTERN: OnceLock<regex::Regex> = OnceLock::new();
+    PATTERN.get_or_init(|| {
+        regex::Regex::new(r"eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+")
+            .expect("the built-in JWT detection regex must compile")
+    })
 }
 fn safe_name(value: &str) -> String {
     let mut name: String = value
