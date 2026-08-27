@@ -589,12 +589,19 @@ fn print_explanations(
         }
         if show_evidence {
             println!(
-                "Source IP: {}\nHost: {}\nJA3: {}\nJA4: {}\nRequest ID: {}\nTerminating WAF rule ID: {}\nTerminating WAF rule type: {}\nNon-terminating WAF rule IDs: {}\nWAF labels: {}\nHeaders:",
+                "Observed connection source (peer; may be CDN/LB/NAT, not attacker attribution): {}\nValidated forwarded client IP: {}\nHost: {}\nJA3: {}\nJA4: {}\nRequest ID: {}\nTerminating WAF rule ID: {}\nTerminating WAF rule type: {}\nNon-terminating WAF rule IDs: {}\nWAF labels: {}\nHeaders:",
                 finding
                     .source_ip
                     .as_deref()
                     .map(terminal_safe)
                     .unwrap_or_else(|| "unavailable".to_owned()),
+                finding
+                    .client_ip
+                    .as_deref()
+                    .map(terminal_safe)
+                    .unwrap_or_else(|| {
+                        "not available (no trusted-proxy configuration or unverifiable)".to_owned()
+                    }),
                 finding
                     .host
                     .as_deref()
@@ -714,6 +721,21 @@ struct SourceIpSummary {
     request_patterns: std::collections::BTreeSet<String>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum GroupingIdentity {
+    ValidatedClient,
+    ObservedPeer,
+}
+
+impl GroupingIdentity {
+    fn label(self) -> &'static str {
+        match self {
+            Self::ValidatedClient => "validated-client",
+            Self::ObservedPeer => "observed-peer",
+        }
+    }
+}
+
 impl SourceIpSummary {
     fn triage_basis(&self) -> Option<&'static str> {
         let breadth = self.request_patterns.len() >= SOURCE_IP_TRIAGE_MINIMUM_REQUEST_PATTERNS
@@ -748,13 +770,19 @@ fn source_ip_request_pattern(finding: &shenron::production::FindingExplanation) 
 
 fn source_ip_summaries(
     findings: &[shenron::production::FindingExplanation],
-) -> BTreeMap<String, SourceIpSummary> {
-    let mut summaries = BTreeMap::<String, SourceIpSummary>::new();
+) -> BTreeMap<(GroupingIdentity, String), SourceIpSummary> {
+    let mut summaries = BTreeMap::<(GroupingIdentity, String), SourceIpSummary>::new();
     for finding in findings {
-        let Some(source_ip) = &finding.source_ip else {
+        let identity = if let Some(client_ip) = &finding.client_ip {
+            (GroupingIdentity::ValidatedClient, client_ip)
+        } else if let Some(source_ip) = &finding.source_ip {
+            (GroupingIdentity::ObservedPeer, source_ip)
+        } else {
             continue;
         };
-        let entry = summaries.entry(source_ip.clone()).or_default();
+        let entry = summaries
+            .entry((identity.0, identity.1.clone()))
+            .or_default();
         entry.matching_template_records += 1;
         entry.cves.extend(finding.cves.iter().cloned());
         entry.templates.insert(finding.template_id.clone());
@@ -766,8 +794,8 @@ fn source_ip_summaries(
 }
 
 fn sort_source_ip_summaries(
-    summaries: BTreeMap<String, SourceIpSummary>,
-) -> Vec<(String, SourceIpSummary)> {
+    summaries: BTreeMap<(GroupingIdentity, String), SourceIpSummary>,
+) -> Vec<((GroupingIdentity, String), SourceIpSummary)> {
     let mut summary = summaries.into_iter().collect::<Vec<_>>();
     summary.sort_by(|left, right| {
         right
@@ -776,16 +804,17 @@ fn sort_source_ip_summaries(
             .len()
             .cmp(&left.1.request_patterns.len())
             .then_with(|| right.1.templates.len().cmp(&left.1.templates.len()))
-            .then_with(|| left.0.cmp(&right.0))
+            .then_with(|| left.0 .1.cmp(&right.0 .1))
+            .then_with(|| left.0 .0.cmp(&right.0 .0))
     });
     summary
 }
 
 fn print_source_ip_summary(findings: &[shenron::production::FindingExplanation], limit: usize) {
     let summary = sort_source_ip_summaries(source_ip_summaries(findings));
-    println!("\nSource IP triage (private findings only):");
+    println!("\nConnection/client IP triage (private findings only):");
     println!(
-        "A source is marked \"requires investigation\" by breadth (at least {} matching request observations and {} Nuclei template patterns) or depth (at least {} matching request observations, even for one template). This is not an attacker, exploit-success, or compromise determination.",
+        "Grouping identity: validated-client when a trusted forwarded chain was verified; otherwise observed-peer. A peer may be a CDN, load balancer, NAT, or proxy and is not attacker attribution. A group is marked \"requires investigation\" by breadth (at least {} matching request observations and {} Nuclei template patterns) or depth (at least {} matching request observations, even for one template). This is not an attacker, exploit-success, or compromise determination.",
         SOURCE_IP_TRIAGE_MINIMUM_REQUEST_PATTERNS,
         SOURCE_IP_TRIAGE_MINIMUM_TEMPLATE_PATTERNS,
         SOURCE_IP_TRIAGE_MINIMUM_REPEATED_PATTERNS,
@@ -799,14 +828,15 @@ fn print_source_ip_summary(findings: &[shenron::production::FindingExplanation],
     } else {
         &triaged[..triaged.len().min(limit)]
     };
-    println!("\nSources requiring investigation (repeated CVE-pattern behavior):");
+    println!("\nIP groups requiring investigation (repeated CVE-pattern behavior):");
     if displayed_triaged.is_empty() {
-        println!("No source IP met the repeated-pattern triage threshold.");
+        println!("No IP group met the repeated-pattern triage threshold.");
     } else {
-        for (source_ip, item) in displayed_triaged {
+        for ((identity, address), item) in displayed_triaged {
             println!(
-                "{}\n  Triage basis: {}\n  Matching request observations: {}\n  Distinct Nuclei template patterns: {}\n  Unique CVEs: {}\n  Matched template records: {}",
-                terminal_safe(source_ip),
+                "{}\n  Grouping identity: {}\n  Triage basis: {}\n  Matching request observations: {}\n  Distinct Nuclei template patterns: {}\n  Unique CVEs: {}\n  Matched template records: {}",
+                terminal_safe(address),
+                identity.label(),
                 item.triage_basis().expect("triaged source has a basis"),
                 item.request_patterns.len(),
                 item.templates.len(),
@@ -816,7 +846,7 @@ fn print_source_ip_summary(findings: &[shenron::production::FindingExplanation],
         }
         if displayed_triaged.len() < triaged.len() {
             println!(
-                "{} additional triaged source IP addresses omitted. Pass --limit 0 to display all.",
+                "{} additional triaged IP groups omitted. Pass --limit 0 to display all.",
                 triaged.len() - displayed_triaged.len()
             );
         }
@@ -827,15 +857,16 @@ fn print_source_ip_summary(findings: &[shenron::production::FindingExplanation],
     } else {
         &summary[..summary.len().min(limit)]
     };
-    println!("\nSource IPs with matching evidence (not an attack determination):");
+    println!("\nIP groups with matching evidence (not an attack determination):");
     if displayed.is_empty() {
-        println!("No source IP addresses were recorded in the selected findings.");
+        println!("No client or peer IP addresses were recorded in the selected findings.");
         return;
     }
-    for (source_ip, item) in displayed {
+    for ((identity, address), item) in displayed {
         println!(
-            "{}\n  Triage basis: {}\n  Matching request observations: {}\n  Distinct Nuclei template patterns: {}\n  Unique CVEs: {}\n  Matched template records: {}",
-            terminal_safe(source_ip),
+            "{}\n  Grouping identity: {}\n  Triage basis: {}\n  Matching request observations: {}\n  Distinct Nuclei template patterns: {}\n  Unique CVEs: {}\n  Matched template records: {}",
+            terminal_safe(address),
+            identity.label(),
             item.triage_basis().unwrap_or("none"),
             item.request_patterns.len(),
             item.templates.len(),
@@ -845,7 +876,7 @@ fn print_source_ip_summary(findings: &[shenron::production::FindingExplanation],
     }
     if displayed.len() < summary.len() {
         println!(
-            "{} additional source IP addresses omitted. Pass --limit 0 to display all.",
+            "{} additional IP groups omitted. Pass --limit 0 to display all.",
             summary.len() - displayed.len()
         );
     }

@@ -97,6 +97,8 @@ fn hunt_uses_validated_matchers_and_separates_sensitive_output() {
             "CVE / Nuclei template mappings: 1 (WAF outcome filter: block)",
         ))
         .stdout(contains("WAF action: BLOCK"))
+        .stdout(contains("Observed connection source (peer; may be CDN/LB/NAT, not attacker attribution): 198.51.100.2"))
+        .stdout(contains("Validated forwarded client IP: not available (no trusted-proxy configuration or unverifiable)"))
         .stdout(contains("AWS#KnownExploit"));
 
     Command::cargo_bin("shenron")
@@ -130,8 +132,11 @@ fn hunt_uses_validated_matchers_and_separates_sensitive_output() {
         ])
         .assert()
         .success()
-        .stdout(contains("Source IP triage (private findings only):"))
+        .stdout(contains(
+            "Connection/client IP triage (private findings only):",
+        ))
         .stdout(contains("198.51.100.1"))
+        .stdout(contains("Grouping identity: observed-peer"))
         .stdout(contains("Matching request observations: 1"));
 }
 
@@ -187,13 +192,13 @@ fn explain_triages_only_repeated_distinct_source_behavior() {
         .assert()
         .success()
         .stdout(contains(
-            "Sources requiring investigation (repeated CVE-pattern behavior):",
+            "IP groups requiring investigation (repeated CVE-pattern behavior):",
         ))
         .stdout(contains(
-            "198.51.100.9\n  Triage basis: breadth\n  Matching request observations: 3",
+            "198.51.100.9\n  Grouping identity: observed-peer\n  Triage basis: breadth\n  Matching request observations: 3",
         ))
         .stdout(contains(
-            "198.51.100.10\n  Triage basis: none\n  Matching request observations: 1",
+            "198.51.100.10\n  Grouping identity: observed-peer\n  Triage basis: none\n  Matching request observations: 1",
         ));
 }
 
@@ -229,11 +234,37 @@ fn explain_triages_repeated_single_template_behavior_by_depth() {
         .assert()
         .success()
         .stdout(contains(
-            "198.51.100.11\n  Triage basis: depth\n  Matching request observations: 10",
+            "198.51.100.11\n  Grouping identity: observed-peer\n  Triage basis: depth\n  Matching request observations: 10",
         ))
         .stdout(contains(
-            "198.51.100.12\n  Triage basis: none\n  Matching request observations: 2",
+            "198.51.100.12\n  Grouping identity: observed-peer\n  Triage basis: none\n  Matching request observations: 2",
         ));
+}
+
+#[test]
+fn explain_prefers_a_validated_client_for_ip_grouping() {
+    let directory = tempdir().unwrap();
+    let findings = directory.path().join("private-findings.jsonl");
+    fs::write(
+        &findings,
+        r#"{"template_id":"template-one","cves":["CVE-2024-10001"],"detectability":"HIGH","timestamp":"2026-08-24T00:00:01+00:00","source_ip":"198.51.100.9","client_ip":"203.0.113.9","host":"example.test","method":"GET","uri_path":"/one","uri_query":null,"headers":[],"ja3":null,"ja4":null,"waf_action":null,"request_id":null}"#,
+    )
+    .unwrap();
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "production",
+            "explain",
+            "--findings",
+            findings.to_str().unwrap(),
+            "--show-source-ips",
+            "--limit",
+            "0",
+        ])
+        .assert()
+        .success()
+        .stdout(contains("203.0.113.9\n  Grouping identity: validated-client"))
+        .stdout(contains("Grouping identity: validated-client when a trusted forwarded chain was verified; otherwise observed-peer"));
 }
 
 #[test]
