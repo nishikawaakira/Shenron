@@ -431,13 +431,21 @@ pub fn compatibility(
     telemetry: TelemetryProfile,
 ) -> CompatibilityReport {
     let mut reasons = Vec::new();
-    compatible_condition(&candidate.conditions, backend, telemetry, &mut reasons, 0);
+    let mut supported_leaves = 0;
+    compatible_condition(
+        &candidate.conditions,
+        backend,
+        telemetry,
+        &mut reasons,
+        &mut supported_leaves,
+        0,
+    );
     let status = if reasons.is_empty() {
         CompatibilityStatus::FullySupported
-    } else if reasons.len() == leaf_count(&candidate.conditions) {
-        CompatibilityStatus::Unsupported
-    } else {
+    } else if supported_leaves > 0 {
         CompatibilityStatus::PartiallySupported
+    } else {
+        CompatibilityStatus::Unsupported
     };
     CompatibilityReport {
         backend: backend.name().to_owned(),
@@ -451,6 +459,7 @@ fn compatible_condition(
     backend: Backend,
     telemetry: TelemetryProfile,
     reasons: &mut Vec<String>,
+    supported_leaves: &mut usize,
     depth: usize,
 ) {
     let reasons_before = reasons.len();
@@ -489,12 +498,24 @@ fn compatible_condition(
                 reasons.push("empty logical condition".to_owned());
             }
             for child in conditions {
-                compatible_condition(child, backend, telemetry, reasons, depth + 1);
+                compatible_condition(
+                    child,
+                    backend,
+                    telemetry,
+                    reasons,
+                    supported_leaves,
+                    depth + 1,
+                );
             }
         }
-        DefensiveCondition::Not { condition } => {
-            compatible_condition(condition, backend, telemetry, reasons, depth + 1)
-        }
+        DefensiveCondition::Not { condition } => compatible_condition(
+            condition,
+            backend,
+            telemetry,
+            reasons,
+            supported_leaves,
+            depth + 1,
+        ),
         _ => {}
     }
     if backend == Backend::Ossec && reasons.len() == reasons_before && !ossec_shape_supported(c) {
@@ -502,6 +523,15 @@ fn compatible_condition(
             "OSSEC raw combined-log exporter cannot faithfully represent {}",
             condition_name(c)
         ));
+    }
+    if !matches!(
+        c,
+        DefensiveCondition::And { .. }
+            | DefensiveCondition::Or { .. }
+            | DefensiveCondition::Not { .. }
+    ) && reasons.len() == reasons_before
+    {
+        *supported_leaves += 1;
     }
 }
 fn ossec_shape_supported(c: &DefensiveCondition) -> bool {
@@ -518,15 +548,6 @@ fn ossec_shape_supported(c: &DefensiveCondition) -> bool {
             !conditions.is_empty() && conditions.iter().all(ossec_shape_supported)
         }
         _ => false,
-    }
-}
-fn leaf_count(c: &DefensiveCondition) -> usize {
-    match c {
-        DefensiveCondition::And { conditions } | DefensiveCondition::Or { conditions } => {
-            conditions.iter().map(leaf_count).sum()
-        }
-        DefensiveCondition::Not { condition } => leaf_count(condition),
-        _ => 1,
     }
 }
 fn condition_name(c: &DefensiveCondition) -> &'static str {

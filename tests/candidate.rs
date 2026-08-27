@@ -226,6 +226,32 @@ fn replay_does_not_claim_coverage_without_known_request_ids() {
 }
 
 #[test]
+fn compatibility_uses_supported_leaf_count_for_status() {
+    let empty = candidate(DefensiveCondition::And {
+        conditions: Vec::new(),
+    });
+    assert_eq!(
+        compatibility(&empty, Backend::AwsWafJson, TelemetryProfile::AwsWaf).status,
+        CompatibilityStatus::Unsupported
+    );
+
+    let mixed = candidate(DefensiveCondition::And {
+        conditions: vec![
+            DefensiveCondition::UriEquals {
+                value: "/oauth/token".to_owned(),
+            },
+            DefensiveCondition::Ja4Equals {
+                value: "t13d1516h2_111111111111_222222222222".to_owned(),
+            },
+        ],
+    });
+    assert_eq!(
+        compatibility(&mixed, Backend::AwsWafJson, TelemetryProfile::NginxCombined).status,
+        CompatibilityStatus::PartiallySupported
+    );
+}
+
+#[test]
 fn batch_build_excludes_already_blocked_aws_waf_findings() {
     let finding = |action: &str, path: &str| FindingExplanation {
         template_id: "demo-template".to_owned(),
