@@ -814,7 +814,7 @@ fn print_source_ip_summary(findings: &[shenron::production::FindingExplanation],
     let summary = sort_source_ip_summaries(source_ip_summaries(findings));
     println!("\nConnection/client IP triage (private findings only):");
     println!(
-        "Grouping identity: validated-client when a trusted forwarded chain was verified; otherwise observed-peer. A peer may be a CDN, load balancer, NAT, or proxy and is not attacker attribution. A group is marked \"requires investigation\" by breadth (at least {} matching request observations and {} Nuclei template patterns) or depth (at least {} matching request observations, even for one template). This is not an attacker, exploit-success, or compromise determination.",
+        "Grouping identity: validated-client when a trusted forwarded chain was verified; otherwise observed-peer. Validated-client and observed-peer groups are intentionally never merged: when forwarded resolution applies to only some requests, one actual sender may appear under both identities. A peer may be a CDN, load balancer, NAT, or proxy and is not attacker attribution. A group is marked \"requires investigation\" by breadth (at least {} matching request observations and {} Nuclei template patterns) or depth (at least {} matching request observations, even for one template). This is not an attacker, exploit-success, or compromise determination.",
         SOURCE_IP_TRIAGE_MINIMUM_REQUEST_PATTERNS,
         SOURCE_IP_TRIAGE_MINIMUM_TEMPLATE_PATTERNS,
         SOURCE_IP_TRIAGE_MINIMUM_REPEATED_PATTERNS,
