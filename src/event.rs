@@ -44,13 +44,24 @@ impl TrustedProxySet {
     /// configured proxy and the forwarded chain can be validated from right to
     /// left. Invalid or incomplete chains are treated as unavailable.
     pub fn resolve_client_ip(&self, event: &mut WebEvent) {
-        let forwarded_for = event
-            .headers
-            .iter()
-            .find(|header| header.name.eq_ignore_ascii_case("x-forwarded-for"))
-            .map(|header| header.value.as_str());
         event.client_ip =
-            self.validated_forwarded_client_ip(event.source_ip.as_deref(), forwarded_for);
+            self.validated_client_from_headers(event.source_ip.as_deref(), &event.headers);
+    }
+
+    fn validated_client_from_headers(
+        &self,
+        observed_peer: Option<&str>,
+        headers: &[HttpHeader],
+    ) -> Option<String> {
+        // Multiple same-name header fields are equivalent to one comma-joined
+        // field. Preserve observed order before evaluating the chain right to left.
+        let forwarded_for = headers
+            .iter()
+            .filter(|header| header.name.eq_ignore_ascii_case("x-forwarded-for"))
+            .map(|header| header.value.as_str())
+            .collect::<Vec<_>>();
+        let forwarded_for = (!forwarded_for.is_empty()).then(|| forwarded_for.join(", "));
+        self.validated_forwarded_client_ip(observed_peer, forwarded_for.as_deref())
     }
 
     fn validated_forwarded_client_ip(
@@ -315,6 +326,25 @@ mod tests {
                 Some("198.51.100.10"),
                 Some("203.0.113.25, 198.51.100.20"),
             ),
+            Some("203.0.113.25".to_owned())
+        );
+    }
+
+    #[test]
+    fn combines_multiple_forwarded_headers_in_observed_order() {
+        let proxies = proxies(&["198.51.100.0/24"]);
+        let headers = [
+            super::HttpHeader {
+                name: "X-Forwarded-For".to_owned(),
+                value: "203.0.113.25".to_owned(),
+            },
+            super::HttpHeader {
+                name: "x-forwarded-for".to_owned(),
+                value: "198.51.100.20".to_owned(),
+            },
+        ];
+        assert_eq!(
+            proxies.validated_client_from_headers(Some("198.51.100.10"), &headers),
             Some("203.0.113.25".to_owned())
         );
     }
