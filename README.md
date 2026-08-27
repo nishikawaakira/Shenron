@@ -56,9 +56,11 @@ shenron candidate replay --candidate ./candidates/shenron-cve-202x-xxxxx-001.jso
 
 # Emit a review-only COUNT rule and an evidence sidecar. No deployment occurs.
 shenron candidate export --candidate ./candidates/candidate-replayed.json \
-  --backend aws-waf-json --telemetry aws-waf --priority 100 \
+  --backend aws-waf-json --priority 100 \
   --output ./exports/candidate.aws-waf.json
 ```
+
+`candidate compatibility`, `explain`, and `export` use the candidate's recorded telemetry profile by default. Pass `--telemetry` only to deliberately review or export against a different profile.
 
 For OSSEC, the exporter produces a detection XML rule for raw nginx/Apache combined logs; it does not block edge traffic. Unsupported conditions, such as JA4 on standard combined logs, cause export refusal rather than condition removal.
 

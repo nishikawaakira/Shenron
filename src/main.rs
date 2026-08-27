@@ -97,15 +97,17 @@ enum CandidateCommand {
     Compatibility {
         #[arg(long)]
         candidate: PathBuf,
-        #[arg(long, value_enum, default_value_t = InputFormat::Nginx)]
-        telemetry: InputFormat,
+        /// Override the candidate's recorded telemetry profile.
+        #[arg(long, value_enum)]
+        telemetry: Option<InputFormat>,
     },
     /// Display candidate evidence and conditions for human review.
     Explain {
         #[arg(long)]
         candidate: PathBuf,
-        #[arg(long, value_enum, default_value_t = InputFormat::Nginx)]
-        telemetry: InputFormat,
+        /// Override the candidate's recorded telemetry profile.
+        #[arg(long, value_enum)]
+        telemetry: Option<InputFormat>,
     },
     /// Export a review-only configuration and sanitized evidence sidecar. Never deploys it.
     Export {
@@ -115,8 +117,9 @@ enum CandidateCommand {
         backend: CandidateBackend,
         #[arg(long)]
         output: PathBuf,
-        #[arg(long, value_enum, default_value_t = InputFormat::Nginx)]
-        telemetry: InputFormat,
+        /// Override the candidate's recorded telemetry profile.
+        #[arg(long, value_enum)]
+        telemetry: Option<InputFormat>,
         /// Required for AWS WAF/Terraform because Shenron cannot infer WebACL priority.
         #[arg(long)]
         priority: Option<u32>,
@@ -364,13 +367,15 @@ fn main() -> Result<()> {
                 telemetry,
             } => {
                 let candidate = load_candidate(&candidate)?;
+                let telemetry = telemetry
+                    .map(InputFormat::telemetry_profile)
+                    .unwrap_or(candidate.telemetry_profile);
                 for backend in [
                     Backend::AwsWafJson,
                     Backend::TerraformAwsWaf,
                     Backend::Ossec,
                 ] {
-                    let report =
-                        candidate_compatibility(&candidate, backend, telemetry.telemetry_profile());
+                    let report = candidate_compatibility(&candidate, backend, telemetry);
                     println!(
                         "{}: {:?}\n{}",
                         report.backend,
@@ -394,14 +399,16 @@ fn main() -> Result<()> {
                 telemetry,
             } => {
                 let candidate = load_candidate(&candidate)?;
+                let telemetry = telemetry
+                    .map(InputFormat::telemetry_profile)
+                    .unwrap_or(candidate.telemetry_profile);
                 println!("Candidate ID: {}\nCVEs: {}\nCISA KEV: {}\nRecommended initial action: COUNT\nReplay completed: {}\nHistorical requests evaluated: {}\nKnown threat findings: {}\nKnown threat findings matched: {}\nKnown threat findings missed: {}\nOther historical matches: {}\nThreat coverage: {:?}\nTelemetry source: {:?}\nConditions:\n{:#?}\n\nBackend compatibility:", candidate.id, candidate.cves.join(", "), candidate.kev, candidate.evidence.replay_completed, candidate.evidence.historical_requests_evaluated, candidate.evidence.known_threat_findings, candidate.evidence.known_threat_findings_matched, candidate.evidence.known_threat_findings_missed, candidate.evidence.other_historical_matches, candidate.evidence.threat_coverage, candidate.telemetry_profile, candidate.conditions);
                 for backend in [
                     Backend::AwsWafJson,
                     Backend::TerraformAwsWaf,
                     Backend::Ossec,
                 ] {
-                    let report =
-                        candidate_compatibility(&candidate, backend, telemetry.telemetry_profile());
+                    let report = candidate_compatibility(&candidate, backend, telemetry);
                     println!("{}: {:?}", report.backend, report.status);
                     for reason in report.reasons {
                         println!("  - {reason}");
@@ -418,10 +425,13 @@ fn main() -> Result<()> {
                 ossec_rule_id,
             } => {
                 let candidate = load_candidate(&candidate)?;
+                let telemetry = telemetry
+                    .map(InputFormat::telemetry_profile)
+                    .unwrap_or(candidate.telemetry_profile);
                 let report = export_candidate(
                     &candidate,
                     backend.backend(),
-                    telemetry.telemetry_profile(),
+                    telemetry,
                     &output,
                     priority,
                     ossec_rule_id,

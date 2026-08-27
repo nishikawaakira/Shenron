@@ -83,14 +83,16 @@ shenron candidate replay \
 
 # backend ごとの忠実な表現可否を確認します。
 shenron candidate compatibility \
-  --candidate ./candidates/candidate-replayed.json --telemetry aws-waf
+  --candidate ./candidates/candidate-replayed.json
 
 # COUNT の AWS WAF Rule JSON と evidence sidecar を出力します。
 shenron candidate export \
   --candidate ./candidates/candidate-replayed.json \
-  --backend aws-waf-json --telemetry aws-waf --priority 100 \
+  --backend aws-waf-json --priority 100 \
   --output ./exports/candidate.aws-waf.json
 ```
+
+`candidate compatibility`、`explain`、`export` は、指定しなければ candidate に記録された telemetry profile を使います。別 profile での互換性を意図して確認する場合だけ `--telemetry` を指定してください。
 
 `aws-waf-json` と `terraform-aws-waf` は予防的 control の候補です。初期 action は必ず `COUNT` で、Shenron は deploy しません。`ossec` は nginx / Apache combined log の raw representation 向け検知 control であり、WAF rule でも request block 機能でもありません。
 

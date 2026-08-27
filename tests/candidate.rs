@@ -1,5 +1,6 @@
 use std::fs;
 
+use assert_cmd::Command;
 use chrono::Utc;
 use shenron::{
     candidate::{
@@ -144,6 +145,35 @@ fn preventive_export_requires_replay_and_does_not_overwrite() {
         99_001
     )
     .is_err());
+}
+
+#[test]
+fn cli_export_defaults_to_the_candidates_aws_waf_telemetry_profile() {
+    let directory = tempdir().unwrap();
+    let candidate_path = directory.path().join("candidate.json");
+    let output = directory.path().join("candidate.aws-waf.json");
+    let candidate = candidate(DefensiveCondition::Ja4Equals {
+        value: "t13d1516h2_111111111111_222222222222".to_owned(),
+    });
+    fs::write(&candidate_path, serde_json::to_vec(&candidate).unwrap()).unwrap();
+
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "candidate",
+            "export",
+            "--candidate",
+            candidate_path.to_str().unwrap(),
+            "--backend",
+            "aws-waf-json",
+            "--priority",
+            "1",
+            "--output",
+            output.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    assert!(output.exists());
 }
 
 #[test]

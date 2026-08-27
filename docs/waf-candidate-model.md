@@ -15,7 +15,9 @@ shenron candidate build --from-findings ./hunt/private-findings.jsonl \
 shenron candidate replay --candidate ./candidates/shenron-cve-202x-xxxxx-001.json \
   --input ./historical-logs --format aws-waf --output ./candidates/candidate-replayed.json
 
-shenron candidate compatibility --candidate ./candidates/candidate-replayed.json --telemetry aws-waf
+shenron candidate compatibility --candidate ./candidates/candidate-replayed.json
 shenron candidate export --candidate ./candidates/candidate-replayed.json \
   --backend aws-waf-json --priority 100 --output ./exports/candidate.aws-waf.json
 ```
+
+Compatibility, explanation, and export use the candidate's recorded telemetry profile unless `--telemetry` explicitly overrides it. This prevents an AWS WAF candidate from being accidentally evaluated as standard nginx telemetry.
