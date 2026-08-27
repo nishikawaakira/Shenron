@@ -296,10 +296,14 @@ pub fn build_batch_from_findings(
                 .push(finding);
         }
     }
+    let mut cve_sequences = BTreeMap::<String, usize>::new();
     let candidates = groups
         .into_iter()
-        .enumerate()
-        .map(|(index, ((cve, method, path, query), sources))| {
+        .map(|((cve, method, path, query), sources)| {
+            let sequence = cve_sequences
+                .entry(cve.clone())
+                .and_modify(|value| *value += 1)
+                .or_insert(1);
             let timestamps: Vec<_> = sources
                 .iter()
                 .filter_map(|finding| finding.timestamp.as_deref())
@@ -319,7 +323,7 @@ pub fn build_batch_from_findings(
             let known = sources.len() as u64;
             DefensiveCandidate {
                 schema_version: 1,
-                id: format!("shenron-{}-{:03}", cve.to_ascii_lowercase(), index + 1),
+                id: format!("shenron-{}-{:03}", cve.to_ascii_lowercase(), sequence),
                 conditions: DefensiveCondition::And { conditions },
                 source_findings: sources
                     .iter()

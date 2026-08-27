@@ -300,3 +300,47 @@ fn batch_build_excludes_already_blocked_aws_waf_findings() {
     assert_eq!(stats.excluded_blocked_findings, 0);
     assert_eq!(candidates.len(), 1);
 }
+
+#[test]
+fn batch_candidate_ids_are_sequential_within_each_cve() {
+    let finding = |cve: &str, path: &str| FindingExplanation {
+        template_id: format!("template-{cve}"),
+        cves: vec![cve.to_owned()],
+        detectability: Detectability::High,
+        timestamp: None,
+        source_ip: None,
+        host: None,
+        method: Some("GET".to_owned()),
+        uri_path: Some(path.to_owned()),
+        uri_query: None,
+        waf_action: None,
+        waf_rule_id: None,
+        waf_rule_type: None,
+        waf_labels: Vec::new(),
+        waf_non_terminating_rule_ids: Vec::new(),
+        headers: Vec::new(),
+        ja3: None,
+        ja4: None,
+        request_id: None,
+    };
+    let (candidates, _) = build_batch_from_findings(
+        &[
+            finding("CVE-2024-10002", "/only"),
+            finding("CVE-2024-10001", "/second"),
+            finding("CVE-2024-10001", "/first"),
+        ],
+        TelemetryProfile::NginxCombined,
+    );
+    let ids = candidates
+        .iter()
+        .map(|candidate| candidate.id.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        ids,
+        [
+            "shenron-cve-2024-10001-001",
+            "shenron-cve-2024-10001-002",
+            "shenron-cve-2024-10002-001",
+        ]
+    );
+}
