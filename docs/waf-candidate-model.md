@@ -23,6 +23,8 @@ shenron candidate export --candidate ./candidates/candidate-replayed.json \
 
 Replay measures known-threat coverage only by comparing source-finding request IDs with matching historical events. `known_threat_findings_matched` is the number of unique known request IDs seen again; `other_historical_matches` counts matching events with another or no request ID. Coverage is `null` when the source findings have no request IDs, rather than claiming complete coverage.
 
+`threat_coverage` is `known_threat_findings_matched` divided by `known_threat_findings` — the total source-finding count, not the number of request IDs. So a source finding that carries no request ID, or several findings that share one ID, lowers the ratio: those findings cannot be confirmed individually in the replay input and are reported under `known_threat_findings_missed` rather than matched. Read coverage as a conservative lower bound on how many known findings were re-observed, not as a false-positive rate.
+
 Compatibility, explanation, and export use the candidate's recorded telemetry profile unless `--telemetry` explicitly overrides it. This prevents an AWS WAF candidate from being accidentally evaluated as standard nginx telemetry.
 
 Export rejects exact sensitive header names such as `Authorization`, `Cookie`, and API-key headers, plus values containing authorization/cookie/bearer material or a JWT-like value. It does not reject a URI merely because it contains a word such as `token` or `secret`.
