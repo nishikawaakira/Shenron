@@ -114,6 +114,104 @@ fn hunt_uses_validated_matchers_and_separates_sensitive_output() {
             "CVE / Nuclei template mappings: 1 (WAF outcome filter: not-blocked)",
         ))
         .stdout(contains("WAF action: ALLOW"));
+
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "production",
+            "explain",
+            "--findings",
+            private_findings.to_str().unwrap(),
+            "--show-source-ips",
+            "--limit",
+            "1",
+        ])
+        .assert()
+        .success()
+        .stdout(contains("Source IP triage (private findings only):"))
+        .stdout(contains("198.51.100.1"))
+        .stdout(contains("Matching request observations: 1"));
+}
+
+#[test]
+fn explain_triages_only_repeated_distinct_source_behavior() {
+    let directory = tempdir().unwrap();
+    let findings = directory.path().join("private-findings.jsonl");
+    fs::write(
+        &findings,
+        concat!(
+            r#"{"template_id":"template-one","cves":["CVE-2024-10001"],"detectability":"HIGH","timestamp":"2026-08-24T00:00:01+00:00","source_ip":"198.51.100.9","host":"example.test","method":"GET","uri_path":"/one","uri_query":null,"headers":[],"ja3":null,"ja4":null,"waf_action":null,"request_id":null}"#,
+            "\n",
+            r#"{"template_id":"template-two","cves":["CVE-2024-10002"],"detectability":"HIGH","timestamp":"2026-08-24T00:00:02+00:00","source_ip":"198.51.100.9","host":"example.test","method":"GET","uri_path":"/two","uri_query":null,"headers":[],"ja3":null,"ja4":null,"waf_action":null,"request_id":null}"#,
+            "\n",
+            r#"{"template_id":"template-two","cves":["CVE-2024-10002"],"detectability":"HIGH","timestamp":"2026-08-24T00:00:03+00:00","source_ip":"198.51.100.9","host":"example.test","method":"GET","uri_path":"/three","uri_query":null,"headers":[],"ja3":null,"ja4":null,"waf_action":null,"request_id":null}"#,
+            "\n",
+            r#"{"template_id":"template-one","cves":["CVE-2024-10001"],"detectability":"HIGH","timestamp":"2026-08-24T00:00:04+00:00","source_ip":"198.51.100.10","host":"example.test","method":"GET","uri_path":"/one","uri_query":null,"headers":[],"ja3":null,"ja4":null,"waf_action":null,"request_id":null}"#,
+            "\n"
+        ),
+    )
+    .unwrap();
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "production",
+            "explain",
+            "--findings",
+            findings.to_str().unwrap(),
+            "--show-source-ips",
+            "--limit",
+            "0",
+        ])
+        .assert()
+        .success()
+        .stdout(contains(
+            "Sources requiring investigation (repeated CVE-pattern behavior):",
+        ))
+        .stdout(contains(
+            "198.51.100.9\n  Triage basis: breadth\n  Matching request observations: 3",
+        ))
+        .stdout(contains(
+            "198.51.100.10\n  Triage basis: none\n  Matching request observations: 1",
+        ));
+}
+
+#[test]
+fn explain_triages_repeated_single_template_behavior_by_depth() {
+    let directory = tempdir().unwrap();
+    let findings = directory.path().join("private-findings.jsonl");
+    let repeated = (0..10)
+        .map(|second| {
+            format!(
+                r#"{{"template_id":"template-depth","cves":["CVE-2024-10003"],"detectability":"HIGH","timestamp":"2026-08-24T00:00:{second:02}+00:00","source_ip":"198.51.100.11","host":"example.test","method":"GET","uri_path":"/same-path","uri_query":null,"headers":[],"ja3":null,"ja4":null,"waf_action":null,"request_id":null}}"#
+            )
+        })
+        .chain((0..2).map(|second| {
+            format!(
+                r#"{{"template_id":"template-depth","cves":["CVE-2024-10003"],"detectability":"HIGH","timestamp":"2026-08-24T00:01:{second:02}+00:00","source_ip":"198.51.100.12","host":"example.test","method":"GET","uri_path":"/same-path","uri_query":null,"headers":[],"ja3":null,"ja4":null,"waf_action":null,"request_id":null}}"#
+            )
+        }))
+        .collect::<Vec<_>>()
+        .join("\n");
+    fs::write(&findings, repeated).unwrap();
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "production",
+            "explain",
+            "--findings",
+            findings.to_str().unwrap(),
+            "--show-source-ips",
+            "--limit",
+            "0",
+        ])
+        .assert()
+        .success()
+        .stdout(contains(
+            "198.51.100.11\n  Triage basis: depth\n  Matching request observations: 10",
+        ))
+        .stdout(contains(
+            "198.51.100.12\n  Triage basis: none\n  Matching request observations: 2",
+        ));
 }
 
 #[test]

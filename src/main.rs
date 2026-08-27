@@ -174,6 +174,9 @@ enum ProductionCommand {
         /// headers, JA3/JA4, WAF labels/rule IDs, and request ID. Implies --show-request.
         #[arg(long)]
         show_evidence: bool,
+        /// Summarize source IP addresses from the selected private findings.
+        #[arg(long)]
+        show_source_ips: bool,
         /// Maximum individual findings to display. Use 0 to display all findings.
         #[arg(long, default_value_t = 20)]
         limit: usize,
@@ -311,6 +314,7 @@ fn main() -> Result<()> {
                 waf_outcome,
                 show_request,
                 show_evidence,
+                show_source_ips,
                 limit,
             } => {
                 let findings = explain_private_findings(&findings)?;
@@ -325,6 +329,7 @@ fn main() -> Result<()> {
                     &findings,
                     show_request || show_evidence,
                     show_evidence,
+                    show_source_ips,
                     waf_outcome.map(WafOutcomeFilter::label),
                     limit,
                 );
@@ -489,6 +494,7 @@ fn print_explanations(
     findings: &[shenron::production::FindingExplanation],
     show_request: bool,
     show_evidence: bool,
+    show_source_ips: bool,
     waf_outcome_filter: Option<&str>,
     limit: usize,
 ) {
@@ -506,6 +512,9 @@ fn print_explanations(
         None => println!("CVE / Nuclei template mappings: {}", findings.len()),
     }
     print_explanation_summary(findings, limit);
+    if show_source_ips {
+        print_source_ip_summary(findings, limit);
+    }
     if !show_request && !show_evidence {
         println!("Pass --show-request to display individual requests, or --show-evidence to include all locally stored evidence.");
         return;
@@ -666,6 +675,155 @@ fn print_explanation_summary(findings: &[shenron::production::FindingExplanation
     if displayed.len() < summary.len() {
         println!(
             "{} additional CVE/template mappings omitted. Pass --limit 0 to display all.",
+            summary.len() - displayed.len()
+        );
+    }
+}
+
+const SOURCE_IP_TRIAGE_MINIMUM_REQUEST_PATTERNS: usize = 3;
+const SOURCE_IP_TRIAGE_MINIMUM_TEMPLATE_PATTERNS: usize = 2;
+const SOURCE_IP_TRIAGE_MINIMUM_REPEATED_PATTERNS: usize = 10;
+
+#[derive(Default)]
+struct SourceIpSummary {
+    matching_template_records: usize,
+    cves: std::collections::BTreeSet<String>,
+    templates: std::collections::BTreeSet<String>,
+    request_patterns: std::collections::BTreeSet<String>,
+}
+
+impl SourceIpSummary {
+    fn triage_basis(&self) -> Option<&'static str> {
+        let breadth = self.request_patterns.len() >= SOURCE_IP_TRIAGE_MINIMUM_REQUEST_PATTERNS
+            && self.templates.len() >= SOURCE_IP_TRIAGE_MINIMUM_TEMPLATE_PATTERNS;
+        let depth = self.request_patterns.len() >= SOURCE_IP_TRIAGE_MINIMUM_REPEATED_PATTERNS;
+        match (breadth, depth) {
+            (true, true) => Some("breadth + depth"),
+            (true, false) => Some("breadth"),
+            (false, true) => Some("depth"),
+            (false, false) => None,
+        }
+    }
+
+    fn requires_investigation(&self) -> bool {
+        self.triage_basis().is_some()
+    }
+}
+
+fn source_ip_request_pattern(finding: &shenron::production::FindingExplanation) -> String {
+    // A template can produce more than one finding for one logged request. Keep
+    // that from inflating the repeated-behavior test by excluding template/CVE
+    // identity from this key. Older private findings may not have a request ID,
+    // so their available request evidence is used as a deterministic fallback.
+    if let Some(request_id) = &finding.request_id {
+        return format!("request-id:{request_id}");
+    }
+    format!(
+        "timestamp:{:?}\u{1f}host:{:?}\u{1f}method:{:?}\u{1f}path:{:?}\u{1f}query:{:?}",
+        finding.timestamp, finding.host, finding.method, finding.uri_path, finding.uri_query
+    )
+}
+
+fn source_ip_summaries(
+    findings: &[shenron::production::FindingExplanation],
+) -> BTreeMap<String, SourceIpSummary> {
+    let mut summaries = BTreeMap::<String, SourceIpSummary>::new();
+    for finding in findings {
+        let Some(source_ip) = &finding.source_ip else {
+            continue;
+        };
+        let entry = summaries.entry(source_ip.clone()).or_default();
+        entry.matching_template_records += 1;
+        entry.cves.extend(finding.cves.iter().cloned());
+        entry.templates.insert(finding.template_id.clone());
+        entry
+            .request_patterns
+            .insert(source_ip_request_pattern(finding));
+    }
+    summaries
+}
+
+fn sort_source_ip_summaries(
+    summaries: BTreeMap<String, SourceIpSummary>,
+) -> Vec<(String, SourceIpSummary)> {
+    let mut summary = summaries.into_iter().collect::<Vec<_>>();
+    summary.sort_by(|left, right| {
+        right
+            .1
+            .request_patterns
+            .len()
+            .cmp(&left.1.request_patterns.len())
+            .then_with(|| right.1.templates.len().cmp(&left.1.templates.len()))
+            .then_with(|| left.0.cmp(&right.0))
+    });
+    summary
+}
+
+fn print_source_ip_summary(findings: &[shenron::production::FindingExplanation], limit: usize) {
+    let summary = sort_source_ip_summaries(source_ip_summaries(findings));
+    println!("\nSource IP triage (private findings only):");
+    println!(
+        "A source is marked \"requires investigation\" by breadth (at least {} matching request observations and {} Nuclei template patterns) or depth (at least {} matching request observations, even for one template). This is not an attacker, exploit-success, or compromise determination.",
+        SOURCE_IP_TRIAGE_MINIMUM_REQUEST_PATTERNS,
+        SOURCE_IP_TRIAGE_MINIMUM_TEMPLATE_PATTERNS,
+        SOURCE_IP_TRIAGE_MINIMUM_REPEATED_PATTERNS,
+    );
+    let triaged = summary
+        .iter()
+        .filter(|(_, item)| item.requires_investigation())
+        .collect::<Vec<_>>();
+    let displayed_triaged = if limit == 0 {
+        triaged.as_slice()
+    } else {
+        &triaged[..triaged.len().min(limit)]
+    };
+    println!("\nSources requiring investigation (repeated CVE-pattern behavior):");
+    if displayed_triaged.is_empty() {
+        println!("No source IP met the repeated-pattern triage threshold.");
+    } else {
+        for (source_ip, item) in displayed_triaged {
+            println!(
+                "{}\n  Triage basis: {}\n  Matching request observations: {}\n  Distinct Nuclei template patterns: {}\n  Unique CVEs: {}\n  Matched template records: {}",
+                terminal_safe(source_ip),
+                item.triage_basis().expect("triaged source has a basis"),
+                item.request_patterns.len(),
+                item.templates.len(),
+                item.cves.len(),
+                item.matching_template_records,
+            );
+        }
+        if displayed_triaged.len() < triaged.len() {
+            println!(
+                "{} additional triaged source IP addresses omitted. Pass --limit 0 to display all.",
+                triaged.len() - displayed_triaged.len()
+            );
+        }
+    }
+
+    let displayed = if limit == 0 {
+        summary.as_slice()
+    } else {
+        &summary[..summary.len().min(limit)]
+    };
+    println!("\nSource IPs with matching evidence (not an attack determination):");
+    if displayed.is_empty() {
+        println!("No source IP addresses were recorded in the selected findings.");
+        return;
+    }
+    for (source_ip, item) in displayed {
+        println!(
+            "{}\n  Triage basis: {}\n  Matching request observations: {}\n  Distinct Nuclei template patterns: {}\n  Unique CVEs: {}\n  Matched template records: {}",
+            terminal_safe(source_ip),
+            item.triage_basis().unwrap_or("none"),
+            item.request_patterns.len(),
+            item.templates.len(),
+            item.cves.len(),
+            item.matching_template_records,
+        );
+    }
+    if displayed.len() < summary.len() {
+        println!(
+            "{} additional source IP addresses omitted. Pass --limit 0 to display all.",
             summary.len() - displayed.len()
         );
     }
