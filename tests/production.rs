@@ -61,6 +61,16 @@ fn hunt_uses_validated_matchers_and_separates_sensitive_output() {
     assert!(!sanitized.contains("secret-token"));
     assert!(!sanitized.contains("internal.example.test"));
     assert!(!sanitized.contains("198.51.100.1"));
+    let manifest = fs::read_to_string(output.path().join("run-manifest.json")).unwrap();
+    assert!(manifest.contains("\"report_kind\": \"RUN_MANIFEST\""));
+    assert!(manifest.contains("\"shenron_version\": \"0.1.0\""));
+    assert!(manifest.contains("\"telemetry_profile\": \"aws-waf\""));
+    assert!(manifest.contains("\"nuclei_revision\": \"synthetic-fixture-revision\""));
+    assert!(manifest.contains("\"filter_from\": null"));
+    assert!(manifest.contains("\"kind\": \"default-fixed-baseline\""));
+    assert!(!manifest.contains("secret-token"));
+    assert!(!manifest.contains("internal.example.test"));
+    assert!(!manifest.contains("198.51.100.1"));
     let explanations =
         explain_private_findings(&output.path().join("private-findings.jsonl")).unwrap();
     assert_eq!(explanations.len(), 2);

@@ -23,7 +23,7 @@ use shenron::{
     production::{
         explain_private_findings, hunt_with_options as production_hunt,
         inspect_with_trusted_proxies as production_inspect, terminal_safe, HuntOptions,
-        HuntTimeRange, InspectionReport, SanitizedHuntReport,
+        HuntTimeRange, HuntTriagePolicy, InspectionReport, SanitizedHuntReport,
     },
     sigma::load_rules,
     waf::{maybe_gzip_reader, WafLines},
@@ -333,6 +333,7 @@ fn main() -> Result<()> {
                     HuntOptions {
                         time_range: HuntTimeRange { from, to },
                         trusted_proxies: TrustedProxySet::new(trusted_proxy),
+                        triage_policy: HuntTriagePolicy::default(),
                     },
                 )?;
                 let sanitized_path = output.join("sanitized-research.json");

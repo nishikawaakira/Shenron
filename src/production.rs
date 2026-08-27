@@ -57,6 +57,8 @@ pub struct InspectionReport {
 
 #[derive(Debug, Deserialize)]
 struct NucleiReportInput {
+    #[serde(default)]
+    nuclei_revision: Option<String>,
     templates: Vec<NucleiTemplateRecord>,
 }
 
@@ -136,6 +138,31 @@ impl HuntTimeRange {
 pub struct HuntOptions {
     pub time_range: HuntTimeRange,
     pub trusted_proxies: TrustedProxySet,
+    pub triage_policy: HuntTriagePolicy,
+}
+
+/// The fixed baseline triage policy recorded with a hunt. Triage itself runs
+/// later in `production explain`; this metadata fixes the baseline used for
+/// reproducibility without asserting anything about attack attribution.
+#[derive(Debug, Clone, Serialize)]
+pub struct HuntTriagePolicy {
+    pub kind: String,
+    pub breadth_observations: usize,
+    pub breadth_templates: usize,
+    pub depth_observations: usize,
+    pub window: Option<String>,
+}
+
+impl Default for HuntTriagePolicy {
+    fn default() -> Self {
+        Self {
+            kind: "default-fixed-baseline".to_owned(),
+            breadth_observations: 3,
+            breadth_templates: 2,
+            depth_observations: 10,
+            window: None,
+        }
+    }
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -169,6 +196,49 @@ pub struct SanitizedHuntReport {
     pub safety_note: String,
     pub metrics: HuntMetrics,
     pub cve_findings: Vec<SanitizedCveFinding>,
+}
+
+#[derive(Serialize)]
+struct RunManifest {
+    report_kind: &'static str,
+    safety_note: &'static str,
+    shenron_version: &'static str,
+    generated_at: String,
+    telemetry_profile: TelemetryProfile,
+    nuclei_revision: Option<String>,
+    inputs: RunManifestInputs,
+    hunt_parameters: RunManifestParameters,
+    exclusions: RunManifestExclusions,
+}
+
+#[derive(Serialize)]
+struct RunManifestInputs {
+    nuclei_templates: PathProvenance,
+    nuclei_report: PathProvenance,
+    kev_report: PathProvenance,
+    approved_validated_template_count: usize,
+}
+
+#[derive(Serialize)]
+struct PathProvenance {
+    path: String,
+    byte_length: Option<u64>,
+}
+
+#[derive(Serialize)]
+struct RunManifestParameters {
+    filter_from: Option<String>,
+    filter_to: Option<String>,
+    trusted_proxy_networks: Vec<String>,
+    triage_policy: HuntTriagePolicy,
+}
+
+#[derive(Serialize)]
+struct RunManifestExclusions {
+    generic_root_probe_request_evidence: &'static str,
+    requests_outside_time_range: usize,
+    requests_without_timestamp_excluded: usize,
+    parse_errors: usize,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -373,6 +443,7 @@ pub fn hunt(
         HuntOptions {
             time_range,
             trusted_proxies: TrustedProxySet::default(),
+            triage_policy: HuntTriagePolicy::default(),
         },
     )
 }
@@ -389,10 +460,11 @@ pub fn hunt_with_options(
     let HuntOptions {
         time_range,
         trusted_proxies,
+        triage_policy,
     } = options;
     time_range.validate()?;
     ensure_separate_output(input, output)?;
-    let approved_templates = approved_template_ids(nuclei_report)?;
+    let (approved_templates, nuclei_revision) = approved_template_ids(nuclei_report)?;
     let detections = validated_detections(nuclei_templates, &approved_templates);
     if detections.is_empty() {
         bail!("no validated Nuclei detections could be rebuilt from the supplied report and template checkout");
@@ -536,17 +608,31 @@ pub fn hunt_with_options(
             }
         })
         .collect();
-    Ok(SanitizedHuntReport {
+    let report = SanitizedHuntReport {
         report_kind: "SANITIZED_RESEARCH_OUTPUT".to_owned(),
         safety_note: if metrics.waf_outcome_available { "A protection gap means only that a CVE-related request match was not blocked according to available AWS WAF action evidence; it does not establish exploitation success." } else { "WAF outcome is unavailable for this telemetry source, so no protection-gap rate is calculated." }.to_owned() + " No raw request values, source IPs, hostnames, JA3, JA4, or headers are included here.",
         metrics,
         cve_findings,
-    })
+    };
+    write_run_manifest(
+        output,
+        telemetry_profile,
+        nuclei_templates,
+        nuclei_report,
+        kev_report,
+        nuclei_revision,
+        approved_templates.len(),
+        &time_range,
+        &trusted_proxies,
+        triage_policy,
+        &report.metrics,
+    )?;
+    Ok(report)
 }
 
-fn approved_template_ids(path: &Path) -> anyhow::Result<BTreeSet<String>> {
+fn approved_template_ids(path: &Path) -> anyhow::Result<(BTreeSet<String>, Option<String>)> {
     let report: NucleiReportInput = serde_json::from_reader(File::open(path)?)?;
-    Ok(report
+    let template_ids = report
         .templates
         .into_iter()
         .filter(|template| {
@@ -555,7 +641,67 @@ fn approved_template_ids(path: &Path) -> anyhow::Result<BTreeSet<String>> {
                 && !template.cves.is_empty()
         })
         .map(|template| template.template_id)
-        .collect())
+        .collect();
+    Ok((template_ids, report.nuclei_revision))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn write_run_manifest(
+    output: &Path,
+    telemetry_profile: TelemetryProfile,
+    nuclei_templates: &Path,
+    nuclei_report: &Path,
+    kev_report: &Path,
+    nuclei_revision: Option<String>,
+    approved_validated_template_count: usize,
+    time_range: &HuntTimeRange,
+    trusted_proxies: &TrustedProxySet,
+    triage_policy: HuntTriagePolicy,
+    metrics: &HuntMetrics,
+) -> anyhow::Result<()> {
+    let manifest = RunManifest {
+        report_kind: "RUN_MANIFEST",
+        safety_note: "Contains only run configuration, provenance, and aggregate exclusion counts; it does not contain raw request values, IP addresses, hostnames, JA3/JA4, queries, or headers.",
+        shenron_version: env!("CARGO_PKG_VERSION"),
+        generated_at: Utc::now().to_rfc3339(),
+        telemetry_profile,
+        nuclei_revision,
+        inputs: RunManifestInputs {
+            nuclei_templates: path_provenance(nuclei_templates),
+            nuclei_report: path_provenance(nuclei_report),
+            kev_report: path_provenance(kev_report),
+            approved_validated_template_count,
+        },
+        hunt_parameters: RunManifestParameters {
+            filter_from: time_range.from.map(|timestamp| timestamp.to_rfc3339()),
+            filter_to: time_range.to.map(|timestamp| timestamp.to_rfc3339()),
+            trusted_proxy_networks: trusted_proxies.configured_proxy_networks(),
+            triage_policy,
+        },
+        exclusions: RunManifestExclusions {
+            generic_root_probe_request_evidence:
+                "not converted into passive request evidence",
+            requests_outside_time_range: metrics.requests_outside_time_range,
+            requests_without_timestamp_excluded: metrics.requests_without_timestamp_excluded,
+            parse_errors: metrics.parse_errors,
+        },
+    };
+    let path = output.join("run-manifest.json");
+    serde_json::to_writer_pretty(
+        File::create(&path).with_context(|| format!("creating {}", path.display()))?,
+        &manifest,
+    )?;
+    Ok(())
+}
+
+fn path_provenance(path: &Path) -> PathProvenance {
+    PathProvenance {
+        path: path.display().to_string(),
+        byte_length: fs::metadata(path)
+            .ok()
+            .filter(|metadata| metadata.is_file())
+            .map(|metadata| metadata.len()),
+    }
 }
 
 fn kev_cves(path: &Path) -> anyhow::Result<BTreeSet<String>> {

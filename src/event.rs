@@ -1,4 +1,4 @@
-use std::{net::IpAddr, str::FromStr};
+use std::{fmt, net::IpAddr, str::FromStr};
 
 use chrono::{DateTime, Utc};
 use ipnet::IpNet;
@@ -8,6 +8,12 @@ use serde::{Deserialize, Serialize};
 /// address. Parsing accepts either a single IP address or a CIDR network.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrustedProxy(IpNet);
+
+impl fmt::Display for TrustedProxy {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
 
 impl FromStr for TrustedProxy {
     type Err = String;
@@ -38,6 +44,12 @@ pub struct TrustedProxySet {
 impl TrustedProxySet {
     pub fn new(proxies: Vec<TrustedProxy>) -> Self {
         Self { proxies }
+    }
+
+    /// Analyzer-supplied trusted proxy networks, suitable for reproducibility
+    /// metadata. These are configuration values, never recovered client IPs.
+    pub fn configured_proxy_networks(&self) -> Vec<String> {
+        self.proxies.iter().map(ToString::to_string).collect()
     }
 
     /// Populate `WebEvent::client_ip` only when the observed direct peer is a

@@ -1,4 +1,5 @@
 {
+  "nuclei_revision": "synthetic-fixture-revision",
   "templates": [
     {
       "template_id": "synthetic-cve-2024-10001",
