@@ -72,13 +72,19 @@ impl TrustedProxySet {
         if self.proxies.is_empty() {
             return None;
         }
-        let peer = observed_peer?.parse::<IpAddr>().ok()?;
+        let peer = observed_peer?.parse::<IpAddr>().ok()?.to_canonical();
         if !self.contains(peer) {
             return None;
         }
         let chain = forwarded_for?
             .split(',')
-            .map(|value| value.trim().parse::<IpAddr>().ok())
+            .map(|value| {
+                value
+                    .trim()
+                    .parse::<IpAddr>()
+                    .ok()
+                    .map(|address| address.to_canonical())
+            })
             .collect::<Option<Vec<_>>>()?;
         chain
             .into_iter()
@@ -88,6 +94,7 @@ impl TrustedProxySet {
     }
 
     fn contains(&self, address: IpAddr) -> bool {
+        let address = address.to_canonical();
         self.proxies.iter().any(|proxy| proxy.0.contains(&address))
     }
 }
@@ -345,6 +352,18 @@ mod tests {
         ];
         assert_eq!(
             proxies.validated_client_from_headers(Some("198.51.100.10"), &headers),
+            Some("203.0.113.25".to_owned())
+        );
+    }
+
+    #[test]
+    fn resolves_ipv4_mapped_peer_against_an_ipv4_trusted_proxy_network() {
+        let proxies = proxies(&["198.51.100.0/24"]);
+        assert_eq!(
+            proxies.validated_forwarded_client_ip(
+                Some("::ffff:198.51.100.10"),
+                Some("203.0.113.25, 198.51.100.20"),
+            ),
             Some("203.0.113.25".to_owned())
         );
     }
