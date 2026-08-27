@@ -124,6 +124,59 @@ fn malformed_template_is_reported_as_unknown_without_stopping_inventory() {
 }
 
 #[test]
+fn excludes_response_dependent_root_probes_but_keeps_explicit_request_evidence() {
+    let directory = tempdir().unwrap();
+    fs::write(
+        directory.path().join("generic-and-explicit.yaml"),
+        r#"id: synthetic-cve-generic-and-explicit
+info:
+  name: Synthetic Generic and Explicit Endpoint
+  classification:
+    cve-id: CVE-2026-10001
+http:
+  - method: GET
+    path:
+      - '{{BaseURL}}'
+      - '{{BaseURL}}/vulnerable/explicit?probe=1'
+    matchers:
+      - type: word
+        part: body
+        words:
+          - product version
+"#,
+    )
+    .unwrap();
+
+    let report = coverage(directory.path(), "fixture-revision");
+    let template = &report.templates[0];
+    assert_eq!(template.detectability, Detectability::High);
+    assert_eq!(template.conversion_status, ConversionStatus::Supported);
+    assert!(template
+        .detectability_reasons
+        .iter()
+        .any(|reason| reason == "response_dependent_generic_probe_excluded"));
+    // Only the explicit URI is eligible for the shared passive Detection IR.
+    assert_eq!(report.coverage.expected_detections, 1);
+    assert_eq!(report.coverage.correct_detections, 1);
+}
+
+#[test]
+fn refuses_a_response_dependent_generic_root_probe_as_cve_evidence() {
+    let report = inventory(Path::new("tests/fixtures/nuclei"), "fixture-revision");
+    let template = report
+        .templates
+        .iter()
+        .find(|item| item.template_id == "synthetic-cve-2024-10003")
+        .unwrap();
+    assert_eq!(template.detectability, Detectability::Low);
+    assert_eq!(template.conversion_status, ConversionStatus::Unsupported);
+    assert_eq!(
+        template.conversion_reason.as_deref(),
+        Some("response_dependent_generic_probe")
+    );
+}
+
+#[test]
 fn compares_telemetry_without_source_specific_nuclei_rules() {
     let report = compare_telemetry(Path::new("tests/fixtures/nuclei"), "fixture-revision");
     let nginx = report

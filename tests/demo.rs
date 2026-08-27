@@ -3,7 +3,7 @@ use std::{fs, path::Path};
 use shenron::{
     event::TelemetryProfile,
     lab::{generate_for_format, GeneratorConfig, Profile, SyntheticFormat},
-    production::hunt,
+    production::{hunt, HuntTimeRange},
 };
 use tempfile::tempdir;
 
@@ -52,6 +52,7 @@ fn demo_corpora_regenerate_byte_for_byte_and_keep_documented_hunt_counts() {
             Path::new("examples/demo/kev-report.json"),
             &directory.path().join(format!("results-{filename}")),
             telemetry,
+            HuntTimeRange::default(),
         )
         .unwrap();
         assert_eq!(result.metrics.total_requests_analyzed, 11);

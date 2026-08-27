@@ -1,6 +1,7 @@
 //! Shenron's first vertical slice: passive, streaming AWS WAF log hunting.
 
 pub mod access_log;
+pub mod candidate;
 pub mod event;
 pub mod kev;
 pub mod lab;

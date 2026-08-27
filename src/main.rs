@@ -1,20 +1,27 @@
 use std::{
+    collections::BTreeMap,
     fs::File,
     io::{self, Write},
     path::{Path, PathBuf},
 };
 
 use anyhow::{Context, Result};
+use chrono::{DateTime, Utc};
 use clap::{Parser, Subcommand, ValueEnum};
 use walkdir::WalkDir;
 
 use shenron::{
     access_log::{AccessLogFormat, AccessLogLines},
+    candidate::{
+        build_batch_from_findings, compatibility as candidate_compatibility,
+        export as export_candidate, load as load_candidate, replay as replay_candidate,
+        save as save_candidate, save_batch, Backend,
+    },
     event::TelemetryProfile,
     output::{Finding, FindingWriter},
     production::{
         explain_private_findings, hunt as production_hunt, inspect as production_inspect,
-        terminal_safe, InspectionReport, SanitizedHuntReport,
+        terminal_safe, HuntTimeRange, InspectionReport, SanitizedHuntReport,
     },
     sigma::load_rules,
     waf::{maybe_gzip_reader, WafLines},
@@ -57,6 +64,65 @@ enum Command {
         #[command(subcommand)]
         command: ProductionCommand,
     },
+    /// Build, review, and export defensive candidates. Never deploys controls.
+    Candidate {
+        #[command(subcommand)]
+        command: CandidateCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum CandidateCommand {
+    /// Build narrow candidates from private hunt findings. AWS WAF BLOCK findings are excluded.
+    Build {
+        #[arg(long)]
+        from_findings: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
+        #[arg(long, value_enum)]
+        telemetry: InputFormat,
+    },
+    /// Evaluate a candidate against local historical telemetry and write a new candidate file.
+    Replay {
+        #[arg(long)]
+        candidate: PathBuf,
+        #[arg(long)]
+        input: PathBuf,
+        #[arg(long, value_enum)]
+        format: InputFormat,
+        #[arg(long)]
+        output: PathBuf,
+    },
+    /// Explain backend compatibility without writing any configuration.
+    Compatibility {
+        #[arg(long)]
+        candidate: PathBuf,
+        #[arg(long, value_enum, default_value_t = InputFormat::Nginx)]
+        telemetry: InputFormat,
+    },
+    /// Display candidate evidence and conditions for human review.
+    Explain {
+        #[arg(long)]
+        candidate: PathBuf,
+        #[arg(long, value_enum, default_value_t = InputFormat::Nginx)]
+        telemetry: InputFormat,
+    },
+    /// Export a review-only configuration and sanitized evidence sidecar. Never deploys it.
+    Export {
+        #[arg(long)]
+        candidate: PathBuf,
+        #[arg(long, value_enum)]
+        backend: CandidateBackend,
+        #[arg(long)]
+        output: PathBuf,
+        #[arg(long, value_enum, default_value_t = InputFormat::Nginx)]
+        telemetry: InputFormat,
+        /// Required for AWS WAF/Terraform because Shenron cannot infer WebACL priority.
+        #[arg(long)]
+        priority: Option<u32>,
+        #[arg(long, default_value_t = 99_001)]
+        ossec_rule_id: u32,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -84,6 +150,12 @@ enum ProductionCommand {
         kev_report: PathBuf,
         #[arg(long)]
         output: PathBuf,
+        /// Inclusive UTC start time in RFC 3339 format, for example 2026-04-01T00:00:00Z.
+        #[arg(long, value_parser = parse_rfc3339_utc)]
+        from: Option<DateTime<Utc>>,
+        /// Inclusive UTC end time in RFC 3339 format, for example 2026-04-30T23:59:59Z.
+        #[arg(long, value_parser = parse_rfc3339_utc)]
+        to: Option<DateTime<Utc>>,
     },
     /// Show CVE/template mappings from a locally stored private findings file.
     Explain {
@@ -99,6 +171,9 @@ enum ProductionCommand {
         /// headers, JA3/JA4, WAF labels/rule IDs, and request ID. Implies --show-request.
         #[arg(long)]
         show_evidence: bool,
+        /// Maximum individual findings to display. Use 0 to display all findings.
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
     },
 }
 
@@ -107,6 +182,22 @@ enum InputFormat {
     AwsWaf,
     Nginx,
     Apache,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum CandidateBackend {
+    AwsWafJson,
+    TerraformAwsWaf,
+    Ossec,
+}
+impl CandidateBackend {
+    fn backend(self) -> Backend {
+        match self {
+            Self::AwsWafJson => Backend::AwsWafJson,
+            Self::TerraformAwsWaf => Backend::TerraformAwsWaf,
+            Self::Ossec => Backend::Ossec,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -193,6 +284,8 @@ fn main() -> Result<()> {
                 nuclei_report,
                 kev_report,
                 output,
+                from,
+                to,
             } => {
                 let report = production_hunt(
                     &input,
@@ -201,6 +294,7 @@ fn main() -> Result<()> {
                     &kev_report,
                     &output,
                     format.telemetry_profile(),
+                    HuntTimeRange { from, to },
                 )?;
                 let sanitized_path = output.join("sanitized-research.json");
                 serde_json::to_writer_pretty(File::create(&sanitized_path)?, &report)?;
@@ -212,6 +306,7 @@ fn main() -> Result<()> {
                 waf_outcome,
                 show_request,
                 show_evidence,
+                limit,
             } => {
                 let findings = explain_private_findings(&findings)?;
                 let findings = match waf_outcome {
@@ -226,11 +321,122 @@ fn main() -> Result<()> {
                     show_request || show_evidence,
                     show_evidence,
                     waf_outcome.map(WafOutcomeFilter::label),
+                    limit,
                 );
                 Ok(())
             }
         },
+        Command::Candidate { command } => match command {
+            CandidateCommand::Build {
+                from_findings,
+                output,
+                telemetry,
+            } => {
+                let findings = explain_private_findings(&from_findings)?;
+                let (candidates, stats) =
+                    build_batch_from_findings(&findings, telemetry.telemetry_profile());
+                if candidates.is_empty() {
+                    anyhow::bail!(
+                        "no candidate patterns could be built from the supplied findings"
+                    );
+                }
+                save_batch(&candidates, &output)?;
+                println!("Candidates written: {}\nOutput directory: {}\nAWS WAF BLOCK findings excluded: {}\nFindings skipped for missing method/path: {}\nRecommended initial action: COUNT\nHistorical replay: required before preventive export.", stats.candidates, output.display(), stats.excluded_blocked_findings, stats.skipped_incomplete_findings);
+                Ok(())
+            }
+            CandidateCommand::Replay {
+                candidate,
+                input,
+                format,
+                output,
+            } => {
+                let candidate = replay_candidate(
+                    load_candidate(&candidate)?,
+                    &input,
+                    format.telemetry_profile(),
+                )?;
+                save_candidate(&candidate, &output)?;
+                println!("Historical replay complete. Candidate written: {}\nRequests evaluated: {}\nOther historical matches: {}\nPreventive export remains COUNT-only.", output.display(), candidate.evidence.historical_requests_evaluated, candidate.evidence.other_historical_matches);
+                Ok(())
+            }
+            CandidateCommand::Compatibility {
+                candidate,
+                telemetry,
+            } => {
+                let candidate = load_candidate(&candidate)?;
+                for backend in [
+                    Backend::AwsWafJson,
+                    Backend::TerraformAwsWaf,
+                    Backend::Ossec,
+                ] {
+                    let report =
+                        candidate_compatibility(&candidate, backend, telemetry.telemetry_profile());
+                    println!(
+                        "{}: {:?}\n{}",
+                        report.backend,
+                        report.status,
+                        if report.reasons.is_empty() {
+                            "  faithful export available".to_owned()
+                        } else {
+                            report
+                                .reasons
+                                .iter()
+                                .map(|reason| format!("  - {reason}"))
+                                .collect::<Vec<_>>()
+                                .join("\n")
+                        }
+                    );
+                }
+                Ok(())
+            }
+            CandidateCommand::Explain {
+                candidate,
+                telemetry,
+            } => {
+                let candidate = load_candidate(&candidate)?;
+                println!("Candidate ID: {}\nCVEs: {}\nCISA KEV: {}\nRecommended initial action: COUNT\nReplay completed: {}\nHistorical requests evaluated: {}\nKnown threat findings: {}\nKnown threat findings matched: {}\nKnown threat findings missed: {}\nOther historical matches: {}\nThreat coverage: {:?}\nTelemetry source: {:?}\nConditions:\n{:#?}\n\nBackend compatibility:", candidate.id, candidate.cves.join(", "), candidate.kev, candidate.evidence.replay_completed, candidate.evidence.historical_requests_evaluated, candidate.evidence.known_threat_findings, candidate.evidence.known_threat_findings_matched, candidate.evidence.known_threat_findings_missed, candidate.evidence.other_historical_matches, candidate.evidence.threat_coverage, candidate.telemetry_profile, candidate.conditions);
+                for backend in [
+                    Backend::AwsWafJson,
+                    Backend::TerraformAwsWaf,
+                    Backend::Ossec,
+                ] {
+                    let report =
+                        candidate_compatibility(&candidate, backend, telemetry.telemetry_profile());
+                    println!("{}: {:?}", report.backend, report.status);
+                    for reason in report.reasons {
+                        println!("  - {reason}");
+                    }
+                }
+                Ok(())
+            }
+            CandidateCommand::Export {
+                candidate,
+                backend,
+                output,
+                telemetry,
+                priority,
+                ossec_rule_id,
+            } => {
+                let candidate = load_candidate(&candidate)?;
+                let report = export_candidate(
+                    &candidate,
+                    backend.backend(),
+                    telemetry.telemetry_profile(),
+                    &output,
+                    priority,
+                    ossec_rule_id,
+                )?;
+                println!("Exported review-only {} artifact: {}\nEvidence sidecar: {}.evidence.json\nRecommended initial action: COUNT\nNo deployment was performed.", report.backend, output.display(), output.file_stem().and_then(|value| value.to_str()).unwrap_or("candidate"));
+                Ok(())
+            }
+        },
     }
+}
+
+fn parse_rfc3339_utc(value: &str) -> std::result::Result<DateTime<Utc>, String> {
+    DateTime::parse_from_rfc3339(value)
+        .map(|time| time.with_timezone(&Utc))
+        .map_err(|_| format!("invalid RFC 3339 UTC timestamp: {value}"))
 }
 
 fn print_inspection(report: &InspectionReport) {
@@ -248,12 +454,22 @@ fn print_inspection(report: &InspectionReport) {
 
 fn print_hunt(report: &SanitizedHuntReport, sanitized_path: &Path) {
     let metrics = &report.metrics;
+    let time_range = match (&metrics.filter_from, &metrics.filter_to) {
+        (None, None) => "Time filter:                all timestamps".to_owned(),
+        (from, to) => format!(
+            "Time filter:                {} to {}\nOutside range ignored:      {}\nTimestamp missing ignored:  {}",
+            from.as_deref().unwrap_or("beginning"),
+            to.as_deref().unwrap_or("end"),
+            metrics.requests_outside_time_range,
+            metrics.requests_without_timestamp_excluded,
+        ),
+    };
     let outcomes = if metrics.waf_outcome_available {
         format!("Existing WAF outcomes:\nBLOCK:                       {}\nAllowed / not blocked:       {}\nCOUNT-related evidence:      {}\nUnknown:                     {}", metrics.blocked, metrics.allowed_or_not_blocked, metrics.count_related_evidence, metrics.unknown_outcome)
     } else {
         "WAF outcome:                unavailable for this telemetry source".to_owned()
     };
-    println!("Read-only production hunt complete.\nPrivate findings:            written under the supplied output directory\nSanitized report:            {}\n\nRequests analyzed:           {}\nFiles analyzed:              {}\nParse errors:                {}\nCVE exploitation attempts:   {}\nUnique CVEs observed:        {}\nUnique CISA KEVs observed:   {}\nSource clusters:             {}\nJA4 fingerprints:            {}\nHIGH findings:               {}\nMEDIUM findings:             {}\nLOW findings:                {}\n\n{}", sanitized_path.display(), metrics.total_requests_analyzed, metrics.files_analyzed, metrics.parse_errors, metrics.exploitation_attempt_findings, metrics.unique_cves_observed, metrics.unique_cisa_kevs_observed, metrics.unique_source_clusters, metrics.unique_ja4_fingerprints, metrics.high_confidence_findings, metrics.medium_confidence_findings, metrics.low_confidence_findings, outcomes);
+    println!("Read-only production hunt complete.\nPrivate findings:            written under the supplied output directory\nSanitized report:            {}\n\n{}\n\nRequests analyzed:           {}\nFiles analyzed:              {}\nParse errors:                {}\nCVE exploitation attempts:   {}\nUnique CVEs observed:        {}\nUnique CISA KEVs observed:   {}\nSource clusters:             {}\nJA4 fingerprints:            {}\nHIGH findings:               {}\nMEDIUM findings:             {}\nLOW findings:                {}\n\n{}", sanitized_path.display(), time_range, metrics.total_requests_analyzed, metrics.files_analyzed, metrics.parse_errors, metrics.exploitation_attempt_findings, metrics.unique_cves_observed, metrics.unique_cisa_kevs_observed, metrics.unique_source_clusters, metrics.unique_ja4_fingerprints, metrics.high_confidence_findings, metrics.medium_confidence_findings, metrics.low_confidence_findings, outcomes);
 }
 
 fn print_explanations(
@@ -261,7 +477,13 @@ fn print_explanations(
     show_request: bool,
     show_evidence: bool,
     waf_outcome_filter: Option<&str>,
+    limit: usize,
 ) {
+    let displayed = if limit == 0 {
+        findings
+    } else {
+        &findings[..findings.len().min(limit)]
+    };
     match waf_outcome_filter {
         Some(filter) => println!(
             "CVE / Nuclei template mappings: {} (WAF outcome filter: {})",
@@ -270,7 +492,19 @@ fn print_explanations(
         ),
         None => println!("CVE / Nuclei template mappings: {}", findings.len()),
     }
-    for (index, finding) in findings.iter().enumerate() {
+    print_explanation_summary(findings, limit);
+    if !show_request && !show_evidence {
+        println!("Pass --show-request to display individual requests, or --show-evidence to include all locally stored evidence.");
+        return;
+    }
+    if displayed.len() < findings.len() {
+        println!(
+            "\nShowing first {} individual findings; {} omitted. Pass --limit 0 to display all.",
+            displayed.len(),
+            findings.len() - displayed.len()
+        );
+    }
+    for (index, finding) in displayed.iter().enumerate() {
         println!(
             "\n[{}]\nCVE: {}\nNuclei template: {}\nConfidence: {:?}\nTimestamp: {}\nWAF action: {}",
             index + 1,
@@ -383,6 +617,43 @@ fn print_explanations(
                 }
             }
         }
+    }
+}
+
+fn print_explanation_summary(findings: &[shenron::production::FindingExplanation], limit: usize) {
+    let mut counts = BTreeMap::<(String, String), usize>::new();
+    for finding in findings {
+        *counts
+            .entry((finding.cves.join(", "), finding.template_id.clone()))
+            .or_default() += 1;
+    }
+    let mut summary = counts.into_iter().collect::<Vec<_>>();
+    summary.sort_by(|left, right| {
+        right
+            .1
+            .cmp(&left.1)
+            .then_with(|| left.0 .0.cmp(&right.0 .0))
+            .then_with(|| left.0 .1.cmp(&right.0 .1))
+    });
+    let displayed = if limit == 0 {
+        summary.as_slice()
+    } else {
+        &summary[..summary.len().min(limit)]
+    };
+    println!("\nTop CVE / Nuclei template mappings:");
+    for ((cves, template_id), count) in displayed {
+        println!(
+            "{}\n  Nuclei template: {}\n  Matches: {}",
+            terminal_safe(cves),
+            terminal_safe(template_id),
+            count
+        );
+    }
+    if displayed.len() < summary.len() {
+        println!(
+            "{} additional CVE/template mappings omitted. Pass --limit 0 to display all.",
+            summary.len() - displayed.len()
+        );
     }
 }
 

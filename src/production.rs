@@ -77,8 +77,12 @@ struct KevRecord {
 #[derive(Debug, Default, Serialize)]
 pub struct HuntMetrics {
     pub waf_outcome_available: bool,
+    pub filter_from: Option<String>,
+    pub filter_to: Option<String>,
     pub files_analyzed: usize,
     pub total_requests_analyzed: usize,
+    pub requests_outside_time_range: usize,
+    pub requests_without_timestamp_excluded: usize,
     pub parse_errors: usize,
     pub earliest_timestamp: Option<String>,
     pub latest_timestamp: Option<String>,
@@ -94,6 +98,30 @@ pub struct HuntMetrics {
     pub allowed_or_not_blocked: usize,
     pub count_related_evidence: usize,
     pub unknown_outcome: usize,
+}
+
+/// Inclusive UTC interval applied before matching. Events without a timestamp
+/// cannot be placed in an explicitly requested interval and are excluded.
+#[derive(Debug, Clone, Default)]
+pub struct HuntTimeRange {
+    pub from: Option<DateTime<Utc>>,
+    pub to: Option<DateTime<Utc>>,
+}
+
+impl HuntTimeRange {
+    pub fn validate(&self) -> anyhow::Result<()> {
+        if self.from.zip(self.to).is_some_and(|(from, to)| from > to) {
+            bail!("--from must be earlier than or equal to --to");
+        }
+        Ok(())
+    }
+
+    fn includes(&self, timestamp: Option<DateTime<Utc>>) -> bool {
+        let Some(timestamp) = timestamp else {
+            return self.from.is_none() && self.to.is_none();
+        };
+        self.from.is_none_or(|from| timestamp >= from) && self.to.is_none_or(|to| timestamp <= to)
+    }
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -297,7 +325,9 @@ pub fn hunt(
     kev_report: &Path,
     output: &Path,
     telemetry_profile: TelemetryProfile,
+    time_range: HuntTimeRange,
 ) -> anyhow::Result<SanitizedHuntReport> {
+    time_range.validate()?;
     ensure_separate_output(input, output)?;
     let approved_templates = approved_template_ids(nuclei_report)?;
     let detections = validated_detections(nuclei_templates, &approved_templates);
@@ -316,6 +346,8 @@ pub fn hunt(
     let mut metrics = HuntMetrics {
         files_analyzed: files.len(),
         waf_outcome_available: telemetry_profile == TelemetryProfile::AwsWaf,
+        filter_from: time_range.from.map(|time| time.to_rfc3339()),
+        filter_to: time_range.to.map(|time| time.to_rfc3339()),
         ..HuntMetrics::default()
     };
     let mut cves = BTreeMap::<String, CveAccumulator>::new();
@@ -330,6 +362,14 @@ pub fn hunt(
                     return Ok(());
                 }
             };
+            if !time_range.includes(event.timestamp) {
+                if event.timestamp.is_some() {
+                    metrics.requests_outside_time_range += 1;
+                } else {
+                    metrics.requests_without_timestamp_excluded += 1;
+                }
+                return Ok(());
+            }
             metrics.total_requests_analyzed += 1;
             update_time_range(
                 &mut metrics.earliest_timestamp,
@@ -569,7 +609,10 @@ fn update_time_range(
     }
 }
 
-fn input_files(input: &Path, telemetry_profile: TelemetryProfile) -> anyhow::Result<Vec<PathBuf>> {
+pub(crate) fn input_files(
+    input: &Path,
+    telemetry_profile: TelemetryProfile,
+) -> anyhow::Result<Vec<PathBuf>> {
     if input.is_file() {
         return is_input_file(input, telemetry_profile)
             .then(|| vec![input.to_owned()])
@@ -621,7 +664,7 @@ fn event_reader(path: &Path) -> anyhow::Result<Box<dyn Read>> {
     Ok(maybe_gzip_reader(file, is_gzip(path)))
 }
 
-fn stream_events<F>(
+pub(crate) fn stream_events<F>(
     path: &Path,
     telemetry_profile: TelemetryProfile,
     mut callback: F,

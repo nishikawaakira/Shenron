@@ -15,7 +15,7 @@ pub enum LogSource {
     ApacheCombined,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum TelemetryProfile {
     #[default]

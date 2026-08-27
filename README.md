@@ -1,5 +1,7 @@
 # Shenron
 
+[日本語版 README](README.ja.md)
+
 Shenron is a passive Rust threat-hunting engine for historical web telemetry. Its purpose is not merely to alert on suspicious requests: it is designed to help analysts turn public threat intelligence into local evidence and, in later phases, reviewable AWS WAF rule candidates with historical replay.
 
 The MVP implements the first reliable vertical slice: streamed AWS WAF JSONL (including gzip) → normalized `WebEvent` → a deliberately small Sigma subset → JSONL or CSV findings. It supports AWS WAF action, labels, request metadata, and optional JA3/JA4 fingerprints. No network requests, exploit execution, AWS changes, candidate deployment, or automatic BLOCK actions occur.
@@ -9,6 +11,8 @@ It also includes a reproducible synthetic validation loop: project-owned AWS WAF
 Static Nuclei CVE analysis is available through `shenron-lab nuclei inventory` and `shenron-lab nuclei coverage`. It is passive local YAML analysis only; no template is executed or transmitted. See [detectability policy](docs/nuclei-detectability.md) and [Nuclei test generation](docs/nuclei-test-generation.md).
 
 Read-only local AWS WAF production inspection and validated Nuclei hunting are available through `shenron production inspect` and `shenron production hunt`. They separate private investigation evidence from sanitized aggregate output and make no AWS changes. See [production hunting](docs/production-hunting.md).
+
+Defensive candidates can be built from private hunt findings, replayed locally, reviewed for backend compatibility, and exported as COUNT-only AWS WAF JSON, Terraform rule fragments, or OSSEC detection XML. Export never deploys a control and refuses non-faithful translations. See the [candidate model](docs/waf-candidate-model.md).
 
 The same passive scanner supports explicit `--format nginx` and `--format apache` parsing for standard combined logs. Source capabilities remain explicit; see [telemetry capabilities](docs/telemetry-capabilities.md).
 
@@ -35,9 +39,32 @@ This tool identifies known suspicious characteristics in historical web telemetr
 
 Generated AWS WAF conditions are defensive hypotheses. They must be reviewed and validated before deployment.
 
-## Design and roadmap
+## Candidate workflow
 
-The current design, AWS schema research, Sigma research, workflow, candidate safety model, and Nuclei limitation are documented under [docs](docs/). The next requested phase is Sigma compatibility: additional modifiers and condition forms, alias expansion, validation reporting against a pinned SigmaHQ web-rule snapshot, and compatibility tests. Hunting, candidate generation, and historical replay follow only after that foundation is reliable.
+Candidates are deliberately separate from findings. A preventive export requires a local historical replay, fully faithful backend compatibility, and an explicit Web ACL priority. Shenron defaults to COUNT and never calls AWS or runs Terraform.
+
+```bash
+# Build one narrow candidate per CVE/request pattern from local private hunt evidence.
+# For AWS WAF findings, records already terminated with BLOCK are excluded.
+shenron candidate build --from-findings ./hunt/private-findings.jsonl \
+  --telemetry aws-waf --output ./candidates/
+
+# Replay an individual reviewed candidate against the full local historical log set.
+shenron candidate replay --candidate ./candidates/shenron-cve-202x-xxxxx-001.json \
+  --input ./historical-logs --format aws-waf \
+  --output ./candidates/candidate-replayed.json
+
+# Emit a review-only COUNT rule and an evidence sidecar. No deployment occurs.
+shenron candidate export --candidate ./candidates/candidate-replayed.json \
+  --backend aws-waf-json --telemetry aws-waf --priority 100 \
+  --output ./exports/candidate.aws-waf.json
+```
+
+For OSSEC, the exporter produces a detection XML rule for raw nginx/Apache combined logs; it does not block edge traffic. Unsupported conditions, such as JA4 on standard combined logs, cause export refusal rather than condition removal.
+
+## Design
+
+The current design, AWS schema research, Sigma research, workflow, candidate safety model, and Nuclei limitation are documented under [docs](docs/).
 
 ## Development
 

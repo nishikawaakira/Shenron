@@ -1,9 +1,10 @@
 use std::{fs, path::Path};
 
 use assert_cmd::Command;
+use chrono::{DateTime, Utc};
 use predicates::str::contains;
 use shenron::event::TelemetryProfile;
-use shenron::production::{explain_private_findings, hunt, inspect};
+use shenron::production::{explain_private_findings, hunt, inspect, HuntTimeRange};
 use tempfile::tempdir;
 
 #[test]
@@ -32,6 +33,7 @@ fn hunt_uses_validated_matchers_and_separates_sensitive_output() {
         Path::new("tests/fixtures/production/kev-report.json"),
         output.path(),
         TelemetryProfile::AwsWaf,
+        HuntTimeRange::default(),
     )
     .unwrap();
     assert_eq!(report.metrics.total_requests_analyzed, 2);
@@ -98,6 +100,7 @@ fn hunt_uses_validated_matchers_and_separates_sensitive_output() {
             private_findings.to_str().unwrap(),
             "--waf-outcome",
             "not-blocked",
+            "--show-request",
         ])
         .assert()
         .success()
@@ -122,6 +125,7 @@ fn hunt_rejects_an_output_nested_under_immutable_input() {
         Path::new("tests/fixtures/production/kev-report.json"),
         &input.path().join("derived"),
         TelemetryProfile::AwsWaf,
+        HuntTimeRange::default(),
     )
     .is_err());
 }
@@ -150,6 +154,7 @@ fn nginx_hunt_preserves_status_context_without_claiming_a_waf_outcome() {
         &kev_report,
         &directory.path().join("results"),
         TelemetryProfile::NginxCombined,
+        HuntTimeRange::default(),
     )
     .unwrap();
     assert!(!report.metrics.waf_outcome_available);
@@ -158,4 +163,41 @@ fn nginx_hunt_preserves_status_context_without_claiming_a_waf_outcome() {
         Some(&1)
     );
     assert_eq!(report.cve_findings[0].protection_gap_rate, None);
+}
+
+#[test]
+fn hunt_filters_an_inclusive_utc_time_range_before_matching() {
+    let output = tempdir().unwrap();
+    let report = hunt(
+        Path::new("tests/fixtures/production/waf.jsonl"),
+        Path::new("tests/fixtures/nuclei"),
+        Path::new("tests/fixtures/production/nuclei-report.json"),
+        Path::new("tests/fixtures/production/kev-report.json"),
+        output.path(),
+        TelemetryProfile::AwsWaf,
+        HuntTimeRange {
+            from: Some(parse_utc("2025-01-01T00:00:30Z")),
+            to: Some(parse_utc("2025-01-01T00:01:00Z")),
+        },
+    )
+    .unwrap();
+    assert_eq!(report.metrics.total_requests_analyzed, 1);
+    assert_eq!(report.metrics.requests_outside_time_range, 1);
+    assert_eq!(report.metrics.requests_without_timestamp_excluded, 0);
+    assert_eq!(report.metrics.exploitation_attempt_findings, 1);
+    assert_eq!(report.metrics.blocked, 1);
+    assert_eq!(
+        report.metrics.filter_from.as_deref(),
+        Some("2025-01-01T00:00:30+00:00")
+    );
+    assert_eq!(
+        report.metrics.filter_to.as_deref(),
+        Some("2025-01-01T00:01:00+00:00")
+    );
+}
+
+fn parse_utc(value: &str) -> DateTime<Utc> {
+    DateTime::parse_from_rfc3339(value)
+        .unwrap()
+        .with_timezone(&Utc)
 }

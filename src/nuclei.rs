@@ -219,6 +219,10 @@ impl ValidatedNucleiDetection {
 }
 
 impl NucleiDetection {
+    fn is_generic_root_probe(&self) -> bool {
+        self.path == "/" && self.query.is_none() && self.headers.is_empty()
+    }
+
     fn matches(&self, event: &WebEvent) -> bool {
         event
             .method
@@ -866,6 +870,26 @@ fn analyze_value(root: &Value, path: String) -> AnalyzedTemplate {
     } else {
         parse_structured_request(request)
     };
+    // A Nuclei template commonly probes `{{BaseURL}}` to identify a product
+    // from its response before it makes a meaningful CVE assertion. A passive
+    // request log cannot reproduce that response-side confirmation. Do not
+    // turn an otherwise ordinary root request into CVE evidence merely because
+    // it is one alternative in such a template; retain any explicit request
+    // alternatives from the same template.
+    let (parsed, generic_response_probes_excluded) = match parsed {
+        Ok(detections) if features.response_matchers => {
+            let original_count = detections.len();
+            let detections = detections
+                .into_iter()
+                .filter(|detection| !detection.is_generic_root_probe())
+                .collect::<Vec<_>>();
+            let excluded_count = original_count.saturating_sub(detections.len());
+            (Ok(detections), excluded_count)
+        }
+        result => (result, 0),
+    };
+    let only_generic_response_probes =
+        parsed.as_ref().is_ok_and(Vec::is_empty) && generic_response_probes_excluded > 0;
     if let Ok(detections) = &parsed {
         features.headers |= detections
             .iter()
@@ -883,7 +907,12 @@ fn analyze_value(root: &Value, path: String) -> AnalyzedTemplate {
     if features.oast {
         unavailable.push("oast_verification".to_owned());
     }
-    if let Ok(detections) = &parsed {
+    if generic_response_probes_excluded > 0 {
+        reasons.push("response_dependent_generic_probe_excluded".to_owned());
+    }
+    if only_generic_response_probes {
+        reasons.push("response_dependent_generic_probe".to_owned());
+    } else if let Ok(detections) = &parsed {
         observable.push("method".to_owned());
         observable.push("uri_path".to_owned());
         if detections.iter().any(|detection| detection.query.is_some()) {
@@ -916,6 +945,11 @@ fn analyze_value(root: &Value, path: String) -> AnalyzedTemplate {
         )
     } else if features.oast && parsed.is_err() {
         (Detectability::Unknown, Some("oast_required".to_owned()))
+    } else if only_generic_response_probes {
+        (
+            Detectability::Low,
+            Some("response_dependent_generic_probe".to_owned()),
+        )
     } else if parsed.is_err() {
         (
             Detectability::Unknown,
