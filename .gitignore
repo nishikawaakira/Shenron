@@ -1,2 +1,8 @@
 /target/
 .DS_Store
+/arkaya/
+/private-results/
+*-hunt/
+*.log
+private-findings.jsonl
+sanitized-research.json
