@@ -136,6 +136,17 @@ fn coverage_runs_passive_exact_and_mutation_validation_for_supported_cves() {
     assert_eq!(report.coverage.mutation_failures, 0);
     assert_eq!(report.coverage.near_miss_cases, 4);
     assert_eq!(report.coverage.near_miss_failures, 0);
+    assert_eq!(report.coverage.cve_templates, 8);
+    assert_eq!(report.coverage.http_cve_templates, 8);
+    assert_eq!(report.coverage.supported_request_ir_templates, 3);
+    assert_eq!(report.coverage.supported_request_ir_detections, 4);
+    assert_eq!(report.coverage.request_specific_detections, 3);
+    assert_eq!(report.coverage.response_unverified_detections, 1);
+    assert_eq!(
+        report.coverage.request_specific_detections
+            + report.coverage.response_unverified_detections,
+        report.coverage.supported_request_ir_detections
+    );
 }
 
 #[test]

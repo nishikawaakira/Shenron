@@ -103,6 +103,16 @@ pub struct InventoryMetrics {
 
 #[derive(Debug, Default, Serialize)]
 pub struct CoverageMetrics {
+    /// Request-side capability funnel. These counts describe the template
+    /// corpus and converted IR only; they do not estimate field precision,
+    /// exploitation, compromise, or a vulnerable product's presence.
+    pub cve_templates: usize,
+    pub http_cve_templates: usize,
+    pub supported_request_ir_templates: usize,
+    /// One template can yield multiple literal request alternatives.
+    pub supported_request_ir_detections: usize,
+    pub request_specific_detections: usize,
+    pub response_unverified_detections: usize,
     pub high: usize,
     pub medium: usize,
     pub low: usize,
@@ -449,9 +459,11 @@ pub fn coverage(templates: &Path, nuclei_revision: &str) -> CoverageReport {
         inventory_metrics.templates_scanned += 1;
         if !item.analysis.cves.is_empty() {
             inventory_metrics.cve_templates += 1;
+            coverage.cve_templates += 1;
         }
         if !item.analysis.cves.is_empty() && item.analysis.protocol == "http" {
             inventory_metrics.http_cve_templates += 1;
+            coverage.http_cve_templates += 1;
         }
         count_features(&mut inventory_metrics, &item.features);
         count_values(&mut reasons, &item.analysis.detectability_reasons);
@@ -483,6 +495,24 @@ pub fn coverage(templates: &Path, nuclei_revision: &str) -> CoverageReport {
                 item.analysis.conversion_reason = Some("detection_ir_error".to_owned());
                 *gaps.entry("detection_ir_error".to_owned()).or_default() += 1;
                 continue;
+            }
+            coverage.supported_request_ir_templates += 1;
+            for detection in &item.detections {
+                let validated = ValidatedNucleiDetection {
+                    template_id: item.analysis.template_id.clone(),
+                    cves: item.analysis.cves.clone(),
+                    detectability: item.analysis.detectability,
+                    detection: detection.clone(),
+                };
+                coverage.supported_request_ir_detections += 1;
+                match validated.request_specificity() {
+                    RequestSpecificity::RequestSpecific => {
+                        coverage.request_specific_detections += 1
+                    }
+                    RequestSpecificity::ResponseUnverified => {
+                        coverage.response_unverified_detections += 1
+                    }
+                }
             }
             coverage.templates_tested += 1;
             let mut exact_passed = true;
