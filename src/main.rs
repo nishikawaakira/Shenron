@@ -189,6 +189,15 @@ enum ProductionCommand {
         /// Summarize source IP addresses from the selected private findings.
         #[arg(long)]
         show_source_ips: bool,
+        /// Matching observations required for breadth-based triage (default: 3).
+        #[arg(long, value_parser = parse_positive_usize)]
+        triage_breadth_observations: Option<usize>,
+        /// Distinct templates required for breadth-based triage (default: 2).
+        #[arg(long, value_parser = parse_positive_usize)]
+        triage_breadth_templates: Option<usize>,
+        /// Matching observations required for depth-based triage (default: 10).
+        #[arg(long, value_parser = parse_positive_usize)]
+        triage_depth_observations: Option<usize>,
         /// Maximum individual findings to display. Use 0 to display all findings.
         #[arg(long, default_value_t = 20)]
         limit: usize,
@@ -333,6 +342,9 @@ fn main() -> Result<()> {
                 show_request,
                 show_evidence,
                 show_source_ips,
+                triage_breadth_observations,
+                triage_breadth_templates,
+                triage_depth_observations,
                 limit,
             } => {
                 let findings = explain_private_findings(&findings)?;
@@ -350,6 +362,11 @@ fn main() -> Result<()> {
                     show_source_ips,
                     waf_outcome.map(WafOutcomeFilter::label),
                     limit,
+                    TriagePolicy::new(
+                        triage_breadth_observations,
+                        triage_breadth_templates,
+                        triage_depth_observations,
+                    ),
                 );
                 Ok(())
             }
@@ -479,6 +496,14 @@ fn parse_rfc3339_utc(value: &str) -> std::result::Result<DateTime<Utc>, String> 
         .map_err(|_| format!("invalid RFC 3339 UTC timestamp: {value}"))
 }
 
+fn parse_positive_usize(value: &str) -> std::result::Result<usize, String> {
+    value
+        .parse::<usize>()
+        .ok()
+        .filter(|value| *value > 0)
+        .ok_or_else(|| format!("expected a positive integer, got {value:?}"))
+}
+
 fn print_inspection(report: &InspectionReport) {
     let fields = &report.fields_available;
     let capabilities = report.telemetry_capabilities;
@@ -519,6 +544,7 @@ fn print_explanations(
     show_source_ips: bool,
     waf_outcome_filter: Option<&str>,
     limit: usize,
+    triage_policy: TriagePolicy,
 ) {
     let displayed = if limit == 0 {
         findings
@@ -535,7 +561,7 @@ fn print_explanations(
     }
     print_explanation_summary(findings, limit);
     if show_source_ips {
-        print_source_ip_summary(findings, limit);
+        print_source_ip_summary(findings, limit, triage_policy);
     }
     if !show_request && !show_evidence {
         println!("Pass --show-request to display individual requests, or --show-evidence to include all locally stored evidence.");
@@ -713,6 +739,36 @@ const SOURCE_IP_TRIAGE_MINIMUM_REQUEST_PATTERNS: usize = 3;
 const SOURCE_IP_TRIAGE_MINIMUM_TEMPLATE_PATTERNS: usize = 2;
 const SOURCE_IP_TRIAGE_MINIMUM_REPEATED_PATTERNS: usize = 10;
 
+#[derive(Clone, Copy)]
+struct TriagePolicy {
+    breadth_observations: usize,
+    breadth_templates: usize,
+    depth_observations: usize,
+}
+
+impl TriagePolicy {
+    fn new(
+        breadth_observations: Option<usize>,
+        breadth_templates: Option<usize>,
+        depth_observations: Option<usize>,
+    ) -> Self {
+        Self {
+            breadth_observations: breadth_observations
+                .unwrap_or(SOURCE_IP_TRIAGE_MINIMUM_REQUEST_PATTERNS),
+            breadth_templates: breadth_templates
+                .unwrap_or(SOURCE_IP_TRIAGE_MINIMUM_TEMPLATE_PATTERNS),
+            depth_observations: depth_observations
+                .unwrap_or(SOURCE_IP_TRIAGE_MINIMUM_REPEATED_PATTERNS),
+        }
+    }
+
+    fn is_default(self) -> bool {
+        self.breadth_observations == SOURCE_IP_TRIAGE_MINIMUM_REQUEST_PATTERNS
+            && self.breadth_templates == SOURCE_IP_TRIAGE_MINIMUM_TEMPLATE_PATTERNS
+            && self.depth_observations == SOURCE_IP_TRIAGE_MINIMUM_REPEATED_PATTERNS
+    }
+}
+
 #[derive(Default)]
 struct SourceIpSummary {
     matching_template_records: usize,
@@ -737,10 +793,10 @@ impl GroupingIdentity {
 }
 
 impl SourceIpSummary {
-    fn triage_basis(&self) -> Option<&'static str> {
-        let breadth = self.request_patterns.len() >= SOURCE_IP_TRIAGE_MINIMUM_REQUEST_PATTERNS
-            && self.templates.len() >= SOURCE_IP_TRIAGE_MINIMUM_TEMPLATE_PATTERNS;
-        let depth = self.request_patterns.len() >= SOURCE_IP_TRIAGE_MINIMUM_REPEATED_PATTERNS;
+    fn triage_basis(&self, policy: TriagePolicy) -> Option<&'static str> {
+        let breadth = self.request_patterns.len() >= policy.breadth_observations
+            && self.templates.len() >= policy.breadth_templates;
+        let depth = self.request_patterns.len() >= policy.depth_observations;
         match (breadth, depth) {
             (true, true) => Some("breadth + depth"),
             (true, false) => Some("breadth"),
@@ -749,8 +805,8 @@ impl SourceIpSummary {
         }
     }
 
-    fn requires_investigation(&self) -> bool {
-        self.triage_basis().is_some()
+    fn requires_investigation(&self, policy: TriagePolicy) -> bool {
+        self.triage_basis(policy).is_some()
     }
 }
 
@@ -810,18 +866,29 @@ fn sort_source_ip_summaries(
     summary
 }
 
-fn print_source_ip_summary(findings: &[shenron::production::FindingExplanation], limit: usize) {
+fn print_source_ip_summary(
+    findings: &[shenron::production::FindingExplanation],
+    limit: usize,
+    policy: TriagePolicy,
+) {
     let summary = sort_source_ip_summaries(source_ip_summaries(findings));
     println!("\nConnection/client IP triage (private findings only):");
+    if policy.is_default() {
+        println!("Triage policy: default fixed baseline");
+    } else {
+        println!(
+            "Triage policy: CUSTOM (non-default; not comparable to the fixed research baseline)"
+        );
+    }
     println!(
         "Grouping identity: validated-client when a trusted forwarded chain was verified; otherwise observed-peer. Validated-client and observed-peer groups are intentionally never merged: when forwarded resolution applies to only some requests, one actual sender may appear under both identities. A peer may be a CDN, load balancer, NAT, or proxy and is not attacker attribution. A group is marked \"requires investigation\" by breadth (at least {} matching request observations and {} Nuclei template patterns) or depth (at least {} matching request observations, even for one template). This is not an attacker, exploit-success, or compromise determination.",
-        SOURCE_IP_TRIAGE_MINIMUM_REQUEST_PATTERNS,
-        SOURCE_IP_TRIAGE_MINIMUM_TEMPLATE_PATTERNS,
-        SOURCE_IP_TRIAGE_MINIMUM_REPEATED_PATTERNS,
+        policy.breadth_observations,
+        policy.breadth_templates,
+        policy.depth_observations,
     );
     let triaged = summary
         .iter()
-        .filter(|(_, item)| item.requires_investigation())
+        .filter(|(_, item)| item.requires_investigation(policy))
         .collect::<Vec<_>>();
     let displayed_triaged = if limit == 0 {
         triaged.as_slice()
@@ -837,7 +904,7 @@ fn print_source_ip_summary(findings: &[shenron::production::FindingExplanation],
                 "{}\n  Grouping identity: {}\n  Triage basis: {}\n  Matching request observations: {}\n  Distinct Nuclei template patterns: {}\n  Unique CVEs: {}\n  Matched template records: {}",
                 terminal_safe(address),
                 identity.label(),
-                item.triage_basis().expect("triaged source has a basis"),
+                item.triage_basis(policy).expect("triaged source has a basis"),
                 item.request_patterns.len(),
                 item.templates.len(),
                 item.cves.len(),
@@ -867,7 +934,7 @@ fn print_source_ip_summary(findings: &[shenron::production::FindingExplanation],
             "{}\n  Grouping identity: {}\n  Triage basis: {}\n  Matching request observations: {}\n  Distinct Nuclei template patterns: {}\n  Unique CVEs: {}\n  Matched template records: {}",
             terminal_safe(address),
             identity.label(),
-            item.triage_basis().unwrap_or("none"),
+            item.triage_basis(policy).unwrap_or("none"),
             item.request_patterns.len(),
             item.templates.len(),
             item.cves.len(),

@@ -135,6 +135,7 @@ fn hunt_uses_validated_matchers_and_separates_sensitive_output() {
         .stdout(contains(
             "Connection/client IP triage (private findings only):",
         ))
+        .stdout(contains("Triage policy: default fixed baseline"))
         .stdout(contains("198.51.100.1"))
         .stdout(contains("Grouping identity: observed-peer"))
         .stdout(contains("Matching request observations: 1"));
@@ -199,6 +200,70 @@ fn explain_triages_only_repeated_distinct_source_behavior() {
         ))
         .stdout(contains(
             "198.51.100.10\n  Grouping identity: observed-peer\n  Triage basis: none\n  Matching request observations: 1",
+        ));
+}
+
+#[test]
+fn explain_allows_explicit_non_default_triage_thresholds() {
+    let directory = tempdir().unwrap();
+    let findings = directory.path().join("private-findings.jsonl");
+    fs::write(
+        &findings,
+        concat!(
+            r#"{"template_id":"template-one","cves":["CVE-2024-10001"],"detectability":"HIGH","timestamp":"2026-08-24T00:00:01+00:00","source_ip":"198.51.100.9","host":"example.test","method":"GET","uri_path":"/one","uri_query":null,"headers":[],"ja3":null,"ja4":null,"waf_action":null,"request_id":null}"#,
+            "\n",
+            r#"{"template_id":"template-two","cves":["CVE-2024-10002"],"detectability":"HIGH","timestamp":"2026-08-24T00:00:02+00:00","source_ip":"198.51.100.9","host":"example.test","method":"GET","uri_path":"/two","uri_query":null,"headers":[],"ja3":null,"ja4":null,"waf_action":null,"request_id":null}"#,
+            "\n",
+            r#"{"template_id":"template-two","cves":["CVE-2024-10002"],"detectability":"HIGH","timestamp":"2026-08-24T00:00:03+00:00","source_ip":"198.51.100.9","host":"example.test","method":"GET","uri_path":"/three","uri_query":null,"headers":[],"ja3":null,"ja4":null,"waf_action":null,"request_id":null}"#,
+            "\n",
+            r#"{"template_id":"template-one","cves":["CVE-2024-10001"],"detectability":"HIGH","timestamp":"2026-08-24T00:00:04+00:00","source_ip":"198.51.100.10","host":"example.test","method":"GET","uri_path":"/one","uri_query":null,"headers":[],"ja3":null,"ja4":null,"waf_action":null,"request_id":null}"#,
+            "\n"
+        ),
+    )
+    .unwrap();
+
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "production",
+            "explain",
+            "--findings",
+            findings.to_str().unwrap(),
+            "--show-source-ips",
+            "--triage-breadth-observations",
+            "4",
+            "--triage-depth-observations",
+            "20",
+        ])
+        .assert()
+        .success()
+        .stdout(contains(
+            "Triage policy: CUSTOM (non-default; not comparable to the fixed research baseline)",
+        ))
+        .stdout(contains(
+            "No IP group met the repeated-pattern triage threshold.",
+        ));
+
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "production",
+            "explain",
+            "--findings",
+            findings.to_str().unwrap(),
+            "--show-source-ips",
+            "--triage-breadth-observations",
+            "1",
+            "--triage-breadth-templates",
+            "1",
+        ])
+        .assert()
+        .success()
+        .stdout(contains(
+            "Triage policy: CUSTOM (non-default; not comparable to the fixed research baseline)",
+        ))
+        .stdout(contains(
+            "198.51.100.10\n  Grouping identity: observed-peer\n  Triage basis: breadth",
         ));
 }
 
