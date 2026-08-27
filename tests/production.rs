@@ -268,6 +268,105 @@ fn explain_allows_explicit_non_default_triage_thresholds() {
 }
 
 #[test]
+fn explain_windowed_triage_distinguishes_bursts_and_excludes_undated_records() {
+    let directory = tempdir().unwrap();
+    let findings = directory.path().join("private-findings.jsonl");
+    let record = |source_ip: &str, timestamp: Option<&str>, template: &str, path: &str| {
+        format!(
+            r#"{{"template_id":"{template}","cves":["CVE-2024-10001"],"detectability":"HIGH","timestamp":{},"source_ip":"{source_ip}","host":"example.test","method":"GET","uri_path":"{path}","uri_query":null,"headers":[],"ja3":null,"ja4":null,"waf_action":null,"request_id":null}}"#,
+            timestamp
+                .map(|value| format!("\"{value}\""))
+                .unwrap_or_else(|| "null".to_owned()),
+        )
+    };
+    let records = [
+        record(
+            "198.51.100.9",
+            Some("2026-08-24T00:00:00+00:00"),
+            "template-one",
+            "/one",
+        ),
+        record(
+            "198.51.100.9",
+            Some("2026-08-24T00:01:00+00:00"),
+            "template-two",
+            "/two",
+        ),
+        record(
+            "198.51.100.9",
+            Some("2026-08-24T01:00:00+00:00"),
+            "template-two",
+            "/three",
+        ),
+        record("198.51.100.9", None, "template-one", "/undated"),
+        record(
+            "198.51.100.10",
+            Some("2026-08-24T00:00:00+00:00"),
+            "template-one",
+            "/one",
+        ),
+        record(
+            "198.51.100.10",
+            Some("2026-08-24T00:01:00+00:00"),
+            "template-two",
+            "/two",
+        ),
+        record(
+            "198.51.100.10",
+            Some("2026-08-24T00:02:00+00:00"),
+            "template-two",
+            "/three",
+        ),
+    ]
+    .join("\n");
+    fs::write(&findings, records).unwrap();
+
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "production",
+            "explain",
+            "--findings",
+            findings.to_str().unwrap(),
+            "--show-source-ips",
+            "--triage-window",
+            "10m",
+            "--limit",
+            "0",
+        ])
+        .assert()
+        .success()
+        .stdout(contains(
+            "Triage policy: CUSTOM (non-default; not comparable to the fixed research baseline)",
+        ))
+        .stdout(contains("Triage window: 10m sliding"))
+        .stdout(contains(
+            "198.51.100.10\n  Grouping identity: observed-peer\n  Triage basis: windowed breadth",
+        ))
+        .stdout(contains(
+            "198.51.100.9\n  Grouping identity: observed-peer\n  Triage basis: none",
+        ))
+        .stdout(contains(
+            "Undated observations excluded from windowed triage: 1",
+        ));
+
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "production",
+            "explain",
+            "--findings",
+            findings.to_str().unwrap(),
+            "--show-source-ips",
+            "--triage-window",
+            "12x",
+        ])
+        .assert()
+        .failure()
+        .stderr(contains("invalid duration"));
+}
+
+#[test]
 fn explain_triages_repeated_single_template_behavior_by_depth() {
     let directory = tempdir().unwrap();
     let findings = directory.path().join("private-findings.jsonl");

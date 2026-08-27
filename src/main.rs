@@ -3,6 +3,7 @@ use std::{
     fs::File,
     io::{self, Write},
     path::{Path, PathBuf},
+    time::Duration,
 };
 
 use anyhow::{Context, Result};
@@ -198,6 +199,9 @@ enum ProductionCommand {
         /// Matching observations required for depth-based triage (default: 10).
         #[arg(long, value_parser = parse_positive_usize)]
         triage_depth_observations: Option<usize>,
+        /// Evaluate repeated behavior within this sliding duration (for example 10m, 1h, or 2d).
+        #[arg(long, value_parser = parse_triage_duration)]
+        triage_window: Option<Duration>,
         /// Maximum individual findings to display. Use 0 to display all findings.
         #[arg(long, default_value_t = 20)]
         limit: usize,
@@ -345,6 +349,7 @@ fn main() -> Result<()> {
                 triage_breadth_observations,
                 triage_breadth_templates,
                 triage_depth_observations,
+                triage_window,
                 limit,
             } => {
                 let findings = explain_private_findings(&findings)?;
@@ -366,6 +371,7 @@ fn main() -> Result<()> {
                         triage_breadth_observations,
                         triage_breadth_templates,
                         triage_depth_observations,
+                        triage_window,
                     ),
                 );
                 Ok(())
@@ -502,6 +508,35 @@ fn parse_positive_usize(value: &str) -> std::result::Result<usize, String> {
         .ok()
         .filter(|value| *value > 0)
         .ok_or_else(|| format!("expected a positive integer, got {value:?}"))
+}
+
+fn parse_triage_duration(value: &str) -> std::result::Result<Duration, String> {
+    if value.len() < 2 {
+        return Err(format!(
+            "invalid duration {value:?}; use a positive integer with s, m, h, or d"
+        ));
+    }
+    let (amount, suffix) = value.split_at(value.len() - 1);
+    let multiplier = match suffix {
+        "s" => 1,
+        "m" => 60,
+        "h" => 60 * 60,
+        "d" => 24 * 60 * 60,
+        _ => {
+            return Err(format!(
+                "invalid duration {value:?}; use a positive integer with s, m, h, or d"
+            ))
+        }
+    };
+    let seconds = amount
+        .parse::<u64>()
+        .ok()
+        .filter(|amount| *amount > 0)
+        .and_then(|amount| amount.checked_mul(multiplier))
+        .ok_or_else(|| {
+            format!("invalid duration {value:?}; use a positive integer with s, m, h, or d")
+        })?;
+    Ok(Duration::from_secs(seconds))
 }
 
 fn print_inspection(report: &InspectionReport) {
@@ -744,6 +779,7 @@ struct TriagePolicy {
     breadth_observations: usize,
     breadth_templates: usize,
     depth_observations: usize,
+    window: Option<Duration>,
 }
 
 impl TriagePolicy {
@@ -751,6 +787,7 @@ impl TriagePolicy {
         breadth_observations: Option<usize>,
         breadth_templates: Option<usize>,
         depth_observations: Option<usize>,
+        window: Option<Duration>,
     ) -> Self {
         Self {
             breadth_observations: breadth_observations
@@ -759,6 +796,7 @@ impl TriagePolicy {
                 .unwrap_or(SOURCE_IP_TRIAGE_MINIMUM_TEMPLATE_PATTERNS),
             depth_observations: depth_observations
                 .unwrap_or(SOURCE_IP_TRIAGE_MINIMUM_REPEATED_PATTERNS),
+            window,
         }
     }
 
@@ -766,6 +804,7 @@ impl TriagePolicy {
         self.breadth_observations == SOURCE_IP_TRIAGE_MINIMUM_REQUEST_PATTERNS
             && self.breadth_templates == SOURCE_IP_TRIAGE_MINIMUM_TEMPLATE_PATTERNS
             && self.depth_observations == SOURCE_IP_TRIAGE_MINIMUM_REPEATED_PATTERNS
+            && self.window.is_none()
     }
 }
 
@@ -775,6 +814,14 @@ struct SourceIpSummary {
     cves: std::collections::BTreeSet<String>,
     templates: std::collections::BTreeSet<String>,
     request_patterns: std::collections::BTreeSet<String>,
+    observations: Vec<TriageObservation>,
+}
+
+#[derive(Clone)]
+struct TriageObservation {
+    timestamp: Option<DateTime<Utc>>,
+    request_pattern: String,
+    template_id: String,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -794,6 +841,9 @@ impl GroupingIdentity {
 
 impl SourceIpSummary {
     fn triage_basis(&self, policy: TriagePolicy) -> Option<&'static str> {
+        if policy.window.is_some() {
+            return self.windowed_triage_basis(policy);
+        }
         let breadth = self.request_patterns.len() >= policy.breadth_observations
             && self.templates.len() >= policy.breadth_templates;
         let depth = self.request_patterns.len() >= policy.depth_observations;
@@ -807,6 +857,72 @@ impl SourceIpSummary {
 
     fn requires_investigation(&self, policy: TriagePolicy) -> bool {
         self.triage_basis(policy).is_some()
+    }
+
+    fn undated_observations(&self) -> usize {
+        self.observations
+            .iter()
+            .filter(|observation| observation.timestamp.is_none())
+            .count()
+    }
+
+    fn windowed_triage_basis(&self, policy: TriagePolicy) -> Option<&'static str> {
+        let window = chrono::Duration::from_std(policy.window?)
+            .expect("supported CLI durations fit chrono's duration range");
+        let mut observations = self
+            .observations
+            .iter()
+            .filter_map(|observation| {
+                observation
+                    .timestamp
+                    .map(|timestamp| (timestamp, observation))
+            })
+            .collect::<Vec<_>>();
+        observations.sort_by_key(|(timestamp, _)| *timestamp);
+
+        let mut start = 0;
+        let mut patterns = BTreeMap::<&str, usize>::new();
+        let mut templates = BTreeMap::<&str, usize>::new();
+        let mut saw_breadth = false;
+        let mut saw_depth = false;
+        for end in 0..observations.len() {
+            let (_, observation) = observations[end];
+            *patterns
+                .entry(observation.request_pattern.as_str())
+                .or_default() += 1;
+            *templates
+                .entry(observation.template_id.as_str())
+                .or_default() += 1;
+            while observations[end]
+                .0
+                .signed_duration_since(observations[start].0)
+                > window
+            {
+                let (_, observation) = observations[start];
+                decrement(&mut patterns, observation.request_pattern.as_str());
+                decrement(&mut templates, observation.template_id.as_str());
+                start += 1;
+            }
+            saw_breadth |= patterns.len() >= policy.breadth_observations
+                && templates.len() >= policy.breadth_templates;
+            saw_depth |= patterns.len() >= policy.depth_observations;
+        }
+        match (saw_breadth, saw_depth) {
+            (true, true) => Some("windowed breadth + depth"),
+            (true, false) => Some("windowed breadth"),
+            (false, true) => Some("windowed depth"),
+            (false, false) => None,
+        }
+    }
+}
+
+fn decrement(values: &mut BTreeMap<&str, usize>, value: &str) {
+    let count = values
+        .get_mut(value)
+        .expect("window contains each tracked observation");
+    *count -= 1;
+    if *count == 0 {
+        values.remove(value);
     }
 }
 
@@ -842,11 +958,21 @@ fn source_ip_summaries(
         entry.matching_template_records += 1;
         entry.cves.extend(finding.cves.iter().cloned());
         entry.templates.insert(finding.template_id.clone());
-        entry
-            .request_patterns
-            .insert(source_ip_request_pattern(finding));
+        let request_pattern = source_ip_request_pattern(finding);
+        entry.request_patterns.insert(request_pattern.clone());
+        entry.observations.push(TriageObservation {
+            timestamp: parse_finding_timestamp(finding.timestamp.as_deref()),
+            request_pattern,
+            template_id: finding.template_id.clone(),
+        });
     }
     summaries
+}
+
+fn parse_finding_timestamp(value: Option<&str>) -> Option<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(value?)
+        .ok()
+        .map(|timestamp| timestamp.with_timezone(&Utc))
 }
 
 fn sort_source_ip_summaries(
@@ -880,6 +1006,9 @@ fn print_source_ip_summary(
             "Triage policy: CUSTOM (non-default; not comparable to the fixed research baseline)"
         );
     }
+    if let Some(window) = policy.window {
+        println!("Triage window: {} sliding", format_triage_duration(window));
+    }
     println!(
         "Grouping identity: validated-client when a trusted forwarded chain was verified; otherwise observed-peer. Validated-client and observed-peer groups are intentionally never merged: when forwarded resolution applies to only some requests, one actual sender may appear under both identities. A peer may be a CDN, load balancer, NAT, or proxy and is not attacker attribution. A group is marked \"requires investigation\" by breadth (at least {} matching request observations and {} Nuclei template patterns) or depth (at least {} matching request observations, even for one template). This is not an attacker, exploit-success, or compromise determination.",
         policy.breadth_observations,
@@ -910,6 +1039,12 @@ fn print_source_ip_summary(
                 item.cves.len(),
                 item.matching_template_records,
             );
+            if policy.window.is_some() {
+                println!(
+                    "  Undated observations excluded from windowed triage: {}",
+                    item.undated_observations()
+                );
+            }
         }
         if displayed_triaged.len() < triaged.len() {
             println!(
@@ -940,12 +1075,31 @@ fn print_source_ip_summary(
             item.cves.len(),
             item.matching_template_records,
         );
+        if policy.window.is_some() {
+            println!(
+                "  Undated observations excluded from windowed triage: {}",
+                item.undated_observations()
+            );
+        }
     }
     if displayed.len() < summary.len() {
         println!(
             "{} additional IP groups omitted. Pass --limit 0 to display all.",
             summary.len() - displayed.len()
         );
+    }
+}
+
+fn format_triage_duration(duration: Duration) -> String {
+    let seconds = duration.as_secs();
+    if seconds.is_multiple_of(24 * 60 * 60) {
+        format!("{}d", seconds / (24 * 60 * 60))
+    } else if seconds.is_multiple_of(60 * 60) {
+        format!("{}h", seconds / (60 * 60))
+    } else if seconds.is_multiple_of(60) {
+        format!("{}m", seconds / 60)
+    } else {
+        format!("{seconds}s")
     }
 }
 
