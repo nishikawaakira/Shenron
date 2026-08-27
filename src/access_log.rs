@@ -97,6 +97,7 @@ pub fn parse_combined_line(
     Ok(WebEvent {
         timestamp: Some(timestamp),
         source_ip: Some(field("source_ip")?.to_owned()),
+        client_ip: None,
         source_port: None,
         country: None,
         host,

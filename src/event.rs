@@ -44,6 +44,10 @@ pub enum HeaderCapability {
 pub struct TelemetryCapabilities {
     pub timestamp: bool,
     pub source_ip: bool,
+    /// Whether a verified end-client IP can be populated. Standard combined
+    /// logs do not contain forwarded chains. AWS WAF may expose one in a
+    /// header, but availability still depends on trusted-proxy configuration.
+    pub client_ip: bool,
     pub host: bool,
     pub method: bool,
     pub uri_path: bool,
@@ -72,6 +76,9 @@ impl TelemetryProfile {
             Self::AwsWaf => TelemetryCapabilities {
                 timestamp: true,
                 source_ip: true,
+                // X-Forwarded-For is only usable after a caller supplies
+                // trusted-proxy configuration, so it is not a profile-default capability.
+                client_ip: false,
                 host: true,
                 method: true,
                 uri_path: true,
@@ -90,6 +97,7 @@ impl TelemetryProfile {
             Self::NginxCombined | Self::ApacheCombined => TelemetryCapabilities {
                 timestamp: true,
                 source_ip: true,
+                client_ip: false,
                 host: false,
                 method: true,
                 uri_path: true,
@@ -128,7 +136,12 @@ impl TelemetryProfile {
 #[derive(Debug, Clone, Serialize)]
 pub struct WebEvent {
     pub timestamp: Option<DateTime<Utc>>,
+    /// Observed direct connection peer. This may be a CDN, load balancer, NAT,
+    /// or proxy and is not attacker attribution.
     pub source_ip: Option<String>,
+    /// End-client IP verified from a forwarded chain under an explicit trusted
+    /// proxy configuration. It is unavailable by default.
+    pub client_ip: Option<String>,
     pub source_port: Option<u16>,
     pub country: Option<String>,
     pub host: Option<String>,
@@ -170,6 +183,7 @@ impl WebEvent {
             "cs-user-agent" | "c-useragent" | "user_agent" => one(&self.user_agent),
             "cs-referer" | "referer" => one(&self.referer),
             "c-ip" | "source_ip" => one(&self.source_ip),
+            "client_ip" => one(&self.client_ip),
             "sc-status" | "status" => self.status.map(|value| vec![value.to_string()]),
             "ja3" => one(&self.ja3),
             "ja4" => one(&self.ja4),

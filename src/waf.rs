@@ -100,6 +100,7 @@ pub fn parse_line(raw: &str) -> Result<WebEvent, WafParseError> {
         source_ip: request
             .as_ref()
             .and_then(|request| request.client_ip.clone()),
+        client_ip: None,
         source_port: None,
         country: request.as_ref().and_then(|request| request.country.clone()),
         host: header_value("host"),
