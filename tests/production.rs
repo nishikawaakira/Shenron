@@ -3,8 +3,10 @@ use std::{fs, path::Path};
 use assert_cmd::Command;
 use chrono::{DateTime, Utc};
 use predicates::str::contains;
-use shenron::event::TelemetryProfile;
-use shenron::production::{explain_private_findings, hunt, inspect, HuntTimeRange};
+use shenron::event::{TelemetryProfile, TrustedProxy, TrustedProxySet};
+use shenron::production::{
+    explain_private_findings, hunt, inspect, inspect_with_trusted_proxies, HuntTimeRange,
+};
 use tempfile::tempdir;
 
 #[test]
@@ -131,6 +133,26 @@ fn hunt_uses_validated_matchers_and_separates_sensitive_output() {
         .stdout(contains("Source IP triage (private findings only):"))
         .stdout(contains("198.51.100.1"))
         .stdout(contains("Matching request observations: 1"));
+}
+
+#[test]
+fn inspection_resolves_a_forwarded_client_only_through_a_trusted_peer() {
+    let directory = tempdir().unwrap();
+    let input = directory.path().join("waf.jsonl");
+    let waf = fs::read_to_string("tests/fixtures/production/waf.jsonl")
+        .unwrap()
+        .replacen(
+            r#"{"name":"Host","value":"internal.example.test"}"#,
+            r#"{"name":"Host","value":"internal.example.test"},{"name":"X-Forwarded-For","value":"203.0.113.25, 198.51.100.20"}"#,
+            1,
+        );
+    fs::write(&input, waf).unwrap();
+    let trusted_proxies =
+        TrustedProxySet::new(vec!["198.51.100.0/24".parse::<TrustedProxy>().unwrap()]);
+    let report =
+        inspect_with_trusted_proxies(&input, TelemetryProfile::AwsWaf, 10, &trusted_proxies)
+            .unwrap();
+    assert_eq!(report.fields_available.client_ip, 1);
 }
 
 #[test]

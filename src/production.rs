@@ -17,7 +17,7 @@ use walkdir::WalkDir;
 
 use crate::{
     access_log::{AccessLogFormat, AccessLogLines},
-    event::{HttpHeader, TelemetryProfile, WebEvent},
+    event::{HttpHeader, TelemetryProfile, TrustedProxySet, WebEvent},
     nuclei::{
         validated_detections, ConversionStatus, Detectability, RequestSpecificity,
         ValidatedNucleiDetection,
@@ -27,6 +27,7 @@ use crate::{
 
 #[derive(Debug, Default, Serialize)]
 pub struct FieldAvailability {
+    pub client_ip: usize,
     pub ja4: usize,
     pub ja3: usize,
     pub uri: usize,
@@ -127,6 +128,14 @@ impl HuntTimeRange {
         };
         self.from.is_none_or(|from| timestamp >= from) && self.to.is_none_or(|to| timestamp <= to)
     }
+}
+
+/// Immutable hunt settings independent of the original log format. Forwarded
+/// client resolution remains disabled unless trusted proxies are supplied.
+#[derive(Debug, Clone, Default)]
+pub struct HuntOptions {
+    pub time_range: HuntTimeRange,
+    pub trusted_proxies: TrustedProxySet,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -289,6 +298,20 @@ pub fn inspect(
     telemetry_profile: TelemetryProfile,
     sample_limit: usize,
 ) -> anyhow::Result<InspectionReport> {
+    inspect_with_trusted_proxies(
+        input,
+        telemetry_profile,
+        sample_limit,
+        &TrustedProxySet::default(),
+    )
+}
+
+pub fn inspect_with_trusted_proxies(
+    input: &Path,
+    telemetry_profile: TelemetryProfile,
+    sample_limit: usize,
+    trusted_proxies: &TrustedProxySet,
+) -> anyhow::Result<InspectionReport> {
     let files = input_files(input, telemetry_profile)?;
     let mut report = InspectionReport {
         telemetry_profile,
@@ -305,7 +328,7 @@ pub fn inspect(
         if report.sampled_events >= sample_limit {
             break;
         }
-        stream_events(&path, telemetry_profile, |result| {
+        stream_events_with_trusted_proxies(&path, telemetry_profile, trusted_proxies, |result| {
             if report.sampled_events >= sample_limit {
                 return Ok(());
             }
@@ -336,6 +359,33 @@ pub fn hunt(
     telemetry_profile: TelemetryProfile,
     time_range: HuntTimeRange,
 ) -> anyhow::Result<SanitizedHuntReport> {
+    hunt_with_options(
+        input,
+        nuclei_templates,
+        nuclei_report,
+        kev_report,
+        output,
+        telemetry_profile,
+        HuntOptions {
+            time_range,
+            trusted_proxies: TrustedProxySet::default(),
+        },
+    )
+}
+
+pub fn hunt_with_options(
+    input: &Path,
+    nuclei_templates: &Path,
+    nuclei_report: &Path,
+    kev_report: &Path,
+    output: &Path,
+    telemetry_profile: TelemetryProfile,
+    options: HuntOptions,
+) -> anyhow::Result<SanitizedHuntReport> {
+    let HuntOptions {
+        time_range,
+        trusted_proxies,
+    } = options;
     time_range.validate()?;
     ensure_separate_output(input, output)?;
     let approved_templates = approved_template_ids(nuclei_report)?;
@@ -363,7 +413,7 @@ pub fn hunt(
     let mut all_sources = BTreeSet::new();
     let mut all_ja4s = BTreeSet::new();
     for path in files {
-        stream_events(&path, telemetry_profile, |result| {
+        stream_events_with_trusted_proxies(&path, telemetry_profile, &trusted_proxies, |result| {
             let event = match result {
                 Ok(event) => event,
                 Err(_) => {
@@ -550,6 +600,7 @@ fn private_finding(detection: &ValidatedNucleiDetection, event: &WebEvent) -> Pr
 }
 
 fn record_availability(fields: &mut FieldAvailability, event: &WebEvent) {
+    fields.client_ip += usize::from(event.client_ip.is_some());
     fields.ja4 += usize::from(event.ja4.is_some());
     fields.ja3 += usize::from(event.ja3.is_some());
     fields.uri += usize::from(event.uri_path.is_some());
@@ -698,6 +749,23 @@ fn event_reader(path: &Path) -> anyhow::Result<Box<dyn Read>> {
 pub(crate) fn stream_events<F>(
     path: &Path,
     telemetry_profile: TelemetryProfile,
+    callback: F,
+) -> anyhow::Result<()>
+where
+    F: FnMut(Result<WebEvent, String>) -> anyhow::Result<()>,
+{
+    stream_events_with_trusted_proxies(
+        path,
+        telemetry_profile,
+        &TrustedProxySet::default(),
+        callback,
+    )
+}
+
+pub(crate) fn stream_events_with_trusted_proxies<F>(
+    path: &Path,
+    telemetry_profile: TelemetryProfile,
+    trusted_proxies: &TrustedProxySet,
     mut callback: F,
 ) -> anyhow::Result<()>
 where
@@ -707,22 +775,46 @@ where
     match telemetry_profile {
         TelemetryProfile::AwsWaf => {
             for item in WafLines::new(reader) {
-                callback(item.map_err(|error| error.to_string()))?;
+                callback(
+                    item.map(|mut event| {
+                        trusted_proxies.resolve_client_ip(&mut event);
+                        event
+                    })
+                    .map_err(|error| error.to_string()),
+                )?;
             }
         }
         TelemetryProfile::NginxCombined => {
             for item in AccessLogLines::new(reader, AccessLogFormat::NginxCombined) {
-                callback(item.map_err(|error| error.to_string()))?;
+                callback(
+                    item.map(|mut event| {
+                        trusted_proxies.resolve_client_ip(&mut event);
+                        event
+                    })
+                    .map_err(|error| error.to_string()),
+                )?;
             }
         }
         TelemetryProfile::ApacheCombined => {
             for item in AccessLogLines::new(reader, AccessLogFormat::ApacheCombined) {
-                callback(item.map_err(|error| error.to_string()))?;
+                callback(
+                    item.map(|mut event| {
+                        trusted_proxies.resolve_client_ip(&mut event);
+                        event
+                    })
+                    .map_err(|error| error.to_string()),
+                )?;
             }
         }
         TelemetryProfile::ApacheVhostCombined => {
             for item in AccessLogLines::new(reader, AccessLogFormat::ApacheVhostCombined) {
-                callback(item.map_err(|error| error.to_string()))?;
+                callback(
+                    item.map(|mut event| {
+                        trusted_proxies.resolve_client_ip(&mut event);
+                        event
+                    })
+                    .map_err(|error| error.to_string()),
+                )?;
             }
         }
         TelemetryProfile::NginxCombinedHost | TelemetryProfile::NginxSecurity => {

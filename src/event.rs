@@ -1,5 +1,85 @@
+use std::{net::IpAddr, str::FromStr};
+
 use chrono::{DateTime, Utc};
+use ipnet::IpNet;
 use serde::{Deserialize, Serialize};
+
+/// A configured proxy network that is permitted to supply a forwarded client
+/// address. Parsing accepts either a single IP address or a CIDR network.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrustedProxy(IpNet);
+
+impl FromStr for TrustedProxy {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        value.parse::<IpNet>().map(Self).or_else(|_| {
+            value
+                .parse::<IpAddr>()
+                .map(|address| {
+                    let prefix = if address.is_ipv4() { 32 } else { 128 };
+                    Self(
+                        IpNet::new(address, prefix)
+                            .expect("an IP address always has a valid host prefix"),
+                    )
+                })
+                .map_err(|_| format!("{value:?} is not a valid IP address or CIDR network"))
+        })
+    }
+}
+
+/// Immutable trusted-proxy configuration. With an empty set, forwarded headers
+/// are deliberately ignored because an untrusted peer can forge them.
+#[derive(Debug, Clone, Default)]
+pub struct TrustedProxySet {
+    proxies: Vec<TrustedProxy>,
+}
+
+impl TrustedProxySet {
+    pub fn new(proxies: Vec<TrustedProxy>) -> Self {
+        Self { proxies }
+    }
+
+    /// Populate `WebEvent::client_ip` only when the observed direct peer is a
+    /// configured proxy and the forwarded chain can be validated from right to
+    /// left. Invalid or incomplete chains are treated as unavailable.
+    pub fn resolve_client_ip(&self, event: &mut WebEvent) {
+        let forwarded_for = event
+            .headers
+            .iter()
+            .find(|header| header.name.eq_ignore_ascii_case("x-forwarded-for"))
+            .map(|header| header.value.as_str());
+        event.client_ip =
+            self.validated_forwarded_client_ip(event.source_ip.as_deref(), forwarded_for);
+    }
+
+    fn validated_forwarded_client_ip(
+        &self,
+        observed_peer: Option<&str>,
+        forwarded_for: Option<&str>,
+    ) -> Option<String> {
+        if self.proxies.is_empty() {
+            return None;
+        }
+        let peer = observed_peer?.parse::<IpAddr>().ok()?;
+        if !self.contains(peer) {
+            return None;
+        }
+        let chain = forwarded_for?
+            .split(',')
+            .map(|value| value.trim().parse::<IpAddr>().ok())
+            .collect::<Option<Vec<_>>>()?;
+        chain
+            .into_iter()
+            .rev()
+            .find(|address| !self.contains(*address))
+            .map(|address| address.to_string())
+    }
+
+    fn contains(&self, address: IpAddr) -> bool {
+        self.proxies.iter().any(|proxy| proxy.0.contains(&address))
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct HttpHeader {
@@ -210,5 +290,67 @@ impl WebEvent {
             self.raw.as_str(),
         ]
         .join("\n")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TrustedProxy;
+    use super::TrustedProxySet;
+
+    fn proxies(values: &[&str]) -> TrustedProxySet {
+        TrustedProxySet::new(
+            values
+                .iter()
+                .map(|value| value.parse::<TrustedProxy>().unwrap())
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn resolves_client_from_a_trusted_peer_and_forwarded_chain() {
+        let proxies = proxies(&["198.51.100.0/24"]);
+        assert_eq!(
+            proxies.validated_forwarded_client_ip(
+                Some("198.51.100.10"),
+                Some("203.0.113.25, 198.51.100.20"),
+            ),
+            Some("203.0.113.25".to_owned())
+        );
+    }
+
+    #[test]
+    fn ignores_forwarded_chain_from_an_untrusted_peer() {
+        let proxies = proxies(&["198.51.100.0/24"]);
+        assert_eq!(
+            proxies.validated_forwarded_client_ip(Some("203.0.113.10"), Some("192.0.2.1")),
+            None
+        );
+    }
+
+    #[test]
+    fn ignores_forwarded_chain_without_trusted_proxy_configuration() {
+        assert_eq!(
+            TrustedProxySet::default()
+                .validated_forwarded_client_ip(Some("198.51.100.10"), Some("192.0.2.1")),
+            None
+        );
+    }
+
+    #[test]
+    fn leaves_client_unavailable_when_every_forwarded_hop_is_trusted() {
+        let proxies = proxies(&["198.51.100.0/24"]);
+        assert_eq!(
+            proxies.validated_forwarded_client_ip(
+                Some("198.51.100.10"),
+                Some("198.51.100.11, 198.51.100.20"),
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_trusted_proxy_values() {
+        assert!("not-an-address".parse::<TrustedProxy>().is_err());
     }
 }

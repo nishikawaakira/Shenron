@@ -17,11 +17,12 @@ use shenron::{
         export as export_candidate, load as load_candidate, replay as replay_candidate,
         save as save_candidate, save_batch, Backend,
     },
-    event::TelemetryProfile,
+    event::{TelemetryProfile, TrustedProxy, TrustedProxySet},
     output::{Finding, FindingWriter},
     production::{
-        explain_private_findings, hunt as production_hunt, inspect as production_inspect,
-        terminal_safe, HuntTimeRange, InspectionReport, SanitizedHuntReport,
+        explain_private_findings, hunt_with_options as production_hunt,
+        inspect_with_trusted_proxies as production_inspect, terminal_safe, HuntOptions,
+        HuntTimeRange, InspectionReport, SanitizedHuntReport,
     },
     sigma::load_rules,
     waf::{maybe_gzip_reader, WafLines},
@@ -141,6 +142,10 @@ enum ProductionCommand {
         format: InputFormat,
         #[arg(long, default_value_t = 10_000)]
         sample: usize,
+        /// Trusted direct proxy IP or CIDR. Repeat to trust multiple proxy networks.
+        /// Forwarded client IPs remain unavailable unless this is specified.
+        #[arg(long, value_name = "IP-or-CIDR")]
+        trusted_proxy: Vec<TrustedProxy>,
     },
     /// Hunt with the same validated Nuclei request matchers; writes separate private and sanitized artifacts.
     Hunt {
@@ -162,6 +167,10 @@ enum ProductionCommand {
         /// Inclusive UTC end time in RFC 3339 format, for example 2026-04-30T23:59:59Z.
         #[arg(long, value_parser = parse_rfc3339_utc)]
         to: Option<DateTime<Utc>>,
+        /// Trusted direct proxy IP or CIDR. Repeat to trust multiple proxy networks.
+        /// Forwarded client IPs remain unavailable unless this is specified.
+        #[arg(long, value_name = "IP-or-CIDR")]
+        trusted_proxy: Vec<TrustedProxy>,
     },
     /// Show CVE/template mappings from a locally stored private findings file.
     Explain {
@@ -280,11 +289,13 @@ fn main() -> Result<()> {
                 input,
                 format,
                 sample,
+                trusted_proxy,
             } => {
                 print_inspection(&production_inspect(
                     &input,
                     format.telemetry_profile(),
                     sample,
+                    &TrustedProxySet::new(trusted_proxy),
                 )?);
                 Ok(())
             }
@@ -297,6 +308,7 @@ fn main() -> Result<()> {
                 output,
                 from,
                 to,
+                trusted_proxy,
             } => {
                 let report = production_hunt(
                     &input,
@@ -305,7 +317,10 @@ fn main() -> Result<()> {
                     &kev_report,
                     &output,
                     format.telemetry_profile(),
-                    HuntTimeRange { from, to },
+                    HuntOptions {
+                        time_range: HuntTimeRange { from, to },
+                        trusted_proxies: TrustedProxySet::new(trusted_proxy),
+                    },
                 )?;
                 let sanitized_path = output.join("sanitized-research.json");
                 serde_json::to_writer_pretty(File::create(&sanitized_path)?, &report)?;
@@ -474,7 +489,7 @@ fn print_inspection(report: &InspectionReport) {
             "not supported by telemetry profile".to_owned()
         }
     };
-    println!("Telemetry profile:          {:?}\nFiles found:                {}\nCompressed files:           {}\nApproximate input bytes:    {}\nParseable events sampled:   {}\nMalformed events sampled:   {}\nEarliest timestamp:         {}\nLatest timestamp:           {}\n\nField availability (sample counts):\nJA4:                        {}\nJA3:                        {}\nURI:                        {}\nQuery:                      {}\nHeaders:                    {}\nHost:                       {}\nMethod:                     {}\nWAF action:                 {}\nWAF labels:                 {}\nTerminating rule ID:        {}\nNon-terminating rules:      {}", report.telemetry_profile, report.files_found, report.compressed_files, report.approximate_input_bytes, report.sampled_events, report.malformed_events, report.earliest_timestamp.as_deref().unwrap_or("unknown"), report.latest_timestamp.as_deref().unwrap_or("unknown"), supported(capabilities.ja4, fields.ja4), supported(capabilities.ja3, fields.ja3), supported(capabilities.uri_path, fields.uri), supported(capabilities.uri_query, fields.query), fields.headers, supported(capabilities.host, fields.host), supported(capabilities.method, fields.method), supported(capabilities.waf_action, fields.waf_action), supported(capabilities.waf_labels, fields.waf_labels), supported(capabilities.waf_action, fields.terminating_rule_id), supported(capabilities.waf_action, fields.non_terminating_rules));
+    println!("Telemetry profile:          {:?}\nFiles found:                {}\nCompressed files:           {}\nApproximate input bytes:    {}\nParseable events sampled:   {}\nMalformed events sampled:   {}\nEarliest timestamp:         {}\nLatest timestamp:           {}\n\nField availability (sample counts):\nVerified forwarded client IP: {} (requires --trusted-proxy)\nJA4:                        {}\nJA3:                        {}\nURI:                        {}\nQuery:                      {}\nHeaders:                    {}\nHost:                       {}\nMethod:                     {}\nWAF action:                 {}\nWAF labels:                 {}\nTerminating rule ID:        {}\nNon-terminating rules:      {}", report.telemetry_profile, report.files_found, report.compressed_files, report.approximate_input_bytes, report.sampled_events, report.malformed_events, report.earliest_timestamp.as_deref().unwrap_or("unknown"), report.latest_timestamp.as_deref().unwrap_or("unknown"), fields.client_ip, supported(capabilities.ja4, fields.ja4), supported(capabilities.ja3, fields.ja3), supported(capabilities.uri_path, fields.uri), supported(capabilities.uri_query, fields.query), fields.headers, supported(capabilities.host, fields.host), supported(capabilities.method, fields.method), supported(capabilities.waf_action, fields.waf_action), supported(capabilities.waf_labels, fields.waf_labels), supported(capabilities.waf_action, fields.terminating_rule_id), supported(capabilities.waf_action, fields.non_terminating_rules));
 }
 
 fn print_hunt(report: &SanitizedHuntReport, sanitized_path: &Path) {
