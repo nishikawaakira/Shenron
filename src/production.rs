@@ -199,6 +199,43 @@ pub struct SanitizedHuntReport {
     pub cve_findings: Vec<SanitizedCveFinding>,
 }
 
+/// Aggregate-only comparison of match volume for predicates derived from one
+/// validated Nuclei Detection IR. These figures are not precision, ground
+/// truth, or attack/exploitation/compromise determinations.
+#[derive(Debug, Serialize)]
+pub struct AblationReport {
+    pub report_kind: String,
+    pub safety_note: String,
+    pub telemetry_profile: TelemetryProfile,
+    pub filter_from: Option<String>,
+    pub filter_to: Option<String>,
+    pub files_analyzed: usize,
+    pub total_events_evaluated: usize,
+    pub requests_outside_time_range: usize,
+    pub requests_without_timestamp_excluded: usize,
+    pub parse_errors: usize,
+    pub strategies: Vec<AblationStrategyVolume>,
+    /// Behavior-triage volume is intentionally deferred because its current
+    /// implementation is CLI-local rather than shared Detection IR logic.
+    pub deferred_strategy: String,
+}
+
+/// `matched_event_volume_rate` is matched events divided by all evaluated
+/// events. It is an alert-volume ratio only, never an accuracy metric.
+#[derive(Debug, Serialize)]
+pub struct AblationStrategyVolume {
+    pub strategy: String,
+    pub matched_events: usize,
+    pub matched_event_volume_rate: Option<f64>,
+    pub distinct_event_cve_matches: usize,
+}
+
+#[derive(Default)]
+struct AblationAccumulator {
+    matched_events: usize,
+    distinct_event_cve_matches: usize,
+}
+
 #[derive(Serialize)]
 struct RunManifest {
     report_kind: &'static str,
@@ -630,6 +667,108 @@ pub fn hunt_with_options(
         &report.metrics,
     )?;
     Ok(report)
+}
+
+/// Compare aggregate match volume among predicates derived from the same
+/// validated Detection IR. No private findings or raw event values are written.
+pub fn ablation(
+    input: &Path,
+    nuclei_templates: &Path,
+    nuclei_report: &Path,
+    kev_report: &Path,
+    telemetry_profile: TelemetryProfile,
+    time_range: HuntTimeRange,
+) -> anyhow::Result<AblationReport> {
+    time_range.validate()?;
+    let (approved_templates, _) = approved_template_ids(nuclei_report)?;
+    let detections = validated_detections(nuclei_templates, &approved_templates);
+    if detections.is_empty() {
+        bail!("no validated Nuclei detections could be rebuilt from the supplied report and template checkout");
+    }
+    // Keep the same frozen-report input contract as hunt even though KEV
+    // membership is not a volume-comparison dimension.
+    let _kev_cves = kev_cves(kev_report)?;
+    let files = input_files(input, telemetry_profile)?;
+    let mut total_events_evaluated = 0;
+    let mut requests_outside_time_range = 0;
+    let mut requests_without_timestamp_excluded = 0;
+    let mut parse_errors = 0;
+    let mut accumulators = std::array::from_fn::<_, 5, _>(|_| AblationAccumulator::default());
+    for path in &files {
+        stream_events(path, telemetry_profile, |result| {
+            let event = match result {
+                Ok(event) => event,
+                Err(_) => {
+                    parse_errors += 1;
+                    return Ok(());
+                }
+            };
+            if !time_range.includes(event.timestamp) {
+                if event.timestamp.is_some() {
+                    requests_outside_time_range += 1;
+                } else {
+                    requests_without_timestamp_excluded += 1;
+                }
+                return Ok(());
+            }
+            total_events_evaluated += 1;
+            let mut event_cves = std::array::from_fn::<_, 5, _>(|_| BTreeSet::new());
+            for detection in &detections {
+                let matches = [
+                    detection.matches_path_only(&event),
+                    detection.matches_path_and_query(&event),
+                    detection.matches_path_query_headers(&event),
+                    detection.matches(&event),
+                    detection.matches(&event)
+                        && detection.request_specificity() == RequestSpecificity::RequestSpecific,
+                ];
+                for (index, matched) in matches.into_iter().enumerate() {
+                    if matched {
+                        event_cves[index].extend(detection.cves.iter().cloned());
+                    }
+                }
+            }
+            for (accumulator, cves) in accumulators.iter_mut().zip(event_cves) {
+                if !cves.is_empty() {
+                    accumulator.matched_events += 1;
+                    accumulator.distinct_event_cve_matches += cves.len();
+                }
+            }
+            Ok(())
+        })?;
+    }
+    let strategy_names = [
+        "path_only",
+        "path_and_query",
+        "path_query_headers",
+        "nuclei_ir",
+        "nuclei_ir_request_specific",
+    ];
+    let strategies = strategy_names
+        .into_iter()
+        .zip(accumulators)
+        .map(|(strategy, accumulator)| AblationStrategyVolume {
+            strategy: strategy.to_owned(),
+            matched_events: accumulator.matched_events,
+            matched_event_volume_rate: (total_events_evaluated != 0)
+                .then(|| accumulator.matched_events as f64 / total_events_evaluated as f64),
+            distinct_event_cve_matches: accumulator.distinct_event_cve_matches,
+        })
+        .collect();
+    Ok(AblationReport {
+        report_kind: "ABLATION_VOLUME_COMPARISON".to_owned(),
+        safety_note: "Aggregate match-volume comparison only. A volume rate is matched events divided by total events evaluated; it is not precision, recall, accuracy, ground truth, or an attack/exploitation/compromise determination. No private findings or raw telemetry values are included.".to_owned(),
+        telemetry_profile,
+        filter_from: time_range.from.map(|timestamp| timestamp.to_rfc3339()),
+        filter_to: time_range.to.map(|timestamp| timestamp.to_rfc3339()),
+        files_analyzed: files.len(),
+        total_events_evaluated,
+        requests_outside_time_range,
+        requests_without_timestamp_excluded,
+        parse_errors,
+        strategies,
+        deferred_strategy: "nuclei_ir_behavior_triaged (TODO: behavior-triage volume requires shared library logic)".to_owned(),
+    })
 }
 
 fn approved_template_ids(path: &Path) -> anyhow::Result<(BTreeSet<String>, Option<String>)> {

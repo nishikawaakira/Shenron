@@ -21,9 +21,10 @@ use shenron::{
     event::{TelemetryProfile, TrustedProxy, TrustedProxySet},
     output::{Finding, FindingWriter},
     production::{
-        explain_private_findings, hunt_with_options as production_hunt,
-        inspect_with_trusted_proxies as production_inspect, terminal_safe, HuntOptions,
-        HuntTimeRange, HuntTriagePolicy, InspectionReport, SanitizedHuntReport,
+        ablation as production_ablation, explain_private_findings,
+        hunt_with_options as production_hunt, inspect_with_trusted_proxies as production_inspect,
+        terminal_safe, AblationReport, HuntOptions, HuntTimeRange, HuntTriagePolicy,
+        InspectionReport, SanitizedHuntReport,
     },
     sigma::load_rules,
     waf::{maybe_gzip_reader, WafLines},
@@ -172,6 +173,28 @@ enum ProductionCommand {
         /// Forwarded client IPs remain unavailable unless this is specified.
         #[arg(long, value_name = "IP-or-CIDR")]
         trusted_proxy: Vec<TrustedProxy>,
+    },
+    /// Compare aggregate match volume across predicates derived from one validated Nuclei IR. Never writes private findings.
+    Ablation {
+        #[arg(long)]
+        input: PathBuf,
+        #[arg(long, value_enum, default_value_t = InputFormat::AwsWaf)]
+        format: InputFormat,
+        #[arg(long)]
+        nuclei_templates: PathBuf,
+        #[arg(long)]
+        nuclei_report: PathBuf,
+        #[arg(long)]
+        kev_report: PathBuf,
+        /// Optional aggregate-only JSON report destination.
+        #[arg(long)]
+        output: Option<PathBuf>,
+        /// Inclusive UTC start time in RFC 3339 format.
+        #[arg(long, value_parser = parse_rfc3339_utc)]
+        from: Option<DateTime<Utc>>,
+        /// Inclusive UTC end time in RFC 3339 format.
+        #[arg(long, value_parser = parse_rfc3339_utc)]
+        to: Option<DateTime<Utc>>,
     },
     /// Show CVE/template mappings from a locally stored private findings file.
     Explain {
@@ -339,6 +362,30 @@ fn main() -> Result<()> {
                 let sanitized_path = output.join("sanitized-research.json");
                 serde_json::to_writer_pretty(File::create(&sanitized_path)?, &report)?;
                 print_hunt(&report, &sanitized_path);
+                Ok(())
+            }
+            ProductionCommand::Ablation {
+                input,
+                format,
+                nuclei_templates,
+                nuclei_report,
+                kev_report,
+                output,
+                from,
+                to,
+            } => {
+                let report = production_ablation(
+                    &input,
+                    &nuclei_templates,
+                    &nuclei_report,
+                    &kev_report,
+                    format.telemetry_profile(),
+                    HuntTimeRange { from, to },
+                )?;
+                if let Some(path) = output.as_deref() {
+                    serde_json::to_writer_pretty(File::create(path)?, &report)?;
+                }
+                print_ablation(&report, output.as_deref());
                 Ok(())
             }
             ProductionCommand::Explain {
@@ -602,6 +649,39 @@ fn print_hunt(report: &SanitizedHuntReport, sanitized_path: &Path) {
         "WAF outcome:                unavailable for this telemetry source".to_owned()
     };
     println!("Read-only production hunt complete.\nPrivate findings:            written under the supplied output directory\nSanitized report:            {}\n\n{}\n\nRequests analyzed:           {}\nFiles analyzed:              {}\nParse errors:                {}\nCVE-related request matches: {}\n  Request-specific:          {}\n  Response-unverified:       {}\nUnique CVEs observed:        {}\nUnique CISA KEVs observed:   {}\nSource clusters:             {}\nJA4 fingerprints:            {}\nDetection-match confidence (template detectability; NOT attack/compromise confidence):\n  HIGH:                      {}\n  MEDIUM:                    {}\n  LOW:                       {}\n\n{}", sanitized_path.display(), time_range, metrics.total_requests_analyzed, metrics.files_analyzed, metrics.parse_errors, metrics.cve_related_request_matches, metrics.request_specific_matches, metrics.response_unverified_matches, metrics.unique_cves_observed, metrics.unique_cisa_kevs_observed, metrics.unique_source_clusters, metrics.unique_ja4_fingerprints, metrics.high_confidence_findings, metrics.medium_confidence_findings, metrics.low_confidence_findings, outcomes);
+}
+
+fn print_ablation(report: &AblationReport, output_path: Option<&Path>) {
+    println!(
+        "Ablation match-volume comparison only: volume rate = matched events / total events evaluated; it is NOT precision, recall, accuracy, ground truth, or an attack/exploitation/compromise determination."
+    );
+    println!("{}", report.safety_note);
+    println!(
+        "\nTelemetry profile:          {:?}\nTotal events evaluated:     {}\nFiles analyzed:              {}\nParse errors:                {}\nOutside range ignored:      {}\nTimestamp missing ignored:  {}\n\nStrategy volumes:",
+        report.telemetry_profile,
+        report.total_events_evaluated,
+        report.files_analyzed,
+        report.parse_errors,
+        report.requests_outside_time_range,
+        report.requests_without_timestamp_excluded,
+    );
+    for strategy in &report.strategies {
+        let volume_rate = strategy
+            .matched_event_volume_rate
+            .map(|rate| format!("{rate:.4}"))
+            .unwrap_or_else(|| "unavailable (no evaluated events)".to_owned());
+        println!(
+            "  {}\n    Matched events:          {}\n    Volume rate:             {}\n    Distinct event × CVE:    {}",
+            strategy.strategy,
+            strategy.matched_events,
+            volume_rate,
+            strategy.distinct_event_cve_matches,
+        );
+    }
+    println!("\nDeferred strategy:          {}", report.deferred_strategy);
+    if let Some(path) = output_path {
+        println!("Aggregate-only JSON report:  {}", path.display());
+    }
 }
 
 fn print_explanations(

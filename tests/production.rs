@@ -5,9 +5,69 @@ use chrono::{DateTime, Utc};
 use predicates::str::contains;
 use shenron::event::{TelemetryProfile, TrustedProxy, TrustedProxySet};
 use shenron::production::{
-    explain_private_findings, hunt, inspect, inspect_with_trusted_proxies, HuntTimeRange,
+    ablation, explain_private_findings, hunt, inspect, inspect_with_trusted_proxies, HuntTimeRange,
 };
 use tempfile::tempdir;
+
+#[test]
+fn ablation_compares_aggregate_match_volume_without_private_values() {
+    let report = ablation(
+        Path::new("tests/fixtures/production/waf.jsonl"),
+        Path::new("tests/fixtures/nuclei"),
+        Path::new("tests/fixtures/production/nuclei-report.json"),
+        Path::new("tests/fixtures/production/kev-report.json"),
+        TelemetryProfile::AwsWaf,
+        HuntTimeRange::default(),
+    )
+    .unwrap();
+
+    assert_eq!(report.report_kind, "ABLATION_VOLUME_COMPARISON");
+    assert_eq!(report.total_events_evaluated, 2);
+    assert_eq!(report.strategies.len(), 5);
+    for window in report.strategies.windows(2) {
+        assert!(window[0].matched_events >= window[1].matched_events);
+        assert!(window[0].distinct_event_cve_matches >= window[1].distinct_event_cve_matches);
+    }
+    let serialized = serde_json::to_string(&report).unwrap();
+    assert!(serialized.contains("match-volume comparison"));
+    assert!(!serialized.contains("secret-token"));
+    assert!(!serialized.contains("internal.example.test"));
+    assert!(!serialized.contains("198.51.100.1"));
+}
+
+#[test]
+fn ablation_cli_writes_an_aggregate_only_report() {
+    let output_directory = tempdir().unwrap();
+    let output = output_directory.path().join("ablation.json");
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "production",
+            "ablation",
+            "--input",
+            "tests/fixtures/production/waf.jsonl",
+            "--format",
+            "aws-waf",
+            "--nuclei-templates",
+            "tests/fixtures/nuclei",
+            "--nuclei-report",
+            "tests/fixtures/production/nuclei-report.json",
+            "--kev-report",
+            "tests/fixtures/production/kev-report.json",
+            "--output",
+            output.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(contains("Ablation match-volume comparison only"))
+        .stdout(contains("NOT precision"));
+
+    let written = fs::read_to_string(output).unwrap();
+    assert!(written.contains("ABLATION_VOLUME_COMPARISON"));
+    assert!(!written.contains("secret-token"));
+    assert!(!written.contains("internal.example.test"));
+    assert!(!written.contains("198.51.100.1"));
+}
 
 #[test]
 fn inspection_reports_structure_without_request_values() {
