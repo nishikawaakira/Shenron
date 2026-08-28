@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
+use serde::Serialize;
 
 use shenron::event::TelemetryProfile;
 use shenron::kev::{coverage as kev_coverage, KevCoverageReport};
@@ -12,8 +13,9 @@ use shenron::lab::{
 use shenron::minimum_telemetry::{analyze as minimum_telemetry_analyze, MinimumTelemetryReport};
 use shenron::nuclei::{
     compare_telemetry, coverage as nuclei_coverage, coverage_for_telemetry,
-    inventory as nuclei_inventory, CoverageReport, InventoryReport, TelemetryComparisonReport,
-    TelemetryCoverageReport,
+    frozen_nuclei_selection, inventory as nuclei_inventory, supported_detections,
+    validated_detections, CoverageReport, InventoryReport, RequestMatcherView,
+    TelemetryComparisonReport, TelemetryCoverageReport,
 };
 
 #[derive(Debug, Parser)]
@@ -129,6 +131,34 @@ enum NucleiCommand {
         #[arg(long)]
         report: Option<PathBuf>,
     },
+    /// List static literal matchers used by hunt. Templates are never executed and no network is accessed.
+    Matchers {
+        #[arg(long)]
+        templates: PathBuf,
+        /// Pinned checkout revision recorded in the read-only command output.
+        #[arg(long)]
+        revision: String,
+        /// Restrict to the frozen-report template IDs eligible for production hunt.
+        #[arg(long)]
+        report: Option<PathBuf>,
+        /// Optional formatted JSON array containing template-derived matcher definitions only.
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
+}
+
+/// A template-derived literal matcher record for codebook review. It does not
+/// contain request telemetry and is intentionally independent of execution.
+#[derive(Debug, Serialize)]
+struct MatcherRecord {
+    template_id: String,
+    cves: Vec<String>,
+    method: String,
+    path: String,
+    query: Option<String>,
+    fragment: Option<String>,
+    headers: Vec<(String, String)>,
+    request_specificity: shenron::nuclei::RequestSpecificity,
 }
 
 #[derive(Debug, Subcommand)]
@@ -304,6 +334,29 @@ fn main() -> Result<()> {
                     serde_json::to_writer_pretty(std::fs::File::create(path)?, &comparison)?;
                 }
             }
+            NucleiCommand::Matchers {
+                templates,
+                revision,
+                report,
+                output,
+            } => {
+                ensure_template_directory(&templates)?;
+                let detections = match report {
+                    Some(report) => {
+                        let selection = frozen_nuclei_selection(&report)?;
+                        validated_detections(&templates, &selection.template_ids)
+                    }
+                    None => supported_detections(&templates),
+                };
+                let matchers = matcher_records(detections);
+                eprintln!(
+                    "Read-only static matcher listing for Nuclei revision {revision}; templates are not executed and no network is accessed."
+                );
+                print_matchers(&matchers);
+                if let Some(path) = output {
+                    serde_json::to_writer_pretty(std::fs::File::create(path)?, &matchers)?;
+                }
+            }
         },
         Command::Kev { command } => match command {
             KevCommand::Coverage {
@@ -332,6 +385,72 @@ fn main() -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn matcher_records(
+    detections: Vec<shenron::nuclei::ValidatedNucleiDetection>,
+) -> Vec<MatcherRecord> {
+    let mut records = detections
+        .into_iter()
+        .map(|detection| {
+            let RequestMatcherView {
+                method,
+                path,
+                query,
+                fragment,
+                headers,
+                request_specificity,
+            } = detection.request_matcher_view();
+            let mut cves = detection.cves;
+            cves.sort();
+            MatcherRecord {
+                template_id: detection.template_id,
+                cves,
+                method,
+                path,
+                query,
+                fragment,
+                headers,
+                request_specificity,
+            }
+        })
+        .collect::<Vec<_>>();
+    records.sort_by(|left, right| {
+        left.template_id
+            .cmp(&right.template_id)
+            .then_with(|| left.path.cmp(&right.path))
+            .then_with(|| left.query.cmp(&right.query))
+            .then_with(|| left.method.cmp(&right.method))
+            .then_with(|| left.fragment.cmp(&right.fragment))
+            .then_with(|| left.headers.cmp(&right.headers))
+    });
+    records
+}
+
+fn print_matchers(matchers: &[MatcherRecord]) {
+    for matcher in matchers {
+        let mut target = matcher.path.clone();
+        if let Some(query) = &matcher.query {
+            target.push('?');
+            target.push_str(query);
+        }
+        if let Some(fragment) = &matcher.fragment {
+            target.push('#');
+            target.push_str(fragment);
+        }
+        let specificity = match matcher.request_specificity {
+            shenron::nuclei::RequestSpecificity::RequestSpecific => "request-specific",
+            shenron::nuclei::RequestSpecificity::ResponseUnverified => "response-unverified",
+        };
+        println!(
+            "{}  {} {}  [{} headers]  {}",
+            matcher.template_id,
+            matcher.method,
+            target,
+            matcher.headers.len(),
+            specificity,
+        );
+    }
 }
 
 fn ensure_template_directory(path: &std::path::Path) -> Result<()> {

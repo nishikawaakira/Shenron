@@ -1,5 +1,6 @@
 use std::{fs, path::Path};
 
+use assert_cmd::Command;
 use shenron::nuclei::{
     combined_header_dependencies, compare_telemetry, coverage, inventory, ConversionStatus,
     Detectability, RequestSpecificity,
@@ -143,6 +144,63 @@ fn exposes_a_template_derived_request_matcher_view() {
     assert_eq!(
         matcher.request_specificity,
         RequestSpecificity::RequestSpecific
+    );
+}
+
+#[test]
+fn lab_matchers_lists_supported_template_literals_and_respects_frozen_report_gates() {
+    let output_directory = tempdir().unwrap();
+    let all_output = output_directory.path().join("all-matchers.json");
+    Command::cargo_bin("shenron-lab")
+        .unwrap()
+        .args([
+            "nuclei",
+            "matchers",
+            "--templates",
+            "tests/fixtures/nuclei",
+            "--revision",
+            "fixture-revision",
+            "--output",
+            all_output.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    let all_matchers: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&all_output).unwrap()).unwrap();
+    let all_records = all_matchers.as_array().unwrap();
+    assert_eq!(all_records.len(), 5);
+    let raw_matcher = all_records
+        .iter()
+        .find(|record| record["template_id"] == "synthetic-cve-2024-10002")
+        .unwrap();
+    assert_eq!(raw_matcher["path"], "/vulnerable/raw");
+    assert_eq!(raw_matcher["query"], "mode=check");
+    assert_eq!(raw_matcher["request_specificity"], "request-specific");
+
+    let filtered_output = output_directory.path().join("filtered-matchers.json");
+    Command::cargo_bin("shenron-lab")
+        .unwrap()
+        .args([
+            "nuclei",
+            "matchers",
+            "--templates",
+            "tests/fixtures/nuclei",
+            "--revision",
+            "fixture-revision",
+            "--report",
+            "tests/fixtures/production/nuclei-report.json",
+            "--output",
+            filtered_output.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    let filtered_matchers: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(filtered_output).unwrap()).unwrap();
+    let filtered_records = filtered_matchers.as_array().unwrap();
+    assert_eq!(filtered_records.len(), 1);
+    assert_eq!(
+        filtered_records[0]["template_id"],
+        "synthetic-cve-2024-10001"
     );
 }
 
