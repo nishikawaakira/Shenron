@@ -68,6 +68,16 @@ fn hunt_uses_validated_matchers_and_separates_sensitive_output() {
     assert!(manifest.contains("\"nuclei_revision\": \"synthetic-fixture-revision\""));
     assert!(manifest.contains("\"filter_from\": null"));
     assert!(manifest.contains("\"kind\": \"default-fixed-baseline\""));
+    let manifest_json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
+    assert_eq!(
+        manifest_json["inputs"]["nuclei_report"]["sha256"],
+        "93eaf2a9a1727f4b024f605f1a8ddb091888e624335c0c378742a62d9c31f9ce"
+    );
+    assert_eq!(
+        manifest_json["inputs"]["kev_report"]["sha256"],
+        "bb0739b666865abab9d7efd398c5d40b11c84a1c1159d43162ee14bf12dec127"
+    );
+    assert!(manifest_json["inputs"]["nuclei_templates"]["sha256"].is_null());
     assert!(!manifest.contains("secret-token"));
     assert!(!manifest.contains("internal.example.test"));
     assert!(!manifest.contains("198.51.100.1"));

@@ -13,6 +13,7 @@ use std::{
 use anyhow::{bail, Context};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use walkdir::WalkDir;
 
 use crate::{
@@ -223,6 +224,7 @@ struct RunManifestInputs {
 struct PathProvenance {
     path: String,
     byte_length: Option<u64>,
+    sha256: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -661,7 +663,7 @@ fn write_run_manifest(
 ) -> anyhow::Result<()> {
     let manifest = RunManifest {
         report_kind: "RUN_MANIFEST",
-        safety_note: "Contains only run configuration, provenance, and aggregate exclusion counts; it does not contain raw request values, IP addresses, hostnames, JA3/JA4, queries, or headers.",
+        safety_note: "Contains only run configuration, provenance, and aggregate exclusion counts. SHA-256 values support frozen research-input integrity checks and do not contain raw request values, IP addresses, hostnames, JA3/JA4, queries, or headers.",
         shenron_version: env!("CARGO_PKG_VERSION"),
         generated_at: Utc::now().to_rfc3339(),
         telemetry_profile,
@@ -695,13 +697,32 @@ fn write_run_manifest(
 }
 
 fn path_provenance(path: &Path) -> PathProvenance {
+    let metadata = fs::metadata(path).ok();
+    let is_file = metadata.as_ref().is_some_and(|metadata| metadata.is_file());
     PathProvenance {
         path: path.display().to_string(),
-        byte_length: fs::metadata(path)
-            .ok()
+        byte_length: metadata
+            .as_ref()
             .filter(|metadata| metadata.is_file())
             .map(|metadata| metadata.len()),
+        // A template checkout is a directory, so its pinned Nuclei revision is
+        // recorded instead of attempting to invent a directory-wide hash.
+        sha256: is_file.then(|| sha256_file(path)).flatten(),
     }
+}
+
+fn sha256_file(path: &Path) -> Option<String> {
+    let mut file = File::open(path).ok()?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let bytes_read = file.read(&mut buffer).ok()?;
+        if bytes_read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..bytes_read]);
+    }
+    Some(format!("{:x}", hasher.finalize()))
 }
 
 fn kev_cves(path: &Path) -> anyhow::Result<BTreeSet<String>> {
