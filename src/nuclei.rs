@@ -250,6 +250,27 @@ impl ValidatedNucleiDetection {
         self.detection.matches(event)
     }
 
+    /// A deliberately weaker predicate derived from the same Detection IR for
+    /// ablation volume comparisons only. It is not a precision, attack, or
+    /// compromise assessment.
+    pub fn matches_path_only(&self, event: &WebEvent) -> bool {
+        self.detection.matches_path_only(event)
+    }
+
+    /// A deliberately weaker predicate derived from the same Detection IR for
+    /// ablation volume comparisons only. It is not a precision, attack, or
+    /// compromise assessment.
+    pub fn matches_path_and_query(&self, event: &WebEvent) -> bool {
+        self.detection.matches_path_and_query(event)
+    }
+
+    /// A deliberately weaker predicate derived from the same Detection IR for
+    /// ablation volume comparisons only. It is not a precision, attack, or
+    /// compromise assessment.
+    pub fn matches_path_query_headers(&self, event: &WebEvent) -> bool {
+        self.detection.matches_path_query_headers(event)
+    }
+
     /// Request-side specificity only. It intentionally does not claim that an
     /// attack occurred, a product is vulnerable, or a response was verified.
     pub fn request_specificity(&self) -> RequestSpecificity {
@@ -292,6 +313,33 @@ impl NucleiDetection {
                         && header.value.eq_ignore_ascii_case(expected)
                 })
             })
+    }
+
+    fn matches_path_only(&self, event: &WebEvent) -> bool {
+        event.uri_path.as_deref() == Some(self.path.as_str())
+    }
+
+    fn matches_path_and_query(&self, event: &WebEvent) -> bool {
+        self.matches_path_only(event)
+            && self.query.as_ref().is_none_or(|query| {
+                event
+                    .uri_query
+                    .as_deref()
+                    .is_some_and(|actual| actual.contains(query))
+            })
+    }
+
+    fn matches_path_query_headers(&self, event: &WebEvent) -> bool {
+        self.matches_path_and_query(event) && self.required_headers_match(event)
+    }
+
+    fn required_headers_match(&self, event: &WebEvent) -> bool {
+        self.headers.iter().all(|(name, expected)| {
+            event.headers.iter().any(|header| {
+                header.name.eq_ignore_ascii_case(name)
+                    && header.value.eq_ignore_ascii_case(expected)
+            })
+        })
     }
 
     fn synthetic_event(&self, id: &str, mutation: bool) -> anyhow::Result<WebEvent> {

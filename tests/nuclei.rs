@@ -4,6 +4,7 @@ use shenron::nuclei::{
     combined_header_dependencies, compare_telemetry, coverage, inventory, ConversionStatus,
     Detectability, RequestSpecificity,
 };
+use shenron::waf::parse_line;
 use tempfile::tempdir;
 
 #[test]
@@ -116,6 +117,47 @@ fn classifies_request_specificity_from_detection_ir_shape() {
             .map(|detection| detection.request_specificity()),
         Some(RequestSpecificity::ResponseUnverified)
     );
+}
+
+#[test]
+fn derived_ablation_matchers_are_monotonic_for_the_same_detection_ir() {
+    let approved = ["synthetic-cve-2024-10002"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    let detection =
+        shenron::nuclei::validated_detections(Path::new("tests/fixtures/nuclei"), &approved)
+            .into_iter()
+            .next()
+            .unwrap();
+    let raw = r#"{"timestamp":1735689600000,"fragment":"fragment-10002","httpRequest":{"clientIp":"192.0.2.10","headers":[{"name":"Host","value":"example.test"},{"name":"X-Synthetic-Mode","value":"raw-10002"}],"uri":"/vulnerable/raw","args":"mode=check","httpMethod":"POST"}}"#;
+    let event = parse_line(raw).unwrap();
+    assert!(detection.matches_path_only(&event));
+    assert!(detection.matches_path_and_query(&event));
+    assert!(detection.matches_path_query_headers(&event));
+    assert!(detection.matches(&event));
+
+    let mut method_mismatch = event.clone();
+    method_mismatch.method = Some("GET".to_owned());
+    assert!(method_mismatch.uri_path.is_some());
+    assert!(detection.matches_path_only(&method_mismatch));
+    assert!(detection.matches_path_and_query(&method_mismatch));
+    assert!(detection.matches_path_query_headers(&method_mismatch));
+    assert!(!detection.matches(&method_mismatch));
+
+    let mut fragment_mismatch = event.clone();
+    fragment_mismatch.uri_fragment = Some("other-fragment".to_owned());
+    assert!(detection.matches_path_only(&fragment_mismatch));
+    assert!(detection.matches_path_and_query(&fragment_mismatch));
+    assert!(detection.matches_path_query_headers(&fragment_mismatch));
+    assert!(!detection.matches(&fragment_mismatch));
+
+    let mut header_mismatch = event.clone();
+    header_mismatch.headers.clear();
+    assert!(detection.matches_path_only(&header_mismatch));
+    assert!(detection.matches_path_and_query(&header_mismatch));
+    assert!(!detection.matches_path_query_headers(&header_mismatch));
+    assert!(!detection.matches(&header_mismatch));
 }
 
 #[test]
