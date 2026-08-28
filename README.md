@@ -12,6 +12,8 @@ Static Nuclei CVE analysis is available through `shenron-lab nuclei inventory` a
 
 Read-only local AWS WAF production inspection and validated Nuclei hunting are available through `shenron production inspect` and `shenron production hunt`. They separate private investigation evidence from sanitized aggregate output and make no AWS changes. See [production hunting](docs/production-hunting.md).
 
+`shenron production ablation` compares aggregate match volume from URI-only through validated Nuclei IR and request-specific IR. It is a volume comparison, not precision, ground truth, or an attack/compromise determination; see [detection-strategy ablation](docs/ablation.md).
+
 Defensive candidates can be built from private hunt findings, replayed locally, reviewed for backend compatibility, and exported as COUNT-only AWS WAF JSON, Terraform rule fragments, or OSSEC detection XML. Export never deploys a control and refuses non-faithful translations. See the [candidate model](docs/waf-candidate-model.md).
 
 The same passive scanner supports explicit `--format nginx` and `--format apache` parsing for standard combined logs. Source capabilities remain explicit; see [telemetry capabilities](docs/telemetry-capabilities.md).

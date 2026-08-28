@@ -21,6 +21,7 @@ Shenron はスキャン、exploit 実行、AWS 変更、AWS API 呼び出し、W
 - Nuclei CVE template の静的分析と detectability 評価
 - `production inspect` によるテレメトリ可視性の確認
 - `production hunt` による、検証済み Nuclei detection のローカル過去ログ照合
+- `production ablation` による、URI-only から Nuclei IR / request-specific IR までの集計一致ボリューム比較
 - CVE / template / request evidence の `production explain` 表示
 - 防御 candidate の作成、historical replay、backend compatibility 確認
 - COUNT 固定の AWS WAF JSON / Terraform rule fragment、または OSSEC 検知 XML の出力
@@ -63,6 +64,8 @@ shenron production explain \
 ```
 
 `not-blocked` は、検知されたものの記録上 BLOCK されなかった request を表します。これは exploit 成功の証拠ではありません。nginx / Apache では WAF outcome 自体がないため、この分類は利用できません。
+
+`production ablation` は URI-only と検証済み Nuclei IR の間で一致件数を集計比較します。これは volume（件数割合）の比較であり、precision、ground truth、攻撃・侵害の判定ではありません。詳細は [Detection-strategy ablation](docs/ablation.md) を参照してください。
 
 ## Defensive candidate workflow
 
