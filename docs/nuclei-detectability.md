@@ -15,3 +15,26 @@ Shenron statically analyzes local, untrusted Nuclei YAML. It never executes temp
 Detectability and conversion are deliberately separate. For example, a distinctive raw HTTP request can be detectable in principle while unsupported by a limited parser. The converter supports one literal structured request with one or more literal alternative paths, or one simple raw request, plus method, path, query, URI fragment, and literal headers. It rejects payload expansion, attack modes, multi-request flows, unresolved variables/helpers, OAST-required verification, and body-dependent logic with stable reason identifiers.
 
 AWS WAF logs do not provide complete arbitrary request bodies for this engine, so body-dependent characteristics are never silently converted into a WAF detection.
+
+## Matcher codebook listing
+
+`shenron-lab nuclei matchers` lists the literal method, path, query, fragment,
+headers, and request-specificity for every Detection IR alternative that hunt
+can use. With `--report`, it applies the same frozen-report gates as hunt:
+`SUPPORTED` conversion, `passed` validation, and a non-empty CVE list. Without
+`--report`, it lists every supported literal Detection IR in the local checkout.
+
+```bash
+shenron-lab nuclei matchers \
+  --templates ./nuclei-templates \
+  --revision <pinned-revision> \
+  --report ./research/nuclei/<revision>/final.json \
+  --output ./research/matchers.json
+```
+
+This is a read-only local codebook aid: it lists what hunt literally compares
+without executing a template or making a network request. It can be used for
+manual precision-codebook review, including checking whether a path is a
+legitimate application route (step 2) and whether the matched literal content
+represents an attack-like request (step 3). The command supplies no labels or
+precision estimate; those judgments remain with the reviewer.
