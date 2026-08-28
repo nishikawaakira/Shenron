@@ -20,7 +20,7 @@ use crate::{
     access_log::{AccessLogFormat, AccessLogLines},
     event::{HttpHeader, TelemetryProfile, TrustedProxySet, WebEvent},
     nuclei::{
-        validated_detections, ConversionStatus, Detectability, RequestSpecificity,
+        frozen_nuclei_selection, validated_detections, Detectability, RequestSpecificity,
         ValidatedNucleiDetection,
     },
     waf::{maybe_gzip_reader, WafLines},
@@ -54,21 +54,6 @@ pub struct InspectionReport {
     pub earliest_timestamp: Option<String>,
     pub latest_timestamp: Option<String>,
     pub fields_available: FieldAvailability,
-}
-
-#[derive(Debug, Deserialize)]
-struct NucleiReportInput {
-    #[serde(default)]
-    nuclei_revision: Option<String>,
-    templates: Vec<NucleiTemplateRecord>,
-}
-
-#[derive(Debug, Deserialize)]
-struct NucleiTemplateRecord {
-    template_id: String,
-    cves: Vec<String>,
-    conversion_status: ConversionStatus,
-    validation_status: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -772,18 +757,8 @@ pub fn ablation(
 }
 
 fn approved_template_ids(path: &Path) -> anyhow::Result<(BTreeSet<String>, Option<String>)> {
-    let report: NucleiReportInput = serde_json::from_reader(File::open(path)?)?;
-    let template_ids = report
-        .templates
-        .into_iter()
-        .filter(|template| {
-            template.conversion_status == ConversionStatus::Supported
-                && template.validation_status == "passed"
-                && !template.cves.is_empty()
-        })
-        .map(|template| template.template_id)
-        .collect();
-    Ok((template_ids, report.nuclei_revision))
+    let selection = frozen_nuclei_selection(path)?;
+    Ok((selection.template_ids, selection.nuclei_revision))
 }
 
 #[allow(clippy::too_many_arguments)]

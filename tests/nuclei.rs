@@ -120,6 +120,33 @@ fn classifies_request_specificity_from_detection_ir_shape() {
 }
 
 #[test]
+fn exposes_a_template_derived_request_matcher_view() {
+    let approved = ["synthetic-cve-2024-10001"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    let detection =
+        shenron::nuclei::validated_detections(Path::new("tests/fixtures/nuclei"), &approved)
+            .into_iter()
+            .next()
+            .unwrap();
+
+    let matcher = detection.request_matcher_view();
+    assert_eq!(matcher.method, "GET");
+    assert_eq!(matcher.path, "/vulnerable/execute");
+    assert_eq!(matcher.query.as_deref(), Some("cmd=probe"));
+    assert_eq!(matcher.fragment, None);
+    assert_eq!(
+        matcher.headers,
+        [("X-Synthetic-Exploit".to_owned(), "marker-10001".to_owned())]
+    );
+    assert_eq!(
+        matcher.request_specificity,
+        RequestSpecificity::RequestSpecific
+    );
+}
+
+#[test]
 fn derived_ablation_matchers_are_monotonic_for_the_same_detection_ir() {
     let approved = ["synthetic-cve-2024-10002"]
         .into_iter()

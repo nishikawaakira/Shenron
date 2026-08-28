@@ -3,8 +3,13 @@
 //! This module never executes template code, resolves arbitrary helpers, or
 //! sends requests. It extracts only a narrow literal HTTP subset for hunting.
 
-use std::{collections::BTreeMap, fs, path::Path};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fs,
+    path::Path,
+};
 
+use anyhow::Result;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_yaml::Value;
@@ -245,6 +250,42 @@ pub struct ValidatedNucleiDetection {
     detection: NucleiDetection,
 }
 
+/// A serializable copy of the literal request conditions used by a validated
+/// Nuclei Detection IR. It is static template-derived data, not telemetry.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RequestMatcherView {
+    pub method: String,
+    pub path: String,
+    pub query: Option<String>,
+    pub fragment: Option<String>,
+    pub headers: Vec<(String, String)>,
+    pub request_specificity: RequestSpecificity,
+}
+
+/// The template IDs eligible for a production hunt according to a frozen
+/// Nuclei report. The selection intentionally requires all three gates:
+/// supported conversion, passed validation, and at least one CVE.
+#[derive(Debug, Clone)]
+pub struct FrozenNucleiSelection {
+    pub template_ids: BTreeSet<String>,
+    pub nuclei_revision: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FrozenNucleiReport {
+    #[serde(default)]
+    nuclei_revision: Option<String>,
+    templates: Vec<FrozenNucleiTemplate>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FrozenNucleiTemplate {
+    template_id: String,
+    cves: Vec<String>,
+    conversion_status: ConversionStatus,
+    validation_status: String,
+}
+
 impl ValidatedNucleiDetection {
     pub fn matches(&self, event: &WebEvent) -> bool {
         self.detection.matches(event)
@@ -275,6 +316,20 @@ impl ValidatedNucleiDetection {
     /// attack occurred, a product is vulnerable, or a response was verified.
     pub fn request_specificity(&self) -> RequestSpecificity {
         self.detection.request_specificity()
+    }
+
+    /// Returns a copy of the exact literal request conditions that this
+    /// validated detection matches. This read-only view never executes a
+    /// template or accesses telemetry.
+    pub fn request_matcher_view(&self) -> RequestMatcherView {
+        RequestMatcherView {
+            method: self.detection.method.clone(),
+            path: self.detection.path.clone(),
+            query: self.detection.query.clone(),
+            fragment: self.detection.fragment.clone(),
+            headers: self.detection.headers.clone(),
+            request_specificity: self.request_specificity(),
+        }
     }
 }
 
@@ -654,6 +709,38 @@ pub fn validated_detections(
                 })
         })
         .collect()
+}
+
+/// Rebuilds every supported literal Detection IR in a local checkout. This is
+/// intended for static matcher inspection when no frozen report is supplied.
+pub fn supported_detections(templates: &Path) -> Vec<ValidatedNucleiDetection> {
+    let supported_template_ids = analyze_directory(templates)
+        .into_iter()
+        .filter(|item| item.analysis.conversion_status == ConversionStatus::Supported)
+        .map(|item| item.analysis.template_id)
+        .collect();
+    validated_detections(templates, &supported_template_ids)
+}
+
+/// Reads the same frozen-report eligibility gates used by production hunt.
+/// This is local JSON parsing only; it does not execute templates or access a
+/// network resource.
+pub fn frozen_nuclei_selection(path: &Path) -> Result<FrozenNucleiSelection> {
+    let report: FrozenNucleiReport = serde_json::from_reader(fs::File::open(path)?)?;
+    let template_ids = report
+        .templates
+        .into_iter()
+        .filter(|template| {
+            template.conversion_status == ConversionStatus::Supported
+                && template.validation_status == "passed"
+                && !template.cves.is_empty()
+        })
+        .map(|template| template.template_id)
+        .collect();
+    Ok(FrozenNucleiSelection {
+        template_ids,
+        nuclei_revision: report.nuclei_revision,
+    })
 }
 
 /// Re-evaluates static Nuclei request requirements against each explicitly
