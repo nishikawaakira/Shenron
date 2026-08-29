@@ -2,6 +2,7 @@ use std::{
     collections::BTreeMap,
     fs::File,
     io::{self, Write},
+    net::IpAddr,
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -26,6 +27,7 @@ use shenron::{
         terminal_safe, AblationReport, HuntOptions, HuntTimeRange, HuntTriagePolicy,
         InspectionReport, SanitizedHuntReport,
     },
+    reputation::{load_asn_database, load_reputation_database, AsnDatabase, ReputationDatabase},
     sigma::load_rules,
     triage::{entity_groups, EntityDimension, TriagePolicy},
     waf::{maybe_gzip_reader, WafLines},
@@ -214,6 +216,12 @@ enum ProductionCommand {
         /// Summarize source IP addresses from the selected private findings.
         #[arg(long)]
         show_source_ips: bool,
+        /// Local GeoLite2-ASN-compatible CSV used only to enrich displayed IP groups.
+        #[arg(long)]
+        asn_dataset: Option<PathBuf>,
+        /// Local JSONL third-party reputation opinions used only to enrich displayed IP groups.
+        #[arg(long)]
+        reputation_dataset: Option<PathBuf>,
         /// Summarize JA4 TLS client fingerprints from the selected private findings.
         #[arg(long)]
         show_fingerprints: bool,
@@ -398,6 +406,8 @@ fn main() -> Result<()> {
                 show_request,
                 show_evidence,
                 show_source_ips,
+                asn_dataset,
+                reputation_dataset,
                 show_fingerprints,
                 triage_breadth_observations,
                 triage_breadth_templates,
@@ -405,6 +415,11 @@ fn main() -> Result<()> {
                 triage_window,
                 limit,
             } => {
+                let asn_database = asn_dataset.as_deref().map(load_asn_database).transpose()?;
+                let reputation_database = reputation_dataset
+                    .as_deref()
+                    .map(load_reputation_database)
+                    .transpose()?;
                 let findings = explain_private_findings(&findings)?;
                 let findings = match waf_outcome {
                     Some(filter) => findings
@@ -429,6 +444,8 @@ fn main() -> Result<()> {
                         triage_depth_observations,
                         triage_window,
                     ),
+                    asn_database.as_ref(),
+                    reputation_database.as_ref(),
                 );
                 Ok(())
             }
@@ -676,6 +693,8 @@ fn print_explanations(
     waf_outcome_filter: Option<&str>,
     limit: usize,
     triage_policy: TriagePolicy,
+    asn_database: Option<&AsnDatabase>,
+    reputation_database: Option<&ReputationDatabase>,
 ) {
     let displayed = if limit == 0 {
         findings
@@ -692,7 +711,17 @@ fn print_explanations(
     }
     print_explanation_summary(findings, limit);
     if display.show_source_ips {
-        print_source_ip_summary(findings, limit, triage_policy);
+        print_source_ip_summary(
+            findings,
+            limit,
+            triage_policy,
+            asn_database,
+            reputation_database,
+        );
+    } else if asn_database.is_some() || reputation_database.is_some() {
+        println!(
+            "Local reputation datasets were supplied, but --show-source-ips was not selected; no IP enrichment was displayed."
+        );
     }
     if display.show_fingerprints {
         print_ja4_summary(findings, limit, triage_policy);
@@ -876,9 +905,22 @@ fn print_source_ip_summary(
     findings: &[shenron::production::FindingExplanation],
     limit: usize,
     policy: TriagePolicy,
+    asn_database: Option<&AsnDatabase>,
+    reputation_database: Option<&ReputationDatabase>,
 ) {
     let groups = entity_groups(findings, EntityDimension::ConnectionIp, policy);
     println!("\nConnection/client IP triage (private findings only):");
+    if let Some(database) = asn_database {
+        print_dataset_provenance("ASN dataset", database.provenance());
+    }
+    if let Some(database) = reputation_database {
+        print_dataset_provenance("Reputation dataset", database.provenance());
+    }
+    if asn_database.is_some() || reputation_database.is_some() {
+        println!(
+            "Offline IP/ASN reputation enrichment is a third-party opinion, not an attack, exploitation, compromise, or attacker-attribution determination. No IP is sent outside this local process."
+        );
+    }
     if policy.is_default() {
         println!("Triage policy: default fixed baseline");
     } else {
@@ -912,7 +954,12 @@ fn print_source_ip_summary(
         println!("No IP group met the repeated-pattern triage threshold.");
     } else {
         for group in displayed_triaged {
-            print_ip_group(group, policy.window.is_some());
+            print_ip_group(
+                group,
+                policy.window.is_some(),
+                asn_database,
+                reputation_database,
+            );
         }
         if displayed_triaged.len() < triaged.len() {
             println!(
@@ -933,7 +980,12 @@ fn print_source_ip_summary(
         return;
     }
     for group in displayed {
-        print_ip_group(group, policy.window.is_some());
+        print_ip_group(
+            group,
+            policy.window.is_some(),
+            asn_database,
+            reputation_database,
+        );
     }
     if displayed.len() < groups.len() {
         println!(
@@ -943,7 +995,12 @@ fn print_source_ip_summary(
     }
 }
 
-fn print_ip_group(group: &shenron::triage::EntityGroup, windowed: bool) {
+fn print_ip_group(
+    group: &shenron::triage::EntityGroup,
+    windowed: bool,
+    asn_database: Option<&AsnDatabase>,
+    reputation_database: Option<&ReputationDatabase>,
+) {
     println!(
         "{}\n  Grouping identity: {}\n  Triage basis: {}\n  Matching request observations: {}\n  Distinct Nuclei template patterns: {}\n  Unique CVEs: {}\n  Matched template records: {}",
         terminal_safe(&group.key),
@@ -972,6 +1029,73 @@ fn print_ip_group(group: &shenron::triage::EntityGroup, windowed: bool) {
         "  Request-specific observations: {}\n  Response-unverified observations: {}",
         group.request_specific_observations, group.response_unverified_observations
     );
+    print_ip_reputation(group, asn_database, reputation_database);
+}
+
+fn print_dataset_provenance(label: &str, provenance: &shenron::reputation::DatasetProvenance) {
+    println!(
+        "{} provenance: path={} sha256={} records={}",
+        label,
+        terminal_safe(&provenance.path),
+        terminal_safe(&provenance.sha256),
+        provenance.records
+    );
+}
+
+fn print_ip_reputation(
+    group: &shenron::triage::EntityGroup,
+    asn_database: Option<&AsnDatabase>,
+    reputation_database: Option<&ReputationDatabase>,
+) {
+    if asn_database.is_none() && reputation_database.is_none() {
+        return;
+    }
+    let Ok(ip) = group.key.parse::<IpAddr>() else {
+        return;
+    };
+    let asn = asn_database.and_then(|database| database.lookup(ip));
+    if let Some(asn) = asn {
+        println!("  Resolved ASN: {} ({})", asn.asn, terminal_safe(&asn.org));
+    }
+    if let Some(database) = reputation_database {
+        let reputation = database.lookup(ip, asn.map(|info| info.asn));
+        match (reputation.score, reputation.tier, reputation.score_scope) {
+            (Some(score), Some(tier), Some(scope)) => println!(
+                "  Reputation: {score}/100 ({}) via {}",
+                tier.label(),
+                terminal_safe(scope)
+            ),
+            _ => println!("  Reputation: none"),
+        }
+        for hit in reputation.hits {
+            let categories = if hit.categories.is_empty() {
+                "[]".to_owned()
+            } else {
+                format!(
+                    "[{}]",
+                    hit.categories
+                        .iter()
+                        .map(|category| terminal_safe(category))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            };
+            let as_of = hit
+                .as_of
+                .as_deref()
+                .map(|date| format!(" as_of={}", terminal_safe(date)))
+                .unwrap_or_default();
+            println!(
+                "    - {} {} score {} {} source={}{}",
+                terminal_safe(hit.scope),
+                terminal_safe(&hit.value),
+                hit.score,
+                categories,
+                terminal_safe(&hit.source),
+                as_of,
+            );
+        }
+    }
 }
 
 fn print_ja4_summary(

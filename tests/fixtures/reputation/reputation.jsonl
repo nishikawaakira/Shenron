@@ -1,0 +1,5 @@
+{"scope":"ip","value":"203.0.113.7","score":90,"source":"example-feed","categories":["scanner","bruteforce"],"as_of":"2026-08-01"}
+{"scope":"cidr","value":"203.0.113.0/24","score":80,"source":"example-feed","categories":["network-abuse"],"as_of":"2026-08-01"}
+{"scope":"asn","value":64501,"score":70,"source":"example-feed","categories":["hosting-abuse"],"as_of":"2026-08-01"}
+{"scope":"asn","value":64502,"score":40,"source":"example-feed"}
+{"scope":"asn","value":"64503","score":30,"source":"example-feed"}

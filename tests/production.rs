@@ -242,6 +242,45 @@ fn inspection_resolves_a_forwarded_client_only_through_a_trusted_peer() {
 }
 
 #[test]
+fn explain_enriches_private_ip_groups_from_offline_asn_and_reputation_datasets() {
+    let directory = tempdir().unwrap();
+    let findings = directory.path().join("private-findings.jsonl");
+    fs::write(
+        &findings,
+        concat!(
+            r#"{"template_id":"template-one","cves":["CVE-2024-10001"],"detectability":"HIGH","timestamp":"2026-08-24T00:00:01+00:00","source_ip":"203.0.113.7","host":"example.test","method":"GET","uri_path":"/one","uri_query":"probe=1","headers":[],"ja3":null,"ja4":null,"waf_action":null,"request_id":null}"#,
+            "\n"
+        ),
+    )
+    .unwrap();
+
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "production",
+            "explain",
+            "--findings",
+            findings.to_str().unwrap(),
+            "--show-source-ips",
+            "--asn-dataset",
+            "tests/fixtures/reputation/asn.csv",
+            "--reputation-dataset",
+            "tests/fixtures/reputation/reputation.jsonl",
+        ])
+        .assert()
+        .success()
+        .stdout(contains("ASN dataset provenance: path="))
+        .stdout(contains("Reputation dataset provenance: path="))
+        .stdout(contains("Resolved ASN: 64501 (EXAMPLE-NARROW)"))
+        .stdout(contains("Reputation: 90/100 (high) via ip"))
+        .stdout(contains("- ip 203.0.113.7 score 90 [scanner, bruteforce]"))
+        .stdout(contains("- cidr 203.0.113.0/24 score 80 [network-abuse]"))
+        .stdout(contains("- asn 64501 score 70 [hosting-abuse]"))
+        .stdout(contains("third-party opinion"))
+        .stdout(contains("No IP is sent outside this local process."));
+}
+
+#[test]
 fn explain_triages_only_repeated_distinct_source_behavior() {
     let directory = tempdir().unwrap();
     let findings = directory.path().join("private-findings.jsonl");
