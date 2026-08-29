@@ -6,9 +6,7 @@ Implemented so far:
 
 - **FIND** — `production hunt` matches validated Nuclei request matchers against historical logs and writes separate private and sanitized artifacts.
 - **EXPLAIN / PIVOT** — `production explain` groups matches by CVE/template and by connection/client IP, locally resolved ASN, or JA4 fingerprint, applies breadth/depth/windowed triage, and assigns an offline [behavior priority score](production-hunting.md#behavior-priority-score). It can also enrich displayed IP and ASN groups from analyst-supplied frozen [local ASN and reputation datasets](production-hunting.md#ipasn-reputation-enrichment-offline), without external calls. `production ablation` compares aggregate match volume across a predicate ladder derived from one validated Detection IR without writing private findings.
-- **ACT** — the `candidate` commands build, evaluate, review, and export analyst-authored defensive hypotheses. Shenron never deploys a control.
+- **ACT** — `production count-hypotheses` measures broad-to-narrow WAF-condition hypotheses as local [COUNT simulations](count-hypotheses.md); the `candidate` commands build, evaluate, review, and export analyst-authored defensive hypotheses. Shenron never deploys a control.
 - **VALIDATE** — `production replay` replays every validated Nuclei matcher across the complete local corpus and writes a sanitized [historical coverage report](historical-replay.md). It is distinct from the per-candidate replay export gate.
-
-Planned: WAF-condition hypotheses in COUNT mode.
 
 No finding proves successful exploitation. A lack of findings does not prove that an application was not attacked or compromised.
