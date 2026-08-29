@@ -23,9 +23,10 @@ use shenron::{
     output::{Finding, FindingWriter},
     production::{
         ablation as production_ablation, explain_private_findings,
-        hunt_with_options as production_hunt, inspect_with_trusted_proxies as production_inspect,
-        terminal_safe, AblationReport, HuntOptions, HuntTimeRange, HuntTriagePolicy,
-        InspectionReport, SanitizedHuntReport,
+        historical_replay as production_historical_replay, hunt_with_options as production_hunt,
+        inspect_with_trusted_proxies as production_inspect, terminal_safe, AblationReport,
+        HistoricalReplayReport, HuntOptions, HuntTimeRange, HuntTriagePolicy, InspectionReport,
+        SanitizedHuntReport,
     },
     reputation::{load_asn_database, load_reputation_database, AsnDatabase, ReputationDatabase},
     sigma::load_rules,
@@ -189,6 +190,31 @@ enum ProductionCommand {
         nuclei_report: PathBuf,
         #[arg(long)]
         kev_report: PathBuf,
+        /// Optional aggregate-only JSON report destination.
+        #[arg(long)]
+        output: Option<PathBuf>,
+        /// Inclusive UTC start time in RFC 3339 format.
+        #[arg(long, value_parser = parse_rfc3339_utc)]
+        from: Option<DateTime<Utc>>,
+        /// Inclusive UTC end time in RFC 3339 format.
+        #[arg(long, value_parser = parse_rfc3339_utc)]
+        to: Option<DateTime<Utc>>,
+    },
+    /// Measure validated Nuclei matcher coverage and other aggregate historical matches. Never writes private findings.
+    Replay {
+        #[arg(long)]
+        input: PathBuf,
+        #[arg(long, value_enum, default_value_t = InputFormat::AwsWaf)]
+        format: InputFormat,
+        #[arg(long)]
+        nuclei_templates: PathBuf,
+        #[arg(long)]
+        nuclei_report: PathBuf,
+        #[arg(long)]
+        kev_report: PathBuf,
+        /// Local private findings from a prior hunt; read only to establish conservative coverage.
+        #[arg(long)]
+        findings: PathBuf,
         /// Optional aggregate-only JSON report destination.
         #[arg(long)]
         output: Option<PathBuf>,
@@ -401,6 +427,35 @@ fn main() -> Result<()> {
                     serde_json::to_writer_pretty(File::create(path)?, &report)?;
                 }
                 print_ablation(&report, output.as_deref());
+                Ok(())
+            }
+            ProductionCommand::Replay {
+                input,
+                format,
+                nuclei_templates,
+                nuclei_report,
+                kev_report,
+                findings,
+                output,
+                from,
+                to,
+            } => {
+                if let Some(path) = output.as_deref() {
+                    shenron::production::ensure_separate_output(&input, path)?;
+                }
+                let report = production_historical_replay(
+                    &input,
+                    &nuclei_templates,
+                    &nuclei_report,
+                    &kev_report,
+                    &findings,
+                    format.telemetry_profile(),
+                    HuntTimeRange { from, to },
+                )?;
+                if let Some(path) = output.as_deref() {
+                    serde_json::to_writer_pretty(File::create(path)?, &report)?;
+                }
+                print_historical_replay(&report, output.as_deref());
                 Ok(())
             }
             ProductionCommand::Explain {
@@ -679,6 +734,61 @@ fn print_ablation(report: &AblationReport, output_path: Option<&Path>) {
         );
     }
     println!("\nDeferred strategy:          {}", report.deferred_strategy);
+    if let Some(path) = output_path {
+        println!("Aggregate-only JSON report:  {}", path.display());
+    }
+}
+
+fn print_historical_replay(report: &HistoricalReplayReport, output_path: Option<&Path>) {
+    let aggregate = &report.aggregate;
+    let coverage = aggregate
+        .coverage
+        .map(|coverage| format!("{coverage:.4}"))
+        .unwrap_or_else(|| "unavailable (no source finding request IDs)".to_owned());
+    println!("Historical replay coverage is a conservative lower bound based on source-finding request IDs; it is NOT precision, recall, accuracy, ground truth, or an attack/exploitation/compromise determination.");
+    println!("{}", report.safety_note);
+    println!(
+        "\nTelemetry profile:          {:?}\nTotal events evaluated:     {}\nFiles analyzed:              {}\nParse errors:                {}\nOutside range ignored:      {}\nTimestamp missing ignored:  {}\n\nKnown findings:              {}\nKnown findings re-matched:   {}\nKnown findings missed:       {}\nConservative coverage:       {}\nMatched events total:        {}\nOther matches with request ID:    {}\nOther matches without request ID: {}\nMatched events BLOCK:        {}\nMatched events not blocked:  {}\nMatched events unknown outcome: {}\n\nTop CVE coverage:",
+        report.telemetry_profile,
+        report.total_events_evaluated,
+        report.files_analyzed,
+        report.parse_errors,
+        report.requests_outside_time_range,
+        report.requests_without_timestamp_excluded,
+        aggregate.known_findings,
+        aggregate.known_matched,
+        aggregate.known_missed,
+        coverage,
+        aggregate.matched_events_total,
+        aggregate.other_matches_with_request_id,
+        aggregate.other_matches_without_request_id,
+        aggregate.matched_events_blocked,
+        aggregate.matched_events_not_blocked,
+        aggregate.matched_events_unknown_outcome,
+    );
+    for coverage in report.per_cve.iter().take(10) {
+        let value = coverage
+            .coverage
+            .map(|coverage| format!("{coverage:.4}"))
+            .unwrap_or_else(|| "unavailable (no source finding request IDs)".to_owned());
+        println!(
+            "  {}\n    KEV: {}\n    Known / re-matched / missed: {} / {} / {}\n    Conservative coverage: {}\n    Other matches (with / without request ID): {} / {}",
+            terminal_safe(&coverage.cve),
+            coverage.is_kev,
+            coverage.known_findings,
+            coverage.known_matched,
+            coverage.known_missed,
+            value,
+            coverage.other_matches_with_request_id,
+            coverage.other_matches_without_request_id,
+        );
+    }
+    if report.per_cve.len() > 10 {
+        println!(
+            "{} additional CVEs omitted from stdout; see the aggregate-only JSON report for all CVE counts.",
+            report.per_cve.len() - 10
+        );
+    }
     if let Some(path) = output_path {
         println!("Aggregate-only JSON report:  {}", path.display());
     }

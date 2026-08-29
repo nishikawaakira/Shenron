@@ -221,6 +221,85 @@ struct AblationAccumulator {
     distinct_event_cve_matches: usize,
 }
 
+/// Sanitized, read-only measurement of validated Nuclei matcher replay against
+/// a complete local historical corpus. It is separate from candidate replay:
+/// this report never creates an enforcement artifact.
+#[derive(Debug, Serialize)]
+pub struct HistoricalReplayReport {
+    pub report_kind: String,
+    pub safety_note: String,
+    pub telemetry_profile: TelemetryProfile,
+    pub filter_from: Option<String>,
+    pub filter_to: Option<String>,
+    pub files_analyzed: usize,
+    pub total_events_evaluated: usize,
+    pub requests_outside_time_range: usize,
+    pub requests_without_timestamp_excluded: usize,
+    pub parse_errors: usize,
+    pub inputs: ReplayInputs,
+    pub per_cve: Vec<CveCoverage>,
+    pub aggregate: CoverageAggregate,
+}
+
+/// Content hashes of frozen local replay inputs. These hashes contain no
+/// telemetry values and make a reviewable replay reproducible.
+#[derive(Debug, Serialize)]
+pub struct ReplayInputs {
+    pub nuclei_report_sha256: Option<String>,
+    pub kev_report_sha256: Option<String>,
+    pub findings_sha256: Option<String>,
+}
+
+/// Per-CVE conservative source-finding re-observation and aggregate-only
+/// historical match counts.
+#[derive(Debug, Serialize)]
+pub struct CveCoverage {
+    pub cve: String,
+    pub is_kev: bool,
+    pub known_findings: u64,
+    pub known_matched: u64,
+    pub known_missed: u64,
+    pub coverage: Option<f64>,
+    pub other_matches_with_request_id: u64,
+    pub other_matches_without_request_id: u64,
+    pub matched_events_blocked: u64,
+    pub matched_events_not_blocked: u64,
+    pub matched_events_unknown_outcome: u64,
+}
+
+/// CVE-crossing replay totals. Each matched historical event contributes at
+/// most once to `matched_events_total`, other-match counts, and outcomes.
+#[derive(Debug, Serialize)]
+pub struct CoverageAggregate {
+    pub known_findings: u64,
+    pub known_matched: u64,
+    pub known_missed: u64,
+    pub coverage: Option<f64>,
+    pub matched_events_total: u64,
+    pub other_matches_with_request_id: u64,
+    pub other_matches_without_request_id: u64,
+    pub matched_events_blocked: u64,
+    pub matched_events_not_blocked: u64,
+    pub matched_events_unknown_outcome: u64,
+}
+
+#[derive(Default)]
+struct ReplayCveAccumulator {
+    known_findings: u64,
+    known_request_ids: BTreeSet<String>,
+    known_matched_request_ids: BTreeSet<String>,
+    other_matches_with_request_id: u64,
+    other_matches_without_request_id: u64,
+    outcomes: ReplayOutcomeCounts,
+}
+
+#[derive(Default)]
+struct ReplayOutcomeCounts {
+    blocked: u64,
+    not_blocked: u64,
+    unknown: u64,
+}
+
 #[derive(Serialize)]
 struct RunManifest {
     report_kind: &'static str,
@@ -756,6 +835,190 @@ pub fn ablation(
     })
 }
 
+/// Replay all validated Nuclei request matchers over local historical telemetry
+/// and return a sanitized measurement report. This performs no network access,
+/// writes no private findings, and never deploys a control.
+pub fn historical_replay(
+    input: &Path,
+    nuclei_templates: &Path,
+    nuclei_report: &Path,
+    kev_report: &Path,
+    findings: &Path,
+    telemetry_profile: TelemetryProfile,
+    time_range: HuntTimeRange,
+) -> anyhow::Result<HistoricalReplayReport> {
+    time_range.validate()?;
+    let (approved_templates, _) = approved_template_ids(nuclei_report)?;
+    let detections = validated_detections(nuclei_templates, &approved_templates);
+    if detections.is_empty() {
+        bail!("no validated Nuclei detections could be rebuilt from the supplied report and template checkout");
+    }
+    let kev_cves = kev_cves(kev_report)?;
+    let source_findings = explain_private_findings(findings)?;
+    let mut per_cve = BTreeMap::<String, ReplayCveAccumulator>::new();
+    let mut known_source_request_ids = BTreeSet::new();
+    for finding in source_findings {
+        for cve in finding.cves {
+            let accumulator = per_cve.entry(cve).or_default();
+            accumulator.known_findings += 1;
+            if let Some(request_id) = &finding.request_id {
+                accumulator.known_request_ids.insert(request_id.clone());
+                known_source_request_ids.insert(request_id.clone());
+            }
+        }
+    }
+
+    let files = input_files(input, telemetry_profile)?;
+    let mut total_events_evaluated = 0;
+    let mut requests_outside_time_range = 0;
+    let mut requests_without_timestamp_excluded = 0;
+    let mut parse_errors = 0;
+    let mut matched_events_total = 0_u64;
+    let mut aggregate_other_matches_with_request_id = 0_u64;
+    let mut aggregate_other_matches_without_request_id = 0_u64;
+    let mut aggregate_outcomes = ReplayOutcomeCounts::default();
+    let mut aggregate_known_matched_request_ids = BTreeSet::new();
+
+    for path in &files {
+        stream_events(path, telemetry_profile, |result| {
+            let event = match result {
+                Ok(event) => event,
+                Err(_) => {
+                    parse_errors += 1;
+                    return Ok(());
+                }
+            };
+            if !time_range.includes(event.timestamp) {
+                if event.timestamp.is_some() {
+                    requests_outside_time_range += 1;
+                } else {
+                    requests_without_timestamp_excluded += 1;
+                }
+                return Ok(());
+            }
+            total_events_evaluated += 1;
+            let matched_cves = matching_templates(&detections, &event)
+                .into_iter()
+                .flat_map(|detection| detection.cves.iter().cloned())
+                .collect::<BTreeSet<_>>();
+            if matched_cves.is_empty() {
+                return Ok(());
+            }
+
+            matched_events_total += 1;
+            record_replay_outcome(&mut aggregate_outcomes, &event);
+            let request_id = event.request_id.as_deref();
+            let mut matched_known_for_any_cve = false;
+            for cve in matched_cves {
+                let accumulator = per_cve.entry(cve).or_default();
+                let known_match = request_id
+                    .is_some_and(|request_id| accumulator.known_request_ids.contains(request_id));
+                if known_match {
+                    let request_id = request_id.expect("known_match requires a request ID");
+                    accumulator
+                        .known_matched_request_ids
+                        .insert(request_id.to_owned());
+                    aggregate_known_matched_request_ids.insert(request_id.to_owned());
+                    matched_known_for_any_cve = true;
+                } else if request_id.is_some() {
+                    accumulator.other_matches_with_request_id += 1;
+                } else {
+                    accumulator.other_matches_without_request_id += 1;
+                }
+                record_replay_outcome(&mut accumulator.outcomes, &event);
+            }
+            if !matched_known_for_any_cve {
+                if request_id.is_some() {
+                    aggregate_other_matches_with_request_id += 1;
+                } else {
+                    aggregate_other_matches_without_request_id += 1;
+                }
+            }
+            Ok(())
+        })?;
+    }
+
+    let mut cve_coverage = per_cve
+        .into_iter()
+        .map(|(cve, accumulator)| {
+            let known_matched = accumulator.known_matched_request_ids.len() as u64;
+            let coverage = (!accumulator.known_request_ids.is_empty())
+                .then(|| known_matched as f64 / accumulator.known_findings as f64);
+            CveCoverage {
+                is_kev: kev_cves.contains(&cve),
+                cve,
+                known_findings: accumulator.known_findings,
+                known_matched,
+                known_missed: accumulator.known_findings.saturating_sub(known_matched),
+                coverage,
+                other_matches_with_request_id: accumulator.other_matches_with_request_id,
+                other_matches_without_request_id: accumulator.other_matches_without_request_id,
+                matched_events_blocked: accumulator.outcomes.blocked,
+                matched_events_not_blocked: accumulator.outcomes.not_blocked,
+                matched_events_unknown_outcome: accumulator.outcomes.unknown,
+            }
+        })
+        .collect::<Vec<_>>();
+    cve_coverage.sort_by(|left, right| {
+        right
+            .known_findings
+            .cmp(&left.known_findings)
+            .then_with(|| left.cve.cmp(&right.cve))
+    });
+
+    let known_findings = cve_coverage
+        .iter()
+        .map(|coverage| coverage.known_findings)
+        .sum::<u64>();
+    let known_matched = aggregate_known_matched_request_ids.len() as u64;
+    let aggregate = CoverageAggregate {
+        known_findings,
+        known_matched,
+        known_missed: known_findings.saturating_sub(known_matched),
+        coverage: (!known_source_request_ids.is_empty())
+            .then(|| known_matched as f64 / known_findings as f64),
+        matched_events_total,
+        other_matches_with_request_id: aggregate_other_matches_with_request_id,
+        other_matches_without_request_id: aggregate_other_matches_without_request_id,
+        matched_events_blocked: aggregate_outcomes.blocked,
+        matched_events_not_blocked: aggregate_outcomes.not_blocked,
+        matched_events_unknown_outcome: aggregate_outcomes.unknown,
+    };
+
+    Ok(HistoricalReplayReport {
+        report_kind: "HISTORICAL_REPLAY_COVERAGE".to_owned(),
+        safety_note: "Coverage is a conservative lower bound based only on re-observed source-finding request IDs; it is not precision, recall, accuracy, ground truth, or an attack, exploitation, or compromise determination. Other matches may represent additional attempts or accidental matches and require human review. No raw request values, IP addresses, hostnames, headers, or request IDs are included.".to_owned(),
+        telemetry_profile,
+        filter_from: time_range.from.map(|timestamp| timestamp.to_rfc3339()),
+        filter_to: time_range.to.map(|timestamp| timestamp.to_rfc3339()),
+        files_analyzed: files.len(),
+        total_events_evaluated,
+        requests_outside_time_range,
+        requests_without_timestamp_excluded,
+        parse_errors,
+        inputs: ReplayInputs {
+            nuclei_report_sha256: sha256_file(nuclei_report),
+            kev_report_sha256: sha256_file(kev_report),
+            findings_sha256: sha256_file(findings),
+        },
+        per_cve: cve_coverage,
+        aggregate,
+    })
+}
+
+fn record_replay_outcome(outcomes: &mut ReplayOutcomeCounts, event: &WebEvent) {
+    match event
+        .waf_action
+        .as_deref()
+        .map(str::to_ascii_uppercase)
+        .as_deref()
+    {
+        Some("BLOCK") => outcomes.blocked += 1,
+        Some("ALLOW") | Some("COUNT") => outcomes.not_blocked += 1,
+        _ => outcomes.unknown += 1,
+    }
+}
+
 fn approved_template_ids(path: &Path) -> anyhow::Result<(BTreeSet<String>, Option<String>)> {
     let selection = frozen_nuclei_selection(path)?;
     Ok((selection.template_ids, selection.nuclei_revision))
@@ -1110,7 +1373,8 @@ where
     Ok(())
 }
 
-pub(crate) fn ensure_separate_output(input: &Path, output: &Path) -> anyhow::Result<()> {
+/// Refuse an output path nested in, or containing, immutable raw input.
+pub fn ensure_separate_output(input: &Path, output: &Path) -> anyhow::Result<()> {
     let input =
         fs::canonicalize(input).with_context(|| format!("resolving {}", input.display()))?;
     let output = if output.is_absolute() {

@@ -5,7 +5,8 @@ use chrono::{DateTime, Utc};
 use predicates::str::contains;
 use shenron::event::{TelemetryProfile, TrustedProxy, TrustedProxySet};
 use shenron::production::{
-    ablation, explain_private_findings, hunt, inspect, inspect_with_trusted_proxies, HuntTimeRange,
+    ablation, explain_private_findings, historical_replay, hunt, inspect,
+    inspect_with_trusted_proxies, HuntTimeRange,
 };
 use tempfile::tempdir;
 
@@ -64,6 +65,111 @@ fn ablation_cli_writes_an_aggregate_only_report() {
 
     let written = fs::read_to_string(output).unwrap();
     assert!(written.contains("ABLATION_VOLUME_COMPARISON"));
+    assert!(!written.contains("secret-token"));
+    assert!(!written.contains("internal.example.test"));
+    assert!(!written.contains("198.51.100.1"));
+}
+
+#[test]
+fn historical_replay_measures_sanitized_cve_coverage_and_other_matches() {
+    let directory = tempdir().unwrap();
+    let findings = directory.path().join("private-findings.jsonl");
+    fs::write(
+        &findings,
+        concat!(
+            r#"{"template_id":"synthetic-cve-2024-10001","cves":["CVE-2024-10001"],"detectability":"HIGH","timestamp":"2025-01-01T00:00:00Z","source_ip":"198.51.100.1","host":"internal.example.test","method":"GET","uri_path":"/vulnerable/execute","uri_query":"cmd=probe","headers":[],"ja3":null,"ja4":null,"waf_action":"ALLOW","request_id":"production-allow"}"#,
+            "\n"
+        ),
+    )
+    .unwrap();
+    let report = historical_replay(
+        Path::new("tests/fixtures/production/waf.jsonl"),
+        Path::new("tests/fixtures/nuclei"),
+        Path::new("tests/fixtures/production/nuclei-report.json"),
+        Path::new("tests/fixtures/production/kev-report.json"),
+        &findings,
+        TelemetryProfile::AwsWaf,
+        HuntTimeRange::default(),
+    )
+    .unwrap();
+    assert_eq!(report.report_kind, "HISTORICAL_REPLAY_COVERAGE");
+    assert_eq!(report.total_events_evaluated, 2);
+    assert_eq!(report.per_cve.len(), 1);
+    let coverage = &report.per_cve[0];
+    assert_eq!(coverage.cve, "CVE-2024-10001");
+    assert!(coverage.is_kev);
+    assert_eq!(coverage.known_findings, 1);
+    assert_eq!(coverage.known_matched, 1);
+    assert_eq!(coverage.known_missed, 0);
+    assert_eq!(coverage.coverage, Some(1.0));
+    assert_eq!(coverage.other_matches_with_request_id, 1);
+    assert_eq!(coverage.other_matches_without_request_id, 0);
+    assert_eq!(coverage.matched_events_blocked, 1);
+    assert_eq!(coverage.matched_events_not_blocked, 1);
+    assert_eq!(coverage.matched_events_unknown_outcome, 0);
+    assert_eq!(report.aggregate.known_findings, 1);
+    assert_eq!(report.aggregate.known_matched, 1);
+    assert_eq!(report.aggregate.matched_events_total, 2);
+    assert_eq!(report.aggregate.other_matches_with_request_id, 1);
+    assert_eq!(report.aggregate.other_matches_without_request_id, 0);
+    assert_eq!(report.aggregate.matched_events_blocked, 1);
+    assert_eq!(report.aggregate.matched_events_not_blocked, 1);
+
+    let missed_findings = directory.path().join("missed-private-findings.jsonl");
+    fs::write(
+        &missed_findings,
+        fs::read_to_string(&findings)
+            .unwrap()
+            .replace("production-allow", "source-request-not-in-corpus"),
+    )
+    .unwrap();
+    let missed = historical_replay(
+        Path::new("tests/fixtures/production/waf.jsonl"),
+        Path::new("tests/fixtures/nuclei"),
+        Path::new("tests/fixtures/production/nuclei-report.json"),
+        Path::new("tests/fixtures/production/kev-report.json"),
+        &missed_findings,
+        TelemetryProfile::AwsWaf,
+        HuntTimeRange::default(),
+    )
+    .unwrap();
+    assert_eq!(missed.per_cve[0].coverage, Some(0.0));
+    assert_eq!(missed.aggregate.coverage, Some(0.0));
+
+    let serialized = serde_json::to_string(&report).unwrap();
+    assert!(!serialized.contains("secret-token"));
+    assert!(!serialized.contains("internal.example.test"));
+    assert!(!serialized.contains("198.51.100.1"));
+
+    let output = directory.path().join("historical-replay.json");
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "production",
+            "replay",
+            "--input",
+            "tests/fixtures/production/waf.jsonl",
+            "--format",
+            "aws-waf",
+            "--nuclei-templates",
+            "tests/fixtures/nuclei",
+            "--nuclei-report",
+            "tests/fixtures/production/nuclei-report.json",
+            "--kev-report",
+            "tests/fixtures/production/kev-report.json",
+            "--findings",
+            findings.to_str().unwrap(),
+            "--output",
+            output.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(contains(
+            "Historical replay coverage is a conservative lower bound",
+        ))
+        .stdout(contains("Conservative coverage:"));
+    let written = fs::read_to_string(output).unwrap();
+    assert!(written.contains("HISTORICAL_REPLAY_COVERAGE"));
     assert!(!written.contains("secret-token"));
     assert!(!written.contains("internal.example.test"));
     assert!(!written.contains("198.51.100.1"));
