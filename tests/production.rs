@@ -643,6 +643,91 @@ fn hunt_filters_an_inclusive_utc_time_range_before_matching() {
     );
 }
 
+#[test]
+fn explain_scores_behavior_and_groups_shared_ja4_fingerprints() {
+    let directory = tempdir().unwrap();
+    let findings_path = directory.path().join("private-findings.jsonl");
+    let record = |template: &str,
+                  cve: &str,
+                  ip: &str,
+                  host: &str,
+                  path: &str,
+                  waf: &str,
+                  id: &str| {
+        format!(
+            r#"{{"template_id":"{template}","cves":["{cve}"],"detectability":"HIGH","timestamp":"2026-08-24T00:00:01+00:00","source_ip":"{ip}","client_ip":null,"host":"{host}","method":"GET","uri_path":"{path}","uri_query":null,"headers":[],"ja3":null,"ja4":"t13d1516h2_shared","waf_action":"{waf}","request_id":"{id}"}}"#
+        )
+    };
+    let lines = [
+        record(
+            "tpl-a",
+            "CVE-2024-0001",
+            "203.0.113.7",
+            "a.example",
+            "/a",
+            "ALLOW",
+            "r1",
+        ),
+        record(
+            "tpl-b",
+            "CVE-2024-0002",
+            "203.0.113.7",
+            "b.example",
+            "/b",
+            "ALLOW",
+            "r2",
+        ),
+        record(
+            "tpl-c",
+            "CVE-2024-0003",
+            "203.0.113.7",
+            "c.example",
+            "/c",
+            "BLOCK",
+            "r3",
+        ),
+        record(
+            "tpl-a",
+            "CVE-2024-0001",
+            "198.51.100.20",
+            "a.example",
+            "/a",
+            "ALLOW",
+            "r4",
+        ),
+    ];
+    fs::write(&findings_path, lines.join("\n")).unwrap();
+
+    let assertion = Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "production",
+            "explain",
+            "--findings",
+            findings_path.to_str().unwrap(),
+            "--show-source-ips",
+            "--show-fingerprints",
+        ])
+        .assert()
+        .success();
+
+    // 203.0.113.7: 3 templates (9) + 3 CVEs (6) + 3 observations (3) + 3 hosts (6)
+    // + 2/3 unblocked (10) = 34.
+    assertion
+        .stdout(contains(
+            "203.0.113.7\n  Grouping identity: observed-peer\n  Triage basis: breadth\n  Matching request observations: 3\n  Distinct Nuclei template patterns: 3\n  Unique CVEs: 3\n  Matched template records: 3\n  Behavior priority score: 34/100 (low)",
+        ))
+        // The single-observation peer is retained as evidence but not triaged.
+        .stdout(contains(
+            "198.51.100.20\n  Grouping identity: observed-peer\n  Triage basis: none\n  Matching request observations: 1\n  Distinct Nuclei template patterns: 1\n  Unique CVEs: 1\n  Matched template records: 1\n  Behavior priority score: 23/100 (info)",
+        ))
+        // One JA4 fingerprint spans both peers: a shared-tooling signal.
+        .stdout(contains("JA4 fingerprint triage (private findings only):"))
+        .stdout(contains(
+            "t13d1516h2_shared\n  Triage basis: breadth\n  Distinct validated clients sharing this fingerprint: 0\n  Distinct observed peers sharing this fingerprint: 2\n  Identity spread used for behavior score: 2\n  Matching request observations: 4\n  Distinct Nuclei template patterns: 3\n  Unique CVEs: 3\n  Matched template records: 4\n  Behavior priority score: 34/100 (low)",
+        ));
+}
+
 fn parse_utc(value: &str) -> DateTime<Utc> {
     DateTime::parse_from_rfc3339(value)
         .unwrap()

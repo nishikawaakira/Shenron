@@ -27,6 +27,7 @@ use shenron::{
         InspectionReport, SanitizedHuntReport,
     },
     sigma::load_rules,
+    triage::{entity_groups, EntityDimension, TriagePolicy},
     waf::{maybe_gzip_reader, WafLines},
 };
 
@@ -213,6 +214,9 @@ enum ProductionCommand {
         /// Summarize source IP addresses from the selected private findings.
         #[arg(long)]
         show_source_ips: bool,
+        /// Summarize JA4 TLS client fingerprints from the selected private findings.
+        #[arg(long)]
+        show_fingerprints: bool,
         /// Matching observations required for breadth-based triage (default: 3).
         #[arg(long, value_parser = parse_positive_usize)]
         triage_breadth_observations: Option<usize>,
@@ -394,6 +398,7 @@ fn main() -> Result<()> {
                 show_request,
                 show_evidence,
                 show_source_ips,
+                show_fingerprints,
                 triage_breadth_observations,
                 triage_breadth_templates,
                 triage_depth_observations,
@@ -410,9 +415,12 @@ fn main() -> Result<()> {
                 };
                 print_explanations(
                     &findings,
-                    show_request || show_evidence,
-                    show_evidence,
-                    show_source_ips,
+                    ExplainDisplay {
+                        show_request: show_request || show_evidence,
+                        show_evidence,
+                        show_source_ips,
+                        show_fingerprints,
+                    },
                     waf_outcome.map(WafOutcomeFilter::label),
                     limit,
                     TriagePolicy::new(
@@ -588,36 +596,6 @@ fn triage_duration_error(value: &str) -> String {
     )
 }
 
-#[cfg(test)]
-mod duration_tests {
-    use super::{parse_triage_duration, Duration, MAX_TRIAGE_WINDOW_SECONDS};
-
-    #[test]
-    fn accepts_bounded_triage_window_durations() {
-        assert_eq!(parse_triage_duration("10m"), Ok(Duration::from_secs(600)));
-        assert_eq!(
-            parse_triage_duration("1h"),
-            Ok(Duration::from_secs(60 * 60))
-        );
-        assert_eq!(
-            parse_triage_duration("2d"),
-            Ok(Duration::from_secs(2 * 24 * 60 * 60))
-        );
-        assert_eq!(
-            parse_triage_duration("3650d"),
-            Ok(Duration::from_secs(MAX_TRIAGE_WINDOW_SECONDS))
-        );
-    }
-
-    #[test]
-    fn rejects_excessive_or_unrepresentable_triage_windows() {
-        for value in ["4000d", "18446744073709551615d"] {
-            let error = parse_triage_duration(value).unwrap_err();
-            assert!(error.contains("maximum 3650d"));
-        }
-    }
-}
-
 fn print_inspection(report: &InspectionReport) {
     let fields = &report.fields_available;
     let capabilities = report.telemetry_capabilities;
@@ -684,11 +662,17 @@ fn print_ablation(report: &AblationReport, output_path: Option<&Path>) {
     }
 }
 
-fn print_explanations(
-    findings: &[shenron::production::FindingExplanation],
+/// Which optional sections `production explain` should print.
+struct ExplainDisplay {
     show_request: bool,
     show_evidence: bool,
     show_source_ips: bool,
+    show_fingerprints: bool,
+}
+
+fn print_explanations(
+    findings: &[shenron::production::FindingExplanation],
+    display: ExplainDisplay,
     waf_outcome_filter: Option<&str>,
     limit: usize,
     triage_policy: TriagePolicy,
@@ -707,10 +691,13 @@ fn print_explanations(
         None => println!("CVE / Nuclei template mappings: {}", findings.len()),
     }
     print_explanation_summary(findings, limit);
-    if show_source_ips {
+    if display.show_source_ips {
         print_source_ip_summary(findings, limit, triage_policy);
     }
-    if !show_request && !show_evidence {
+    if display.show_fingerprints {
+        print_ja4_summary(findings, limit, triage_policy);
+    }
+    if !display.show_request && !display.show_evidence {
         println!("Pass --show-request to display individual requests, or --show-evidence to include all locally stored evidence.");
         return;
     }
@@ -740,7 +727,7 @@ fn print_explanations(
                 .map(terminal_safe)
                 .unwrap_or_else(|| "unavailable".to_owned()),
         );
-        if show_request {
+        if display.show_request {
             let target = match (&finding.uri_path, &finding.uri_query) {
                 (Some(path), Some(query)) => {
                     format!("{}?{}", terminal_safe(path), terminal_safe(query))
@@ -760,7 +747,7 @@ fn print_explanations(
         } else {
             println!("Request: hidden (pass --show-request to display method/path/query)");
         }
-        if show_evidence {
+        if display.show_evidence {
             println!(
                 "Observed connection source (peer; may be CDN/LB/NAT, not attacker attribution): {}\nValidated forwarded client IP: {}\nHost: {}\nJA3: {}\nJA4: {}\nRequest ID: {}\nTerminating WAF rule ID: {}\nTerminating WAF rule type: {}\nNon-terminating WAF rule IDs: {}\nWAF labels: {}\nHeaders:",
                 finding
@@ -882,237 +869,15 @@ fn print_explanation_summary(findings: &[shenron::production::FindingExplanation
     }
 }
 
-const SOURCE_IP_TRIAGE_MINIMUM_REQUEST_PATTERNS: usize = 3;
-const SOURCE_IP_TRIAGE_MINIMUM_TEMPLATE_PATTERNS: usize = 2;
-const SOURCE_IP_TRIAGE_MINIMUM_REPEATED_PATTERNS: usize = 10;
 const MAX_TRIAGE_WINDOW_DAYS: u64 = 3650;
 const MAX_TRIAGE_WINDOW_SECONDS: u64 = MAX_TRIAGE_WINDOW_DAYS * 24 * 60 * 60;
-
-#[derive(Clone, Copy)]
-struct TriagePolicy {
-    breadth_observations: usize,
-    breadth_templates: usize,
-    depth_observations: usize,
-    window: Option<Duration>,
-}
-
-impl TriagePolicy {
-    fn new(
-        breadth_observations: Option<usize>,
-        breadth_templates: Option<usize>,
-        depth_observations: Option<usize>,
-        window: Option<Duration>,
-    ) -> Self {
-        Self {
-            breadth_observations: breadth_observations
-                .unwrap_or(SOURCE_IP_TRIAGE_MINIMUM_REQUEST_PATTERNS),
-            breadth_templates: breadth_templates
-                .unwrap_or(SOURCE_IP_TRIAGE_MINIMUM_TEMPLATE_PATTERNS),
-            depth_observations: depth_observations
-                .unwrap_or(SOURCE_IP_TRIAGE_MINIMUM_REPEATED_PATTERNS),
-            window,
-        }
-    }
-
-    fn is_default(self) -> bool {
-        self.breadth_observations == SOURCE_IP_TRIAGE_MINIMUM_REQUEST_PATTERNS
-            && self.breadth_templates == SOURCE_IP_TRIAGE_MINIMUM_TEMPLATE_PATTERNS
-            && self.depth_observations == SOURCE_IP_TRIAGE_MINIMUM_REPEATED_PATTERNS
-            && self.window.is_none()
-    }
-}
-
-#[derive(Default)]
-struct SourceIpSummary {
-    matching_template_records: usize,
-    cves: std::collections::BTreeSet<String>,
-    templates: std::collections::BTreeSet<String>,
-    request_patterns: std::collections::BTreeSet<String>,
-    observations: Vec<TriageObservation>,
-}
-
-#[derive(Clone)]
-struct TriageObservation {
-    timestamp: Option<DateTime<Utc>>,
-    request_pattern: String,
-    template_id: String,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum GroupingIdentity {
-    ValidatedClient,
-    ObservedPeer,
-}
-
-impl GroupingIdentity {
-    fn label(self) -> &'static str {
-        match self {
-            Self::ValidatedClient => "validated-client",
-            Self::ObservedPeer => "observed-peer",
-        }
-    }
-}
-
-impl SourceIpSummary {
-    fn triage_basis(&self, policy: TriagePolicy) -> Option<&'static str> {
-        if policy.window.is_some() {
-            return self.windowed_triage_basis(policy);
-        }
-        let breadth = self.request_patterns.len() >= policy.breadth_observations
-            && self.templates.len() >= policy.breadth_templates;
-        let depth = self.request_patterns.len() >= policy.depth_observations;
-        match (breadth, depth) {
-            (true, true) => Some("breadth + depth"),
-            (true, false) => Some("breadth"),
-            (false, true) => Some("depth"),
-            (false, false) => None,
-        }
-    }
-
-    fn requires_investigation(&self, policy: TriagePolicy) -> bool {
-        self.triage_basis(policy).is_some()
-    }
-
-    fn undated_observations(&self) -> usize {
-        self.observations
-            .iter()
-            .filter(|observation| observation.timestamp.is_none())
-            .count()
-    }
-
-    fn windowed_triage_basis(&self, policy: TriagePolicy) -> Option<&'static str> {
-        // CLI parsing bounds durations, but preserve fail-closed behavior if a
-        // non-CLI caller supplies a duration chrono cannot represent.
-        let window = chrono::Duration::from_std(policy.window?).ok()?;
-        let mut observations = self
-            .observations
-            .iter()
-            .filter_map(|observation| {
-                observation
-                    .timestamp
-                    .map(|timestamp| (timestamp, observation))
-            })
-            .collect::<Vec<_>>();
-        observations.sort_by_key(|(timestamp, _)| *timestamp);
-
-        let mut start = 0;
-        let mut patterns = BTreeMap::<&str, usize>::new();
-        let mut templates = BTreeMap::<&str, usize>::new();
-        let mut saw_breadth = false;
-        let mut saw_depth = false;
-        for end in 0..observations.len() {
-            let (_, observation) = observations[end];
-            *patterns
-                .entry(observation.request_pattern.as_str())
-                .or_default() += 1;
-            *templates
-                .entry(observation.template_id.as_str())
-                .or_default() += 1;
-            while observations[end]
-                .0
-                .signed_duration_since(observations[start].0)
-                > window
-            {
-                let (_, observation) = observations[start];
-                decrement(&mut patterns, observation.request_pattern.as_str());
-                decrement(&mut templates, observation.template_id.as_str());
-                start += 1;
-            }
-            saw_breadth |= patterns.len() >= policy.breadth_observations
-                && templates.len() >= policy.breadth_templates;
-            saw_depth |= patterns.len() >= policy.depth_observations;
-        }
-        match (saw_breadth, saw_depth) {
-            (true, true) => Some("windowed breadth + depth"),
-            (true, false) => Some("windowed breadth"),
-            (false, true) => Some("windowed depth"),
-            (false, false) => None,
-        }
-    }
-}
-
-fn decrement(values: &mut BTreeMap<&str, usize>, value: &str) {
-    let count = values
-        .get_mut(value)
-        .expect("window contains each tracked observation");
-    *count -= 1;
-    if *count == 0 {
-        values.remove(value);
-    }
-}
-
-fn source_ip_request_pattern(finding: &shenron::production::FindingExplanation) -> String {
-    // A template can produce more than one finding for one logged request. Keep
-    // that from inflating the repeated-behavior test by excluding template/CVE
-    // identity from this key. Older private findings may not have a request ID,
-    // so their available request evidence is used as a deterministic fallback.
-    if let Some(request_id) = &finding.request_id {
-        return format!("request-id:{request_id}");
-    }
-    format!(
-        "timestamp:{:?}\u{1f}host:{:?}\u{1f}method:{:?}\u{1f}path:{:?}\u{1f}query:{:?}",
-        finding.timestamp, finding.host, finding.method, finding.uri_path, finding.uri_query
-    )
-}
-
-fn source_ip_summaries(
-    findings: &[shenron::production::FindingExplanation],
-) -> BTreeMap<(GroupingIdentity, String), SourceIpSummary> {
-    let mut summaries = BTreeMap::<(GroupingIdentity, String), SourceIpSummary>::new();
-    for finding in findings {
-        let identity = if let Some(client_ip) = &finding.client_ip {
-            (GroupingIdentity::ValidatedClient, client_ip)
-        } else if let Some(source_ip) = &finding.source_ip {
-            (GroupingIdentity::ObservedPeer, source_ip)
-        } else {
-            continue;
-        };
-        let entry = summaries
-            .entry((identity.0, identity.1.clone()))
-            .or_default();
-        entry.matching_template_records += 1;
-        entry.cves.extend(finding.cves.iter().cloned());
-        entry.templates.insert(finding.template_id.clone());
-        let request_pattern = source_ip_request_pattern(finding);
-        entry.request_patterns.insert(request_pattern.clone());
-        entry.observations.push(TriageObservation {
-            timestamp: parse_finding_timestamp(finding.timestamp.as_deref()),
-            request_pattern,
-            template_id: finding.template_id.clone(),
-        });
-    }
-    summaries
-}
-
-fn parse_finding_timestamp(value: Option<&str>) -> Option<DateTime<Utc>> {
-    DateTime::parse_from_rfc3339(value?)
-        .ok()
-        .map(|timestamp| timestamp.with_timezone(&Utc))
-}
-
-fn sort_source_ip_summaries(
-    summaries: BTreeMap<(GroupingIdentity, String), SourceIpSummary>,
-) -> Vec<((GroupingIdentity, String), SourceIpSummary)> {
-    let mut summary = summaries.into_iter().collect::<Vec<_>>();
-    summary.sort_by(|left, right| {
-        right
-            .1
-            .request_patterns
-            .len()
-            .cmp(&left.1.request_patterns.len())
-            .then_with(|| right.1.templates.len().cmp(&left.1.templates.len()))
-            .then_with(|| left.0 .1.cmp(&right.0 .1))
-            .then_with(|| left.0 .0.cmp(&right.0 .0))
-    });
-    summary
-}
 
 fn print_source_ip_summary(
     findings: &[shenron::production::FindingExplanation],
     limit: usize,
     policy: TriagePolicy,
 ) {
-    let summary = sort_source_ip_summaries(source_ip_summaries(findings));
+    let groups = entity_groups(findings, EntityDimension::ConnectionIp, policy);
     println!("\nConnection/client IP triage (private findings only):");
     if policy.is_default() {
         println!("Triage policy: default fixed baseline");
@@ -1130,9 +895,12 @@ fn print_source_ip_summary(
         policy.breadth_templates,
         policy.depth_observations,
     );
-    let triaged = summary
+    println!(
+        "Behavior priority score (0-100) ranks a group for triage from observed request behavior only. It is not a probability of malice, a precision or true-positive estimate, an exploitation or compromise determination, or attacker attribution."
+    );
+    let triaged = groups
         .iter()
-        .filter(|(_, item)| item.requires_investigation(policy))
+        .filter(|group| group.requires_investigation())
         .collect::<Vec<_>>();
     let displayed_triaged = if limit == 0 {
         triaged.as_slice()
@@ -1143,23 +911,8 @@ fn print_source_ip_summary(
     if displayed_triaged.is_empty() {
         println!("No IP group met the repeated-pattern triage threshold.");
     } else {
-        for ((identity, address), item) in displayed_triaged {
-            println!(
-                "{}\n  Grouping identity: {}\n  Triage basis: {}\n  Matching request observations: {}\n  Distinct Nuclei template patterns: {}\n  Unique CVEs: {}\n  Matched template records: {}",
-                terminal_safe(address),
-                identity.label(),
-                item.triage_basis(policy).expect("triaged source has a basis"),
-                item.request_patterns.len(),
-                item.templates.len(),
-                item.cves.len(),
-                item.matching_template_records,
-            );
-            if policy.window.is_some() {
-                println!(
-                    "  Undated observations excluded from windowed triage: {}",
-                    item.undated_observations()
-                );
-            }
+        for group in displayed_triaged {
+            print_ip_group(group, policy.window.is_some());
         }
         if displayed_triaged.len() < triaged.len() {
             println!(
@@ -1170,37 +923,98 @@ fn print_source_ip_summary(
     }
 
     let displayed = if limit == 0 {
-        summary.as_slice()
+        groups.as_slice()
     } else {
-        &summary[..summary.len().min(limit)]
+        &groups[..groups.len().min(limit)]
     };
     println!("\nIP groups with matching evidence (not an attack determination):");
     if displayed.is_empty() {
         println!("No client or peer IP addresses were recorded in the selected findings.");
         return;
     }
-    for ((identity, address), item) in displayed {
-        println!(
-            "{}\n  Grouping identity: {}\n  Triage basis: {}\n  Matching request observations: {}\n  Distinct Nuclei template patterns: {}\n  Unique CVEs: {}\n  Matched template records: {}",
-            terminal_safe(address),
-            identity.label(),
-            item.triage_basis(policy).unwrap_or("none"),
-            item.request_patterns.len(),
-            item.templates.len(),
-            item.cves.len(),
-            item.matching_template_records,
-        );
-        if policy.window.is_some() {
-            println!(
-                "  Undated observations excluded from windowed triage: {}",
-                item.undated_observations()
-            );
-        }
+    for group in displayed {
+        print_ip_group(group, policy.window.is_some());
     }
-    if displayed.len() < summary.len() {
+    if displayed.len() < groups.len() {
         println!(
             "{} additional IP groups omitted. Pass --limit 0 to display all.",
-            summary.len() - displayed.len()
+            groups.len() - displayed.len()
+        );
+    }
+}
+
+fn print_ip_group(group: &shenron::triage::EntityGroup, windowed: bool) {
+    println!(
+        "{}\n  Grouping identity: {}\n  Triage basis: {}\n  Matching request observations: {}\n  Distinct Nuclei template patterns: {}\n  Unique CVEs: {}\n  Matched template records: {}",
+        terminal_safe(&group.key),
+        group
+            .identity
+            .expect("connection-IP groups carry an identity")
+            .label(),
+        group.triage_basis.unwrap_or("none"),
+        group.distinct_observations,
+        group.distinct_templates,
+        group.distinct_cves,
+        group.matching_records,
+    );
+    if windowed {
+        println!(
+            "  Undated observations excluded from windowed triage: {}",
+            group.undated_observations
+        );
+    }
+    println!(
+        "  Behavior priority score: {}/100 ({})",
+        group.score.total,
+        group.score.tier.label()
+    );
+    println!(
+        "  Request-specific observations: {}\n  Response-unverified observations: {}",
+        group.request_specific_observations, group.response_unverified_observations
+    );
+}
+
+fn print_ja4_summary(
+    findings: &[shenron::production::FindingExplanation],
+    limit: usize,
+    policy: TriagePolicy,
+) {
+    let groups = entity_groups(findings, EntityDimension::Ja4, policy);
+    println!("\nJA4 fingerprint triage (private findings only):");
+    println!(
+        "A JA4 client fingerprint groups requests that share TLS client characteristics. Validated-client and observed-peer identities are intentionally reported separately because they must not be merged. One fingerprint observed across several identities can indicate shared tooling or automation; it is not attacker attribution and does not establish an attack, exploitation, or compromise. Behavior priority score (0-100) ranks a fingerprint for triage from observed request behavior only."
+    );
+    let displayed = if limit == 0 {
+        groups.as_slice()
+    } else {
+        &groups[..groups.len().min(limit)]
+    };
+    if displayed.is_empty() {
+        println!("No JA4 fingerprints were recorded in the selected findings.");
+        return;
+    }
+    for group in displayed {
+        println!(
+            "{}\n  Triage basis: {}\n  Distinct validated clients sharing this fingerprint: {}\n  Distinct observed peers sharing this fingerprint: {}\n  Identity spread used for behavior score: {}\n  Matching request observations: {}\n  Distinct Nuclei template patterns: {}\n  Unique CVEs: {}\n  Matched template records: {}\n  Behavior priority score: {}/100 ({})\n  Request-specific observations: {}\n  Response-unverified observations: {}",
+            terminal_safe(&group.key),
+            group.triage_basis.unwrap_or("none"),
+            group.distinct_validated_clients,
+            group.distinct_observed_peers,
+            group.spread,
+            group.distinct_observations,
+            group.distinct_templates,
+            group.distinct_cves,
+            group.matching_records,
+            group.score.total,
+            group.score.tier.label(),
+            group.request_specific_observations,
+            group.response_unverified_observations,
+        );
+    }
+    if displayed.len() < groups.len() {
+        println!(
+            "{} additional JA4 fingerprints omitted. Pass --limit 0 to display all.",
+            groups.len() - displayed.len()
         );
     }
 }
@@ -1353,4 +1167,34 @@ fn input_files(input: &Path) -> Result<Vec<PathBuf>> {
         .filter(|entry| entry.file_type().is_file())
         .map(|entry| entry.into_path())
         .collect())
+}
+
+#[cfg(test)]
+mod duration_tests {
+    use super::{parse_triage_duration, Duration, MAX_TRIAGE_WINDOW_SECONDS};
+
+    #[test]
+    fn accepts_bounded_triage_window_durations() {
+        assert_eq!(parse_triage_duration("10m"), Ok(Duration::from_secs(600)));
+        assert_eq!(
+            parse_triage_duration("1h"),
+            Ok(Duration::from_secs(60 * 60))
+        );
+        assert_eq!(
+            parse_triage_duration("2d"),
+            Ok(Duration::from_secs(2 * 24 * 60 * 60))
+        );
+        assert_eq!(
+            parse_triage_duration("3650d"),
+            Ok(Duration::from_secs(MAX_TRIAGE_WINDOW_SECONDS))
+        );
+    }
+
+    #[test]
+    fn rejects_excessive_or_unrepresentable_triage_windows() {
+        for value in ["4000d", "18446744073709551615d"] {
+            let error = parse_triage_duration(value).unwrap_err();
+            assert!(error.contains("maximum 3650d"));
+        }
+    }
 }
