@@ -303,6 +303,67 @@ struct ReplayOutcomeCounts {
     unknown: u64,
 }
 
+struct KnownReplaySources {
+    per_cve: BTreeMap<String, ReplayCveAccumulator>,
+    known_findings_total: u64,
+    known_source_request_ids: BTreeSet<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CountHypothesisReport {
+    pub report_kind: String,
+    pub safety_note: String,
+    pub telemetry_profile: TelemetryProfile,
+    pub filter_from: Option<String>,
+    pub filter_to: Option<String>,
+    pub files_analyzed: usize,
+    pub total_events_evaluated: usize,
+    pub requests_outside_time_range: usize,
+    pub requests_without_timestamp_excluded: usize,
+    pub parse_errors: usize,
+    pub inputs: ReplayInputs,
+    pub per_cve: Vec<CveHypothesis>,
+}
+
+/// One CVE's non-prescriptive COUNT simulation ladder.
+#[derive(Debug, Serialize)]
+pub struct CveHypothesis {
+    pub cve: String,
+    pub is_kev: bool,
+    pub known_findings: u64,
+    pub rungs: Vec<HypothesisRung>,
+}
+
+/// Aggregate-only result of simulating one condition width in COUNT mode.
+#[derive(Debug, Serialize)]
+pub struct HypothesisRung {
+    pub strategy: String,
+    pub matched_events: u64,
+    pub known_matched: u64,
+    pub known_coverage: Option<f64>,
+    pub other_matches_with_request_id: u64,
+    pub other_matches_without_request_id: u64,
+    pub matched_events_blocked: u64,
+    pub matched_events_not_blocked: u64,
+    pub matched_events_unknown_outcome: u64,
+}
+
+#[derive(Default)]
+struct CountHypothesisCveAccumulator {
+    known_findings: u64,
+    known_request_ids: BTreeSet<String>,
+    rungs: [HypothesisRungAccumulator; 5],
+}
+
+#[derive(Default)]
+struct HypothesisRungAccumulator {
+    matched_events: u64,
+    known_matched_request_ids: BTreeSet<String>,
+    other_matches_with_request_id: u64,
+    other_matches_without_request_id: u64,
+    outcomes: ReplayOutcomeCounts,
+}
+
 #[derive(Serialize)]
 struct RunManifest {
     report_kind: &'static str,
@@ -857,20 +918,12 @@ pub fn historical_replay(
         bail!("no validated Nuclei detections could be rebuilt from the supplied report and template checkout");
     }
     let kev_cves = kev_cves(kev_report)?;
-    let source_findings = explain_private_findings(findings)?;
-    let known_findings_total = source_findings.len() as u64;
-    let mut per_cve = BTreeMap::<String, ReplayCveAccumulator>::new();
-    let mut known_source_request_ids = BTreeSet::new();
-    for finding in source_findings {
-        for cve in finding.cves {
-            let accumulator = per_cve.entry(cve).or_default();
-            accumulator.known_findings += 1;
-            if let Some(request_id) = &finding.request_id {
-                accumulator.known_request_ids.insert(request_id.clone());
-                known_source_request_ids.insert(request_id.clone());
-            }
-        }
-    }
+    let known_sources = known_replay_sources(explain_private_findings(findings)?);
+    let KnownReplaySources {
+        mut per_cve,
+        known_findings_total,
+        known_source_request_ids,
+    } = known_sources;
 
     let files = input_files(input, telemetry_profile)?;
     let mut total_events_evaluated = 0;
@@ -1006,6 +1059,170 @@ pub fn historical_replay(
     })
 }
 
+/// Simulate broad-to-narrow validated Nuclei conditions as local COUNT-mode
+/// hypotheses. This writes no findings, contacts no network, and makes no
+/// deployment or recommendation.
+pub fn count_hypotheses(
+    input: &Path,
+    nuclei_templates: &Path,
+    nuclei_report: &Path,
+    kev_report: &Path,
+    findings: &Path,
+    telemetry_profile: TelemetryProfile,
+    time_range: HuntTimeRange,
+) -> anyhow::Result<CountHypothesisReport> {
+    time_range.validate()?;
+    let (approved_templates, _) = approved_template_ids(nuclei_report)?;
+    let detections = validated_detections(nuclei_templates, &approved_templates);
+    if detections.is_empty() {
+        bail!("no validated Nuclei detections could be rebuilt from the supplied report and template checkout");
+    }
+    let kev_cves = kev_cves(kev_report)?;
+    let known_sources = known_replay_sources(explain_private_findings(findings)?);
+    let mut per_cve = known_sources
+        .per_cve
+        .into_iter()
+        .map(|(cve, source)| {
+            (
+                cve,
+                CountHypothesisCveAccumulator {
+                    known_findings: source.known_findings,
+                    known_request_ids: source.known_request_ids,
+                    ..CountHypothesisCveAccumulator::default()
+                },
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+
+    let files = input_files(input, telemetry_profile)?;
+    let mut total_events_evaluated = 0;
+    let mut requests_outside_time_range = 0;
+    let mut requests_without_timestamp_excluded = 0;
+    let mut parse_errors = 0;
+    for path in &files {
+        stream_events(path, telemetry_profile, |result| {
+            let event = match result {
+                Ok(event) => event,
+                Err(_) => {
+                    parse_errors += 1;
+                    return Ok(());
+                }
+            };
+            if !time_range.includes(event.timestamp) {
+                if event.timestamp.is_some() {
+                    requests_outside_time_range += 1;
+                } else {
+                    requests_without_timestamp_excluded += 1;
+                }
+                return Ok(());
+            }
+            total_events_evaluated += 1;
+            let mut event_cves = std::array::from_fn::<_, 5, _>(|_| BTreeSet::new());
+            for detection in &detections {
+                let matches = [
+                    detection.matches_path_only(&event),
+                    detection.matches_path_and_query(&event),
+                    detection.matches_path_query_headers(&event),
+                    detection.matches(&event),
+                    detection.matches(&event)
+                        && detection.request_specificity() == RequestSpecificity::RequestSpecific,
+                ];
+                for (index, matched) in matches.into_iter().enumerate() {
+                    if matched {
+                        event_cves[index].extend(detection.cves.iter().cloned());
+                    }
+                }
+            }
+            let request_id = event.request_id.as_deref();
+            for (index, cves) in event_cves.into_iter().enumerate() {
+                for cve in cves {
+                    let accumulator = per_cve.entry(cve).or_default();
+                    let rung = &mut accumulator.rungs[index];
+                    rung.matched_events += 1;
+                    if request_id.is_some_and(|request_id| {
+                        accumulator.known_request_ids.contains(request_id)
+                    }) {
+                        rung.known_matched_request_ids.insert(
+                            request_id
+                                .expect("known match requires a request ID")
+                                .to_owned(),
+                        );
+                    } else if request_id.is_some() {
+                        rung.other_matches_with_request_id += 1;
+                    } else {
+                        rung.other_matches_without_request_id += 1;
+                    }
+                    record_replay_outcome(&mut rung.outcomes, &event);
+                }
+            }
+            Ok(())
+        })?;
+    }
+
+    let strategy_names = [
+        "path_only",
+        "path_and_query",
+        "path_query_headers",
+        "nuclei_ir",
+        "nuclei_ir_request_specific",
+    ];
+    let mut cve_hypotheses = per_cve
+        .into_iter()
+        .map(|(cve, accumulator)| {
+            let rungs = strategy_names
+                .iter()
+                .zip(accumulator.rungs)
+                .map(|(strategy, rung)| {
+                    let known_matched = rung.known_matched_request_ids.len() as u64;
+                    HypothesisRung {
+                        strategy: (*strategy).to_owned(),
+                        matched_events: rung.matched_events,
+                        known_matched,
+                        known_coverage: (!accumulator.known_request_ids.is_empty())
+                            .then(|| known_matched as f64 / accumulator.known_findings as f64),
+                        other_matches_with_request_id: rung.other_matches_with_request_id,
+                        other_matches_without_request_id: rung.other_matches_without_request_id,
+                        matched_events_blocked: rung.outcomes.blocked,
+                        matched_events_not_blocked: rung.outcomes.not_blocked,
+                        matched_events_unknown_outcome: rung.outcomes.unknown,
+                    }
+                })
+                .collect();
+            CveHypothesis {
+                is_kev: kev_cves.contains(&cve),
+                cve,
+                known_findings: accumulator.known_findings,
+                rungs,
+            }
+        })
+        .collect::<Vec<_>>();
+    cve_hypotheses.sort_by(|left, right| {
+        right
+            .known_findings
+            .cmp(&left.known_findings)
+            .then_with(|| left.cve.cmp(&right.cve))
+    });
+
+    Ok(CountHypothesisReport {
+        report_kind: "COUNT_HYPOTHESIS_LADDER".to_owned(),
+        safety_note: "Each rung is an offline simulation of how a COUNT-mode condition would match local historical telemetry. Coverage is a conservative lower bound, not precision, recall, accuracy, ground truth, or an attack, exploitation, or compromise determination. Other matches may be additional attempts or accidental matches and require human review. Shenron does not deploy a control; an analyst must choose a rung and apply it through a separate COUNT-only export workflow. No raw request values, IP addresses, hostnames, headers, or request IDs are included.".to_owned(),
+        telemetry_profile,
+        filter_from: time_range.from.map(|timestamp| timestamp.to_rfc3339()),
+        filter_to: time_range.to.map(|timestamp| timestamp.to_rfc3339()),
+        files_analyzed: files.len(),
+        total_events_evaluated,
+        requests_outside_time_range,
+        requests_without_timestamp_excluded,
+        parse_errors,
+        inputs: ReplayInputs {
+            nuclei_report_sha256: sha256_file(nuclei_report),
+            kev_report_sha256: sha256_file(kev_report),
+            findings_sha256: sha256_file(findings),
+        },
+        per_cve: cve_hypotheses,
+    })
+}
+
 fn record_replay_outcome(outcomes: &mut ReplayOutcomeCounts, event: &WebEvent) {
     match event
         .waf_action
@@ -1016,6 +1233,27 @@ fn record_replay_outcome(outcomes: &mut ReplayOutcomeCounts, event: &WebEvent) {
         Some("BLOCK") => outcomes.blocked += 1,
         Some("ALLOW") | Some("COUNT") => outcomes.not_blocked += 1,
         _ => outcomes.unknown += 1,
+    }
+}
+
+fn known_replay_sources(source_findings: Vec<FindingExplanation>) -> KnownReplaySources {
+    let known_findings_total = source_findings.len() as u64;
+    let mut per_cve = BTreeMap::<String, ReplayCveAccumulator>::new();
+    let mut known_source_request_ids = BTreeSet::new();
+    for finding in source_findings {
+        for cve in finding.cves {
+            let accumulator = per_cve.entry(cve).or_default();
+            accumulator.known_findings += 1;
+            if let Some(request_id) = &finding.request_id {
+                accumulator.known_request_ids.insert(request_id.clone());
+                known_source_request_ids.insert(request_id.clone());
+            }
+        }
+    }
+    KnownReplaySources {
+        per_cve,
+        known_findings_total,
+        known_source_request_ids,
     }
 }
 

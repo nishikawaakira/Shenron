@@ -22,11 +22,11 @@ use shenron::{
     event::{TelemetryProfile, TrustedProxy, TrustedProxySet},
     output::{Finding, FindingWriter},
     production::{
-        ablation as production_ablation, explain_private_findings,
-        historical_replay as production_historical_replay, hunt_with_options as production_hunt,
-        inspect_with_trusted_proxies as production_inspect, terminal_safe, AblationReport,
-        HistoricalReplayReport, HuntOptions, HuntTimeRange, HuntTriagePolicy, InspectionReport,
-        SanitizedHuntReport,
+        ablation as production_ablation, count_hypotheses as production_count_hypotheses,
+        explain_private_findings, historical_replay as production_historical_replay,
+        hunt_with_options as production_hunt, inspect_with_trusted_proxies as production_inspect,
+        terminal_safe, AblationReport, CountHypothesisReport, HistoricalReplayReport, HuntOptions,
+        HuntTimeRange, HuntTriagePolicy, InspectionReport, SanitizedHuntReport,
     },
     reputation::{load_asn_database, load_reputation_database, AsnDatabase, ReputationDatabase},
     sigma::load_rules,
@@ -199,6 +199,34 @@ enum ProductionCommand {
         /// Inclusive UTC end time in RFC 3339 format.
         #[arg(long, value_parser = parse_rfc3339_utc)]
         to: Option<DateTime<Utc>>,
+    },
+    /// Compare broad-to-narrow validated Nuclei conditions as local COUNT-mode simulations. Never deploys a control.
+    CountHypotheses {
+        #[arg(long)]
+        input: PathBuf,
+        #[arg(long, value_enum, default_value_t = InputFormat::AwsWaf)]
+        format: InputFormat,
+        #[arg(long)]
+        nuclei_templates: PathBuf,
+        #[arg(long)]
+        nuclei_report: PathBuf,
+        #[arg(long)]
+        kev_report: PathBuf,
+        /// Local private findings from a prior hunt; read only for conservative coverage.
+        #[arg(long)]
+        findings: PathBuf,
+        /// Optional aggregate-only JSON report destination.
+        #[arg(long)]
+        output: Option<PathBuf>,
+        /// Inclusive UTC start time in RFC 3339 format.
+        #[arg(long, value_parser = parse_rfc3339_utc)]
+        from: Option<DateTime<Utc>>,
+        /// Inclusive UTC end time in RFC 3339 format.
+        #[arg(long, value_parser = parse_rfc3339_utc)]
+        to: Option<DateTime<Utc>>,
+        /// Maximum CVE ladders to display. Use 0 to display all.
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
     },
     /// Measure validated Nuclei matcher coverage and other aggregate historical matches. Never writes private findings.
     Replay {
@@ -456,6 +484,36 @@ fn main() -> Result<()> {
                     serde_json::to_writer_pretty(File::create(path)?, &report)?;
                 }
                 print_historical_replay(&report, output.as_deref());
+                Ok(())
+            }
+            ProductionCommand::CountHypotheses {
+                input,
+                format,
+                nuclei_templates,
+                nuclei_report,
+                kev_report,
+                findings,
+                output,
+                from,
+                to,
+                limit,
+            } => {
+                if let Some(path) = output.as_deref() {
+                    shenron::production::ensure_separate_output(&input, path)?;
+                }
+                let report = production_count_hypotheses(
+                    &input,
+                    &nuclei_templates,
+                    &nuclei_report,
+                    &kev_report,
+                    &findings,
+                    format.telemetry_profile(),
+                    HuntTimeRange { from, to },
+                )?;
+                if let Some(path) = output.as_deref() {
+                    serde_json::to_writer_pretty(File::create(path)?, &report)?;
+                }
+                print_count_hypotheses(&report, output.as_deref(), limit);
                 Ok(())
             }
             ProductionCommand::Explain {
@@ -787,6 +845,64 @@ fn print_historical_replay(report: &HistoricalReplayReport, output_path: Option<
         println!(
             "{} additional CVEs omitted from stdout; see the aggregate-only JSON report for all CVE counts.",
             report.per_cve.len() - 10
+        );
+    }
+    if let Some(path) = output_path {
+        println!("Aggregate-only JSON report:  {}", path.display());
+    }
+}
+
+fn print_count_hypotheses(
+    report: &CountHypothesisReport,
+    output_path: Option<&Path>,
+    limit: usize,
+) {
+    println!("COUNT hypothesis ladder is an offline, non-deploying simulation. It reports trade-off measurements only and does NOT recommend a rung.");
+    println!("{}", report.safety_note);
+    println!(
+        "\nTelemetry profile:          {:?}\nTotal events evaluated:     {}\nFiles analyzed:              {}\nParse errors:                {}\nOutside range ignored:      {}\nTimestamp missing ignored:  {}\n\nCVE condition ladders:",
+        report.telemetry_profile,
+        report.total_events_evaluated,
+        report.files_analyzed,
+        report.parse_errors,
+        report.requests_outside_time_range,
+        report.requests_without_timestamp_excluded,
+    );
+    let displayed = if limit == 0 {
+        report.per_cve.as_slice()
+    } else {
+        &report.per_cve[..report.per_cve.len().min(limit)]
+    };
+    for hypothesis in displayed {
+        println!(
+            "  {}\n    KEV: {}\n    Known findings: {}",
+            terminal_safe(&hypothesis.cve),
+            hypothesis.is_kev,
+            hypothesis.known_findings,
+        );
+        for rung in &hypothesis.rungs {
+            let coverage = rung
+                .known_coverage
+                .map(|coverage| format!("{coverage:.4}"))
+                .unwrap_or_else(|| "unavailable (no source finding request IDs)".to_owned());
+            println!(
+                "    {}\n      Matched events: {}\n      Known re-matched: {}\n      Conservative coverage: {}\n      Other matches (with / without request ID): {} / {}\n      Outcomes (BLOCK / not blocked / unknown): {} / {} / {}",
+                rung.strategy,
+                rung.matched_events,
+                rung.known_matched,
+                coverage,
+                rung.other_matches_with_request_id,
+                rung.other_matches_without_request_id,
+                rung.matched_events_blocked,
+                rung.matched_events_not_blocked,
+                rung.matched_events_unknown_outcome,
+            );
+        }
+    }
+    if displayed.len() < report.per_cve.len() {
+        println!(
+            "{} additional CVE ladders omitted. Pass --limit 0 to display all.",
+            report.per_cve.len() - displayed.len()
         );
     }
     if let Some(path) = output_path {
