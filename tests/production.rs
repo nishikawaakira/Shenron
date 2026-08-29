@@ -176,6 +176,40 @@ fn historical_replay_measures_sanitized_cve_coverage_and_other_matches() {
 }
 
 #[test]
+fn historical_replay_aggregate_counts_a_multi_cve_source_once() {
+    let directory = tempdir().unwrap();
+    let findings = directory.path().join("multi-cve-private-findings.jsonl");
+    fs::write(
+        &findings,
+        concat!(
+            r#"{"template_id":"synthetic-cve-2024-10001","cves":["CVE-2024-10001","CVE-2024-10002"],"detectability":"HIGH","timestamp":"2025-01-01T00:00:00Z","source_ip":"198.51.100.1","host":"internal.example.test","method":"GET","uri_path":"/vulnerable/execute","uri_query":"cmd=probe","headers":[],"ja3":null,"ja4":null,"waf_action":"ALLOW","request_id":"production-allow"}"#,
+            "\n"
+        ),
+    )
+    .unwrap();
+    let report = historical_replay(
+        Path::new("tests/fixtures/production/waf.jsonl"),
+        Path::new("tests/fixtures/nuclei"),
+        Path::new("tests/fixtures/production/nuclei-report.json"),
+        Path::new("tests/fixtures/production/kev-report.json"),
+        &findings,
+        TelemetryProfile::AwsWaf,
+        HuntTimeRange::default(),
+    )
+    .unwrap();
+
+    assert_eq!(report.aggregate.known_findings, 1);
+    assert_eq!(report.aggregate.known_matched, 1);
+    assert_eq!(report.aggregate.known_missed, 0);
+    assert_eq!(report.aggregate.coverage, Some(1.0));
+    assert_eq!(report.per_cve.len(), 2);
+    assert!(report
+        .per_cve
+        .iter()
+        .all(|coverage| coverage.known_findings == 1));
+}
+
+#[test]
 fn inspection_reports_structure_without_request_values() {
     let report = inspect(
         Path::new("tests/fixtures/production/waf.jsonl"),

@@ -267,8 +267,11 @@ pub struct CveCoverage {
     pub matched_events_unknown_outcome: u64,
 }
 
-/// CVE-crossing replay totals. Each matched historical event contributes at
-/// most once to `matched_events_total`, other-match counts, and outcomes.
+/// CVE-crossing replay totals. `known_findings` counts distinct source finding
+/// records, even when one finding references multiple CVEs; per-CVE
+/// `known_findings` instead counts findings that reference that CVE. Each
+/// matched historical event contributes at most once to `matched_events_total`,
+/// other-match counts, and outcomes.
 #[derive(Debug, Serialize)]
 pub struct CoverageAggregate {
     pub known_findings: u64,
@@ -855,6 +858,7 @@ pub fn historical_replay(
     }
     let kev_cves = kev_cves(kev_report)?;
     let source_findings = explain_private_findings(findings)?;
+    let known_findings_total = source_findings.len() as u64;
     let mut per_cve = BTreeMap::<String, ReplayCveAccumulator>::new();
     let mut known_source_request_ids = BTreeSet::new();
     for finding in source_findings {
@@ -966,17 +970,13 @@ pub fn historical_replay(
             .then_with(|| left.cve.cmp(&right.cve))
     });
 
-    let known_findings = cve_coverage
-        .iter()
-        .map(|coverage| coverage.known_findings)
-        .sum::<u64>();
     let known_matched = aggregate_known_matched_request_ids.len() as u64;
     let aggregate = CoverageAggregate {
-        known_findings,
+        known_findings: known_findings_total,
         known_matched,
-        known_missed: known_findings.saturating_sub(known_matched),
+        known_missed: known_findings_total.saturating_sub(known_matched),
         coverage: (!known_source_request_ids.is_empty())
-            .then(|| known_matched as f64 / known_findings as f64),
+            .then(|| known_matched as f64 / known_findings_total as f64),
         matched_events_total,
         other_matches_with_request_id: aggregate_other_matches_with_request_id,
         other_matches_without_request_id: aggregate_other_matches_without_request_id,
