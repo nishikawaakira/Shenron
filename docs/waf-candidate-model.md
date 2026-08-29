@@ -22,6 +22,19 @@ shenron candidate export --candidate ./candidates/candidate-replayed.json \
   --backend aws-waf-json --priority 100 --output ./exports/candidate.aws-waf.json
 ```
 
+## Why replay matters
+
+Replay is the VALIDATE step of the hunting workflow. A candidate built from findings only describes the specific past requests that matched a known indicator; it says nothing about how the proposed condition would behave against the rest of your traffic. Replay closes that gap by evaluating the candidate against the complete local history — every request, not only the source findings — entirely offline, with no deployment and no network call.
+
+That answers the questions an analyst must settle before shipping a control:
+
+- **Impact and over-block risk before deployment.** Replay reports how many historical requests the condition matches, so collateral risk to legitimate traffic can be weighed before the rule ever runs. Exports are COUNT-only for the same reason: observe first, block later.
+- **Known-threat coverage.** Of the CVE-related attempts hunting already surfaced, how many would this candidate actually re-catch (`threat_coverage`)? A low value means the condition is too narrow to be worth deploying.
+- **Other historical matches as a signal.** `other_historical_matches` are matches outside the source findings. They may be attempts hunting missed, or legitimate traffic an over-broad condition would hit — either way, a prompt to review before deployment.
+- **Safe, offline what-if.** Tune a candidate and replay again to see the coverage-versus-collateral trade-off against real history, without touching production.
+
+Because export refuses a preventive candidate without replay evidence, replay is the mandatory gate that turns a defensive hypothesis into a reviewable, evidence-backed control. It never establishes an attack, exploitation, or compromise, and its coverage figure is a conservative lower bound, not a false-positive rate.
+
 Replay measures known-threat coverage only by comparing source-finding request IDs with matching historical events. `known_threat_findings_matched` is the number of unique known request IDs seen again; `other_historical_matches` counts matching events with another or no request ID. Coverage is `null` when the source findings have no request IDs, rather than claiming complete coverage.
 
 URI-only `response-unverified` findings do not create candidates by default. Request telemetry cannot reproduce Nuclei response confirmation, so converting URI-only matches directly into blocking conditions creates an elevated over-blocking risk. Include them only after human review or with additional evidence by passing `--include-response-unverified` to `shenron candidate build`; this changes candidate selection only and does not make the finding an attack or compromise determination.
