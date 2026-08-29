@@ -281,6 +281,44 @@ fn explain_enriches_private_ip_groups_from_offline_asn_and_reputation_datasets()
 }
 
 #[test]
+fn explain_groups_private_findings_by_resolved_asn() {
+    let directory = tempdir().unwrap();
+    let findings = directory.path().join("private-findings.jsonl");
+    fs::write(
+        &findings,
+        concat!(
+            r#"{"template_id":"template-one","cves":["CVE-2024-10001"],"detectability":"HIGH","timestamp":"2026-08-24T00:00:01+00:00","source_ip":"203.0.113.7","host":"example.test","method":"GET","uri_path":"/one","uri_query":"probe=1","headers":[],"ja3":null,"ja4":null,"waf_action":null,"request_id":null}"#,
+            "\n",
+            r#"{"template_id":"template-two","cves":["CVE-2024-10002"],"detectability":"HIGH","timestamp":"2026-08-24T00:00:02+00:00","source_ip":"203.0.113.8","host":"example.test","method":"GET","uri_path":"/two","uri_query":"probe=2","headers":[],"ja3":null,"ja4":null,"waf_action":null,"request_id":null}"#,
+            "\n"
+        ),
+    )
+    .unwrap();
+
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "production",
+            "explain",
+            "--findings",
+            findings.to_str().unwrap(),
+            "--show-asn",
+            "--asn-dataset",
+            "tests/fixtures/reputation/asn.csv",
+            "--reputation-dataset",
+            "tests/fixtures/reputation/reputation.jsonl",
+        ])
+        .assert()
+        .success()
+        .stdout(contains("ASN 64501 (EXAMPLE-NARROW)"))
+        .stdout(contains("Distinct member IPs: 2"))
+        .stdout(contains("Behavior priority score:"))
+        .stdout(contains("Reputation: 70/100 (medium) via asn"))
+        .stdout(contains("- asn 64501 score 70 [hosting-abuse]"))
+        .stdout(contains("Findings excluded because ASN was unresolved: 0"));
+}
+
+#[test]
 fn explain_triages_only_repeated_distinct_source_behavior() {
     let directory = tempdir().unwrap();
     let findings = directory.path().join("private-findings.jsonl");

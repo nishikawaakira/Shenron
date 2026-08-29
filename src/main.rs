@@ -29,7 +29,7 @@ use shenron::{
     },
     reputation::{load_asn_database, load_reputation_database, AsnDatabase, ReputationDatabase},
     sigma::load_rules,
-    triage::{entity_groups, EntityDimension, TriagePolicy},
+    triage::{asn_entity_groups, entity_groups, EntityDimension, TriagePolicy},
     waf::{maybe_gzip_reader, WafLines},
 };
 
@@ -216,6 +216,9 @@ enum ProductionCommand {
         /// Summarize source IP addresses from the selected private findings.
         #[arg(long)]
         show_source_ips: bool,
+        /// Summarize selected findings by locally resolved ASN. Requires --asn-dataset.
+        #[arg(long)]
+        show_asn: bool,
         /// Local GeoLite2-ASN-compatible CSV used only to enrich displayed IP groups.
         #[arg(long)]
         asn_dataset: Option<PathBuf>,
@@ -406,6 +409,7 @@ fn main() -> Result<()> {
                 show_request,
                 show_evidence,
                 show_source_ips,
+                show_asn,
                 asn_dataset,
                 reputation_dataset,
                 show_fingerprints,
@@ -434,6 +438,7 @@ fn main() -> Result<()> {
                         show_request: show_request || show_evidence,
                         show_evidence,
                         show_source_ips,
+                        show_asn,
                         show_fingerprints,
                     },
                     waf_outcome.map(WafOutcomeFilter::label),
@@ -684,6 +689,7 @@ struct ExplainDisplay {
     show_request: bool,
     show_evidence: bool,
     show_source_ips: bool,
+    show_asn: bool,
     show_fingerprints: bool,
 }
 
@@ -718,10 +724,24 @@ fn print_explanations(
             asn_database,
             reputation_database,
         );
-    } else if asn_database.is_some() || reputation_database.is_some() {
+    } else if (asn_database.is_some() || reputation_database.is_some()) && !display.show_asn {
         println!(
             "Local reputation datasets were supplied, but --show-source-ips was not selected; no IP enrichment was displayed."
         );
+    }
+    if display.show_asn {
+        match asn_database {
+            Some(database) => print_asn_summary(
+                findings,
+                limit,
+                triage_policy,
+                database,
+                reputation_database,
+            ),
+            None => println!(
+                "ASN grouping was requested, but --asn-dataset was not supplied; no ASN groups were displayed."
+            ),
+        }
     }
     if display.show_fingerprints {
         print_ja4_summary(findings, limit, triage_policy);
@@ -1067,33 +1087,156 @@ fn print_ip_reputation(
             ),
             _ => println!("  Reputation: none"),
         }
-        for hit in reputation.hits {
-            let categories = if hit.categories.is_empty() {
-                "[]".to_owned()
-            } else {
-                format!(
-                    "[{}]",
-                    hit.categories
-                        .iter()
-                        .map(|category| terminal_safe(category))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                )
-            };
-            let as_of = hit
-                .as_of
-                .as_deref()
-                .map(|date| format!(" as_of={}", terminal_safe(date)))
-                .unwrap_or_default();
+        print_reputation_hits(reputation.hits);
+    }
+}
+
+fn print_reputation_hits(hits: Vec<shenron::reputation::ReputationHit>) {
+    for hit in hits {
+        let categories = if hit.categories.is_empty() {
+            "[]".to_owned()
+        } else {
+            format!(
+                "[{}]",
+                hit.categories
+                    .iter()
+                    .map(|category| terminal_safe(category))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        };
+        let as_of = hit
+            .as_of
+            .as_deref()
+            .map(|date| format!(" as_of={}", terminal_safe(date)))
+            .unwrap_or_default();
+        println!(
+            "    - {} {} score {} {} source={}{}",
+            terminal_safe(hit.scope),
+            terminal_safe(&hit.value),
+            hit.score,
+            categories,
+            terminal_safe(&hit.source),
+            as_of,
+        );
+    }
+}
+
+fn print_asn_summary(
+    findings: &[shenron::production::FindingExplanation],
+    limit: usize,
+    policy: TriagePolicy,
+    asn_database: &AsnDatabase,
+    reputation_database: Option<&ReputationDatabase>,
+) {
+    let result = asn_entity_groups(findings, policy, asn_database);
+    println!("\nASN triage (private findings only):");
+    print_dataset_provenance("ASN dataset", asn_database.provenance());
+    if let Some(database) = reputation_database {
+        print_dataset_provenance("Reputation dataset", database.provenance());
+    }
+    println!(
+        "Offline IP/ASN reputation enrichment is a third-party opinion, not an attack, exploitation, compromise, or attacker-attribution determination. No IP is sent outside this local process."
+    );
+    if policy.is_default() {
+        println!("Triage policy: default fixed baseline");
+    } else {
+        println!(
+            "Triage policy: CUSTOM (non-default; not comparable to the fixed research baseline)"
+        );
+    }
+    if let Some(window) = policy.window {
+        println!("Triage window: {} sliding", format_triage_duration(window));
+    }
+    println!(
+        "Grouping identity: validated-client and observed-peer are intentionally never merged, including when they resolve to the same ASN. Distinct member IPs are the larger of those separately counted identity populations. This is not an attacker, exploit-success, or compromise determination."
+    );
+    println!(
+        "Behavior priority score (0-100) ranks an ASN group for triage from observed request behavior only. It is not a probability of malice, a precision or true-positive estimate, an exploitation or compromise determination, or attacker attribution."
+    );
+    let displayed = if limit == 0 {
+        result.groups.as_slice()
+    } else {
+        &result.groups[..result.groups.len().min(limit)]
+    };
+    println!("\nASN groups with matching evidence (not an attack determination):");
+    if displayed.is_empty() {
+        println!("No ASN groups were resolved from the selected findings.");
+    } else {
+        for group in displayed {
+            print_asn_group(group, policy.window.is_some(), reputation_database);
+        }
+        if displayed.len() < result.groups.len() {
             println!(
-                "    - {} {} score {} {} source={}{}",
-                terminal_safe(hit.scope),
-                terminal_safe(&hit.value),
-                hit.score,
-                categories,
-                terminal_safe(&hit.source),
-                as_of,
+                "{} additional ASN groups omitted. Pass --limit 0 to display all.",
+                result.groups.len() - displayed.len()
             );
+        }
+    }
+    println!(
+        "Findings excluded because ASN was unresolved: {}",
+        result.unresolved_findings
+    );
+}
+
+fn print_asn_group(
+    group: &shenron::triage::EntityGroup,
+    windowed: bool,
+    reputation_database: Option<&ReputationDatabase>,
+) {
+    println!(
+        "ASN {} ({})\n  Grouping identity: {}\n  Triage basis: {}\n  Matching request observations: {}\n  Distinct Nuclei template patterns: {}\n  Unique CVEs: {}\n  Matched template records: {}\n  Distinct member IPs: {}",
+        terminal_safe(&group.key),
+        group
+            .asn_org
+            .as_deref()
+            .map(terminal_safe)
+            .unwrap_or_else(|| "unavailable".to_owned()),
+        group
+            .identity
+            .expect("ASN groups carry an identity")
+            .label(),
+        group.triage_basis.unwrap_or("none"),
+        group.distinct_observations,
+        group.distinct_templates,
+        group.distinct_cves,
+        group.matching_records,
+        group.spread,
+    );
+    if windowed {
+        println!(
+            "  Undated observations excluded from windowed triage: {}",
+            group.undated_observations
+        );
+    }
+    println!(
+        "  Behavior priority score: {}/100 ({})",
+        group.score.total,
+        group.score.tier.label()
+    );
+    println!(
+        "  Request-specific observations: {}\n  Response-unverified observations: {}",
+        group.request_specific_observations, group.response_unverified_observations
+    );
+    if let Some(database) = reputation_database {
+        let reputation = group
+            .key
+            .parse::<u32>()
+            .ok()
+            .map(|asn| database.lookup_asn(asn));
+        match reputation {
+            Some(reputation) => {
+                match (reputation.score, reputation.tier, reputation.score_scope) {
+                    (Some(score), Some(tier), Some(scope)) => println!(
+                        "  Reputation: {score}/100 ({}) via {}",
+                        tier.label(),
+                        terminal_safe(scope)
+                    ),
+                    _ => println!("  Reputation: none"),
+                }
+                print_reputation_hits(reputation.hits);
+            }
+            None => println!("  Reputation: none"),
         }
     }
 }

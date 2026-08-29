@@ -14,6 +14,7 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
+    net::IpAddr,
     time::Duration,
 };
 
@@ -38,6 +39,23 @@ pub enum EntityDimension {
     ConnectionIp,
     /// A JA4 TLS client fingerprint.
     Ja4,
+    /// A resolved autonomous system number.
+    Asn,
+}
+
+/// A locally resolved autonomous system for an IP address.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedAsn {
+    pub asn: u32,
+    pub org: String,
+}
+
+/// Resolve an IP address through an analyst-supplied local ASN dataset.
+///
+/// Implementations must not perform network lookups. The triage module owns
+/// this trait so it remains independent of any particular ASN dataset format.
+pub trait AsnResolver {
+    fn resolve(&self, ip: IpAddr) -> Option<ResolvedAsn>;
 }
 
 /// Whether an IP group is a verified forwarded client or an observed peer.
@@ -294,10 +312,12 @@ pub fn score(signals: &EntitySignals) -> BehaviorScore {
 /// behavior score. Reputation enrichment, when present, is layered on
 /// separately by the caller.
 pub struct EntityGroup {
-    /// The IP address or JA4 fingerprint that identifies the group.
+    /// The IP address, JA4 fingerprint, or ASN number that identifies the group.
     pub key: String,
-    /// Present only for connection-IP groups.
+    /// Present for connection-IP and ASN groups.
     pub identity: Option<GroupingIdentity>,
+    /// Present only for ASN groups.
+    pub asn_org: Option<String>,
     pub distinct_templates: usize,
     pub distinct_cves: usize,
     pub distinct_observations: usize,
@@ -425,7 +445,9 @@ impl EntitySummary {
             // Do not sum these populations: the same sender can appear once
             // as a verified client and once as an observed peer when forwarded
             // resolution is only available for part of the log.
-            EntityDimension::Ja4 => self.validated_clients.len().max(self.observed_peers.len()),
+            EntityDimension::Ja4 | EntityDimension::Asn => {
+                self.validated_clients.len().max(self.observed_peers.len())
+            }
         };
         let (waf_known, waf_unblocked) = self.known_waf_outcomes();
         let unblocked_fraction = if waf_known == 0 {
@@ -544,46 +566,117 @@ pub fn entity_groups(
                 Some(ja4) => (None, ja4.clone()),
                 None => continue,
             },
+            // ASN grouping requires a caller-provided local resolver. Use
+            // `asn_entity_groups` rather than silently inventing a mapping.
+            EntityDimension::Asn => continue,
         };
         let entry = summaries.entry((identity, key)).or_default();
-        entry.matching_records += 1;
-        entry.cves.extend(finding.cves.iter().cloned());
-        entry.templates.insert(finding.template_id.clone());
-        if let Some(host) = &finding.host {
-            entry.hosts.insert(host.clone());
-        }
-        let request_pattern = observation_pattern(finding);
-        entry.request_patterns.insert(request_pattern.clone());
-        match &finding.client_ip {
-            Some(client_ip) => {
-                entry.validated_clients.insert(client_ip.clone());
-            }
-            None => {
-                if let Some(source_ip) = &finding.source_ip {
-                    entry.observed_peers.insert(source_ip.clone());
-                }
-            }
-        }
-        match finding.request_specificity {
-            RequestSpecificity::RequestSpecific => {
-                entry
-                    .request_specific_observations
-                    .insert(request_pattern.clone());
-            }
-            RequestSpecificity::ResponseUnverified => {
-                entry
-                    .response_unverified_observations
-                    .insert(request_pattern.clone());
-            }
-        }
-        entry.record_waf_outcome(&request_pattern, finding.waf_action.as_deref());
-        entry.observations.push(Observation {
-            timestamp: parse_finding_timestamp(finding.timestamp.as_deref()),
-            request_pattern,
-            template_id: finding.template_id.clone(),
-        });
+        add_finding_to_summary(entry, finding);
     }
+    finalize_entity_groups(summaries, dimension, BTreeMap::new(), policy)
+}
 
+/// ASN groups together with the number of findings that had no local ASN
+/// resolution and were therefore excluded from ASN aggregation.
+pub struct AsnEntityGroups {
+    pub groups: Vec<EntityGroup>,
+    pub unresolved_findings: usize,
+}
+
+/// Group findings by a locally resolved ASN without merging trusted client and
+/// observed peer identities. No network lookup is performed: `resolver` is
+/// supplied by the caller.
+pub fn asn_entity_groups(
+    findings: &[FindingExplanation],
+    policy: TriagePolicy,
+    resolver: &dyn AsnResolver,
+) -> AsnEntityGroups {
+    let mut summaries = BTreeMap::<(Option<GroupingIdentity>, String), EntitySummary>::new();
+    let mut organizations = BTreeMap::<(Option<GroupingIdentity>, String), BTreeSet<String>>::new();
+    let mut unresolved_findings = 0;
+    for finding in findings {
+        let (identity, address) = match finding_identity_and_address(finding) {
+            Some(value) => value,
+            None => continue,
+        };
+        let resolved = address
+            .parse::<IpAddr>()
+            .ok()
+            .and_then(|ip| resolver.resolve(ip));
+        let Some(resolved) = resolved else {
+            unresolved_findings += 1;
+            continue;
+        };
+        let key = resolved.asn.to_string();
+        let summary_key = (Some(identity), key.clone());
+        organizations
+            .entry(summary_key.clone())
+            .or_default()
+            .insert(resolved.org);
+        add_finding_to_summary(summaries.entry(summary_key).or_default(), finding);
+    }
+    AsnEntityGroups {
+        groups: finalize_entity_groups(summaries, EntityDimension::Asn, organizations, policy),
+        unresolved_findings,
+    }
+}
+
+fn finding_identity_and_address(finding: &FindingExplanation) -> Option<(GroupingIdentity, &str)> {
+    if let Some(client_ip) = finding.client_ip.as_deref() {
+        Some((GroupingIdentity::ValidatedClient, client_ip))
+    } else {
+        finding
+            .source_ip
+            .as_deref()
+            .map(|source_ip| (GroupingIdentity::ObservedPeer, source_ip))
+    }
+}
+
+fn add_finding_to_summary(summary: &mut EntitySummary, finding: &FindingExplanation) {
+    summary.matching_records += 1;
+    summary.cves.extend(finding.cves.iter().cloned());
+    summary.templates.insert(finding.template_id.clone());
+    if let Some(host) = &finding.host {
+        summary.hosts.insert(host.clone());
+    }
+    let request_pattern = observation_pattern(finding);
+    summary.request_patterns.insert(request_pattern.clone());
+    match &finding.client_ip {
+        Some(client_ip) => {
+            summary.validated_clients.insert(client_ip.clone());
+        }
+        None => {
+            if let Some(source_ip) = &finding.source_ip {
+                summary.observed_peers.insert(source_ip.clone());
+            }
+        }
+    }
+    match finding.request_specificity {
+        RequestSpecificity::RequestSpecific => {
+            summary
+                .request_specific_observations
+                .insert(request_pattern.clone());
+        }
+        RequestSpecificity::ResponseUnverified => {
+            summary
+                .response_unverified_observations
+                .insert(request_pattern.clone());
+        }
+    }
+    summary.record_waf_outcome(&request_pattern, finding.waf_action.as_deref());
+    summary.observations.push(Observation {
+        timestamp: parse_finding_timestamp(finding.timestamp.as_deref()),
+        request_pattern,
+        template_id: finding.template_id.clone(),
+    });
+}
+
+fn finalize_entity_groups(
+    summaries: BTreeMap<(Option<GroupingIdentity>, String), EntitySummary>,
+    dimension: EntityDimension,
+    organizations: BTreeMap<(Option<GroupingIdentity>, String), BTreeSet<String>>,
+    policy: TriagePolicy,
+) -> Vec<EntityGroup> {
     let mut groups = summaries
         .into_iter()
         .map(|((identity, key), summary)| {
@@ -593,6 +686,9 @@ pub fn entity_groups(
             let (request_specific_observations, response_unverified_observations) =
                 summary.specificity_observations();
             EntityGroup {
+                asn_org: organizations
+                    .get(&(identity, key.clone()))
+                    .and_then(|values| values.iter().next().cloned()),
                 key,
                 identity,
                 distinct_templates: summary.templates.len(),
@@ -601,7 +697,7 @@ pub fn entity_groups(
                 matching_records: summary.matching_records,
                 spread: match dimension {
                     EntityDimension::ConnectionIp => summary.hosts.len(),
-                    EntityDimension::Ja4 => summary
+                    EntityDimension::Ja4 | EntityDimension::Asn => summary
                         .validated_clients
                         .len()
                         .max(summary.observed_peers.len()),
@@ -630,7 +726,23 @@ pub fn entity_groups(
 
 #[cfg(test)]
 mod tests {
+    use std::net::IpAddr;
+
     use super::*;
+
+    struct TestAsnResolver;
+
+    impl AsnResolver for TestAsnResolver {
+        fn resolve(&self, ip: IpAddr) -> Option<ResolvedAsn> {
+            match ip.to_string().as_str() {
+                "203.0.113.7" | "203.0.113.8" => Some(ResolvedAsn {
+                    asn: 64_501,
+                    org: "EXAMPLE-NARROW".to_owned(),
+                }),
+                _ => None,
+            }
+        }
+    }
 
     fn signals() -> EntitySignals {
         EntitySignals {
@@ -844,5 +956,87 @@ mod tests {
         assert_eq!(group.distinct_validated_clients, 1);
         assert_eq!(group.distinct_observed_peers, 1);
         assert_eq!(group.spread, 1);
+    }
+
+    #[test]
+    fn groups_multiple_member_ips_under_one_resolved_asn() {
+        let findings = vec![
+            finding(
+                "first",
+                "template-a",
+                None,
+                RequestSpecificity::RequestSpecific,
+                None,
+                Some("203.0.113.7"),
+                None,
+            ),
+            finding(
+                "second",
+                "template-b",
+                None,
+                RequestSpecificity::RequestSpecific,
+                None,
+                Some("203.0.113.8"),
+                None,
+            ),
+        ];
+        let groups = asn_entity_groups(&findings, TriagePolicy::default(), &TestAsnResolver);
+        assert_eq!(groups.unresolved_findings, 0);
+        assert_eq!(groups.groups.len(), 1);
+        let group = &groups.groups[0];
+        assert_eq!(group.key, "64501");
+        assert_eq!(group.asn_org.as_deref(), Some("EXAMPLE-NARROW"));
+        assert!(group.identity == Some(GroupingIdentity::ObservedPeer));
+        assert_eq!(group.spread, 2);
+    }
+
+    #[test]
+    fn keeps_client_and_peer_identities_separate_within_one_asn() {
+        let findings = vec![
+            finding(
+                "client",
+                "template-a",
+                None,
+                RequestSpecificity::RequestSpecific,
+                Some("203.0.113.7"),
+                Some("198.51.100.10"),
+                None,
+            ),
+            finding(
+                "peer",
+                "template-a",
+                None,
+                RequestSpecificity::RequestSpecific,
+                None,
+                Some("203.0.113.8"),
+                None,
+            ),
+        ];
+        let groups = asn_entity_groups(&findings, TriagePolicy::default(), &TestAsnResolver);
+        assert_eq!(groups.groups.len(), 2);
+        assert!(groups
+            .groups
+            .iter()
+            .any(|group| group.identity == Some(GroupingIdentity::ValidatedClient)));
+        assert!(groups
+            .groups
+            .iter()
+            .any(|group| group.identity == Some(GroupingIdentity::ObservedPeer)));
+    }
+
+    #[test]
+    fn excludes_unresolved_ips_from_asn_groups() {
+        let findings = vec![finding(
+            "unknown",
+            "template-a",
+            None,
+            RequestSpecificity::RequestSpecific,
+            None,
+            Some("192.0.2.99"),
+            None,
+        )];
+        let groups = asn_entity_groups(&findings, TriagePolicy::default(), &TestAsnResolver);
+        assert!(groups.groups.is_empty());
+        assert_eq!(groups.unresolved_findings, 1);
     }
 }

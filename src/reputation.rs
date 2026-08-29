@@ -17,7 +17,7 @@ use ipnet::IpNet;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
-use crate::triage::ScoreTier;
+use crate::triage::{AsnResolver, ResolvedAsn, ScoreTier};
 
 /// ASN information resolved from an analyst-supplied local CSV dataset.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -53,6 +53,15 @@ impl AsnDatabase {
     /// Return the immutable provenance for the local CSV file.
     pub fn provenance(&self) -> &DatasetProvenance {
         &self.provenance
+    }
+}
+
+impl AsnResolver for AsnDatabase {
+    fn resolve(&self, ip: IpAddr) -> Option<ResolvedAsn> {
+        self.lookup(ip).map(|info| ResolvedAsn {
+            asn: info.asn,
+            org: info.org.clone(),
+        })
     }
 }
 
@@ -189,6 +198,25 @@ impl ReputationDatabase {
             score,
             tier: score.map(score_tier),
             score_scope,
+        }
+    }
+
+    /// Look up only ASN-scoped third-party opinions for a resolved ASN.
+    pub fn lookup_asn(&self, asn: u32) -> EntityReputation {
+        let mut hits = self.asn.get(&asn).cloned().unwrap_or_default();
+        hits.sort_by(|left, right| {
+            right
+                .score
+                .cmp(&left.score)
+                .then_with(|| left.value.cmp(&right.value))
+                .then_with(|| left.source.cmp(&right.source))
+        });
+        let score = hits.iter().map(|hit| hit.score).max();
+        EntityReputation {
+            hits,
+            score,
+            tier: score.map(score_tier),
+            score_scope: score.map(|_| "asn"),
         }
     }
 
@@ -434,5 +462,15 @@ mod tests {
         assert_eq!(numeric.hits[0].as_of, None);
         let string = database.lookup("192.0.2.1".parse().unwrap(), Some(64_503));
         assert_eq!(string.hits[0].value, "64503");
+    }
+
+    #[test]
+    fn looks_up_asn_scoped_reputation_without_ip_or_cidr_opinions() {
+        let database = load_reputation_database(Path::new(REPUTATION_FIXTURE)).unwrap();
+        let result = database.lookup_asn(64_501);
+        assert_eq!(result.score, Some(70));
+        assert_eq!(result.score_scope, Some("asn"));
+        assert_eq!(result.hits.len(), 1);
+        assert_eq!(result.hits[0].scope, "asn");
     }
 }
