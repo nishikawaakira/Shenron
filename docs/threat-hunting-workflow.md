@@ -5,9 +5,9 @@ The workflow is **FIND → EXPLAIN → PIVOT → ACT → VALIDATE**. It matches 
 Implemented so far:
 
 - **FIND** — `production hunt` matches validated Nuclei request matchers against historical logs and writes separate private and sanitized artifacts.
-- **EXPLAIN / PIVOT** — `production explain` groups matches by CVE/template and by connection/client IP or JA4 fingerprint, applies breadth/depth/windowed triage, and assigns an offline [behavior priority score](production-hunting.md#behavior-priority-score). `production ablation` compares aggregate match volume across a predicate ladder derived from one validated Detection IR without writing private findings.
+- **EXPLAIN / PIVOT** — `production explain` groups matches by CVE/template and by connection/client IP or JA4 fingerprint, applies breadth/depth/windowed triage, and assigns an offline [behavior priority score](production-hunting.md#behavior-priority-score). It can also enrich displayed IP groups from analyst-supplied frozen [local ASN and reputation datasets](production-hunting.md#ipasn-reputation-enrichment-offline), without external calls. `production ablation` compares aggregate match volume across a predicate ladder derived from one validated Detection IR without writing private findings.
 - **ACT** — the `candidate` commands build, evaluate, review, and export analyst-authored defensive hypotheses. Shenron never deploys a control.
 
-Planned: offline IP/ASN reputation enrichment (joined from locally provided, frozen datasets — no inline external calls), WAF-condition hypotheses in COUNT mode, and full historical replay to measure threat coverage and other historical matches.
+Planned: WAF-condition hypotheses in COUNT mode and full historical replay to measure threat coverage and other historical matches.
 
 No finding proves successful exploitation. A lack of findings does not prove that an application was not attacked or compromised.

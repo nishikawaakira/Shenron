@@ -87,7 +87,21 @@ Each IP group (`--show-source-ips`) and JA4 fingerprint (`--show-fingerprints`) 
 
 The weights total 100 at saturation and each contribution is monotonic in its signal, so the number is auditable rather than an opaque model output. The output separately reports `request-specific` and `response-unverified` request observations. A group with only response-unverified (URI-only) evidence is capped at 74/100 (`medium`): Nuclei response confirmation cannot be reproduced from request telemetry. It ranks entities for human triage from observed request behavior only. It is **not** a probability of malice, a precision or true-/false-positive estimate, an exploitation, compromise, or vulnerable-product determination, or attacker attribution.
 
-This behavioral score is intentionally computed offline and involves no network lookup. IP and ASN **reputation** is a separate, planned offline-enrichment layer: Shenron will join findings against locally provided, frozen reputation and IP-to-ASN datasets rather than querying an external service inline, so the no-network and reproducibility guarantees hold and customer source IPs are never sent to a third party. AWS WAF logs do not carry an ASN, so ASN grouping depends on that offline IP-to-ASN dataset and is not available from request telemetry alone.
+This behavioral score is intentionally computed offline and involves no network lookup. IP and ASN reputation enrichment is a separate local layer; it does not change behavior-score inputs, weights, or tiers.
+
+## IP/ASN reputation enrichment (offline)
+
+`production explain --show-source-ips` can join the private IP groups to analyst-supplied frozen datasets without any HTTP request or external API call. Add `--asn-dataset ./GeoLite2-ASN-Blocks-CSV.csv` for a GeoLite2-ASN-compatible CSV and `--reputation-dataset ./reputation.jsonl` for local third-party opinions. The ASN CSV accepts `network,autonomous_system_number,autonomous_system_organization` or `network,asn,as_org`/`as_name`; overlapping IPv4 and IPv6 CIDRs resolve by longest prefix. The JSONL dataset has one record per opinion, for example `{"scope":"ip","value":"203.0.113.7","score":90,"source":"example-feed","categories":["scanner"],"as_of":"2026-08-01"}`. `scope` is `ip`, `cidr`, or `asn`; scores are integer values from 0 through 100, categories default to an empty list, and ASN values can be strings or numbers.
+
+```bash
+cargo run --bin shenron -- production explain \
+  --findings ./private-results/hunt-2026-08-24/private-findings.jsonl \
+  --show-source-ips \
+  --asn-dataset ./datasets/GeoLite2-ASN-Blocks-CSV.csv \
+  --reputation-dataset ./datasets/reputation.jsonl
+```
+
+The display records each supplied dataset's path, streaming SHA-256, and record count. It retains all matching local opinions, but selects the reputation headline from the most-specific available scope: IP first, then CIDR, then ASN (using the highest score within that scope). It applies only to existing connection/client IP groups; it does not add ASN grouping and never merges `validated-client` and `observed-peer` identities. Dataset values and private IPs are printed only in local `explain` output and are never copied to sanitized reports or run manifests. Reputation is a third-party opinion, not evidence of an attack, exploitation, compromise, vulnerable product, or attacker identity; all evaluation remains offline and no IP is sent outside Shenron.
 
 The hunt rebuilds only request matchers whose template IDs have both `SUPPORTED` conversion and `passed` synthetic validation in the supplied frozen report. It uses the same normalization and matcher as the Nuclei validation pipeline; there is no simplified production matcher. A response-dependent generic root probe such as `GET {{BaseURL}}` is not converted into passive CVE-related request evidence: request logs alone cannot reproduce the response fingerprint that makes that probe meaningful. If its template also contains an explicit exploit path, query, or distinctive request header, that explicit alternative remains eligible. `--format nginx` and `--format apache` parse standard combined access logs into the same event model. Their standard profiles do not expose WAF actions, so outcome and protection-gap metrics are explicitly unavailable for those sources.
 
