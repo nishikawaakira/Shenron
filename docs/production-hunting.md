@@ -101,7 +101,21 @@ cargo run --bin shenron -- production explain \
   --reputation-dataset ./datasets/reputation.jsonl
 ```
 
-The display records each supplied dataset's path, streaming SHA-256, and record count. It retains all matching local opinions, but selects the reputation headline from the most-specific available scope: IP first, then CIDR, then ASN (using the highest score within that scope). It applies only to existing connection/client IP groups; it does not add ASN grouping and never merges `validated-client` and `observed-peer` identities. Dataset values and private IPs are printed only in local `explain` output and are never copied to sanitized reports or run manifests. Reputation is a third-party opinion, not evidence of an attack, exploitation, compromise, vulnerable product, or attacker identity; all evaluation remains offline and no IP is sent outside Shenron.
+The display records each supplied dataset's path, streaming SHA-256, and record count. For connection/client IP groups, it retains all matching local opinions but selects the reputation headline from the most-specific available scope: IP first, then CIDR, then ASN (using the highest score within that scope). `validated-client` and `observed-peer` identities are never merged. Dataset values and private IPs are printed only in local `explain` output and are never copied to sanitized reports or run manifests. Reputation is a third-party opinion, not evidence of an attack, exploitation, compromise, vulnerable product, or attacker identity; all evaluation remains offline and no IP is sent outside Shenron.
+
+### ASN grouping
+
+Add `--show-asn` with `--asn-dataset` to group private findings by a locally resolved ASN. `--show-asn` without the ASN dataset prints a warning and no ASN groups. Like IP grouping, it keeps `validated-client` and `observed-peer` identities separate even when they resolve to the same ASN. Its spread is the number of distinct member IPs in the larger of those two separate identity populations; they are never merged. Findings whose selected client/peer IP is absent, malformed, or unresolved by the local ASN CSV are excluded from ASN aggregation and counted in the output.
+
+```bash
+cargo run --bin shenron -- production explain \
+  --findings ./private-results/hunt-2026-08-24/private-findings.jsonl \
+  --show-asn \
+  --asn-dataset ./datasets/GeoLite2-ASN-Blocks-CSV.csv \
+  --reputation-dataset ./datasets/reputation.jsonl
+```
+
+When a reputation dataset is also supplied, each ASN group displays only ASN-scoped opinions and the highest ASN score as its headline. ASN grouping and reputation are local analyst aids, not a determination of an attack, exploitation, compromise, or attacker identity. They make no network request, send no IP externally, and never add private values to sanitized artifacts.
 
 The hunt rebuilds only request matchers whose template IDs have both `SUPPORTED` conversion and `passed` synthetic validation in the supplied frozen report. It uses the same normalization and matcher as the Nuclei validation pipeline; there is no simplified production matcher. A response-dependent generic root probe such as `GET {{BaseURL}}` is not converted into passive CVE-related request evidence: request logs alone cannot reproduce the response fingerprint that makes that probe meaningful. If its template also contains an explicit exploit path, query, or distinctive request header, that explicit alternative remains eligible. `--format nginx` and `--format apache` parse standard combined access logs into the same event model. Their standard profiles do not expose WAF actions, so outcome and protection-gap metrics are explicitly unavailable for those sources.
 
