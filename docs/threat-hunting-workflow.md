@@ -1,7 +1,13 @@
 # Threat-hunting workflow
 
-This first slice implements **FIND**: matching known request-side indicators in historical telemetry. It intentionally does not infer compromise or generate deployable blocks.
+The workflow is **FIND → EXPLAIN → PIVOT → ACT → VALIDATE**. It matches known request-side indicators in historical telemetry and intentionally does not infer compromise or generate deployable blocks.
 
-The planned workflow is: **FIND → EXPLAIN → PIVOT → ACT → VALIDATE**. The next phases add grouping and pivots, then WAF-condition hypotheses in COUNT mode, then full historical replay to measure threat coverage and other historical matches.
+Implemented so far:
+
+- **FIND** — `production hunt` matches validated Nuclei request matchers against historical logs and writes separate private and sanitized artifacts.
+- **EXPLAIN / PIVOT** — `production explain` groups matches by CVE/template and by connection/client IP or JA4 fingerprint, applies breadth/depth/windowed triage, and assigns an offline [behavior priority score](production-hunting.md#behavior-priority-score). `production ablation` compares aggregate match volume across a predicate ladder derived from one validated Detection IR without writing private findings.
+- **ACT** — the `candidate` commands build, evaluate, review, and export analyst-authored defensive hypotheses. Shenron never deploys a control.
+
+Planned: offline IP/ASN reputation enrichment (joined from locally provided, frozen datasets — no inline external calls), WAF-condition hypotheses in COUNT mode, and full historical replay to measure threat coverage and other historical matches.
 
 No finding proves successful exploitation. A lack of findings does not prove that an application was not attacked or compromised.
