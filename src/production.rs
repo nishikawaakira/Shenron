@@ -20,8 +20,8 @@ use crate::{
     access_log::{AccessLogFormat, AccessLogLines},
     event::{HttpHeader, TelemetryProfile, TrustedProxySet, WebEvent},
     nuclei::{
-        frozen_nuclei_selection, validated_detections, Detectability, RequestSpecificity,
-        ValidatedNucleiDetection,
+        frozen_nuclei_selection, path_distinctiveness, validated_detections, Detectability,
+        PathDistinctiveness, RequestSpecificity, ValidatedNucleiDetection,
     },
     waf::{maybe_gzip_reader, WafLines},
 };
@@ -81,6 +81,10 @@ pub struct HuntMetrics {
     pub cve_related_request_matches: usize,
     pub request_specific_matches: usize,
     pub response_unverified_matches: usize,
+    /// Path-only triage labels; these counts never exclude a match or express
+    /// ground truth, precision, attack, exploitation, or compromise.
+    pub distinctive_path_matches: usize,
+    pub generic_path_matches: usize,
     pub unique_cves_observed: usize,
     pub unique_cisa_kevs_observed: usize,
     pub unique_source_clusters: usize,
@@ -167,6 +171,10 @@ pub struct SanitizedCveFinding {
     pub first_seen: Option<String>,
     pub last_seen: Option<String>,
     pub request_count: usize,
+    /// Path-only triage counts. They contain no raw paths and do not change
+    /// which CVE-related request matches are retained.
+    pub distinctive_path_matches: u64,
+    pub generic_path_matches: u64,
     pub unique_source_clusters: usize,
     pub unique_ja4_fingerprints: usize,
     pub unique_hosts: usize,
@@ -527,6 +535,8 @@ struct CveAccumulator {
     first_seen: Option<DateTime<Utc>>,
     last_seen: Option<DateTime<Utc>>,
     requests: usize,
+    distinctive_path_matches: u64,
+    generic_path_matches: u64,
     source_ips: BTreeSet<String>,
     ja4s: BTreeSet<String>,
     hosts: BTreeSet<String>,
@@ -699,6 +709,8 @@ pub fn hunt_with_options(
                         .or_insert((detection.detectability, detection.request_specificity()));
                 }
             }
+            let path_distinctiveness =
+                path_distinctiveness(event.uri_path.as_deref().unwrap_or_default());
             for (cve, (detectability, request_specificity)) in observed_cves {
                 metrics.cve_related_request_matches += 1;
                 match request_specificity {
@@ -706,6 +718,10 @@ pub fn hunt_with_options(
                     RequestSpecificity::ResponseUnverified => {
                         metrics.response_unverified_matches += 1
                     }
+                }
+                match path_distinctiveness {
+                    PathDistinctiveness::Distinctive => metrics.distinctive_path_matches += 1,
+                    PathDistinctiveness::Generic => metrics.generic_path_matches += 1,
                 }
                 match detectability {
                     Detectability::High => metrics.high_confidence_findings += 1,
@@ -717,6 +733,10 @@ pub fn hunt_with_options(
                 accumulator.kev = kev_cves.contains(&cve);
                 accumulator.detectability = strongest(accumulator.detectability, detectability);
                 accumulator.requests += 1;
+                match path_distinctiveness {
+                    PathDistinctiveness::Distinctive => accumulator.distinctive_path_matches += 1,
+                    PathDistinctiveness::Generic => accumulator.generic_path_matches += 1,
+                }
                 update_accumulator_time(accumulator, event.timestamp);
                 if let Some(value) = &event.source_ip {
                     all_sources.insert(value.clone());
@@ -766,6 +786,8 @@ pub fn hunt_with_options(
                 first_seen: item.first_seen.map(|time| time.to_rfc3339()),
                 last_seen: item.last_seen.map(|time| time.to_rfc3339()),
                 request_count: item.requests,
+                distinctive_path_matches: item.distinctive_path_matches,
+                generic_path_matches: item.generic_path_matches,
                 unique_source_clusters: item.source_ips.len(),
                 unique_ja4_fingerprints: item.ja4s.len(),
                 unique_hosts: item.hosts.len(),

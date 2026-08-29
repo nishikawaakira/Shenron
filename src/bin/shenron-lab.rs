@@ -159,6 +159,7 @@ struct MatcherRecord {
     fragment: Option<String>,
     headers: Vec<(String, String)>,
     request_specificity: shenron::nuclei::RequestSpecificity,
+    path_distinctiveness: shenron::nuclei::PathDistinctiveness,
 }
 
 #[derive(Debug, Subcommand)]
@@ -400,6 +401,7 @@ fn matcher_records(
                 fragment,
                 headers,
                 request_specificity,
+                path_distinctiveness,
             } = detection.request_matcher_view();
             let mut cves = detection.cves;
             cves.sort();
@@ -412,6 +414,7 @@ fn matcher_records(
                 fragment,
                 headers,
                 request_specificity,
+                path_distinctiveness,
             }
         })
         .collect::<Vec<_>>();
@@ -442,13 +445,15 @@ fn print_matchers(matchers: &[MatcherRecord]) {
             shenron::nuclei::RequestSpecificity::RequestSpecific => "request-specific",
             shenron::nuclei::RequestSpecificity::ResponseUnverified => "response-unverified",
         };
+        let distinctiveness = matcher.path_distinctiveness.label();
         println!(
-            "{}  {} {}  [{} headers]  {}",
+            "{}  {} {}  [{} headers]  {}  {}",
             matcher.template_id,
             matcher.method,
             target,
             matcher.headers.len(),
             specificity,
+            distinctiveness,
         );
     }
 }

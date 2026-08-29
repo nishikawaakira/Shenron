@@ -55,6 +55,114 @@ impl RequestSpecificity {
     }
 }
 
+/// A transparent path-only heuristic for reviewing how likely a path is to be
+/// shared by unrelated applications. It is a triage aid, not ground truth or
+/// a precision, attack, exploitation, compromise, or vulnerability judgment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PathDistinctiveness {
+    Generic,
+    Distinctive,
+}
+
+impl PathDistinctiveness {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Generic => "generic",
+            Self::Distinctive => "distinctive",
+        }
+    }
+}
+
+/// Basenames which commonly occur at the same path across unrelated web
+/// applications. Keep this list with `GENERIC_SEGMENTS` so the heuristic is
+/// easy to audit and deliberately adjust.
+pub const GENERIC_BASENAMES: &[&str] = &[
+    "ads.txt",
+    "apple-touch-icon.png",
+    "crossdomain.xml",
+    "default.aspx",
+    "favicon.ico",
+    "humans.txt",
+    "index.asp",
+    "index.htm",
+    "index.html",
+    "index.jsp",
+    "index.php",
+    "robots.txt",
+    "security.txt",
+    "sitemap.xml",
+];
+
+/// Route segments which commonly describe generic application entry points or
+/// management functions, rather than a product-specific endpoint.
+pub const GENERIC_SEGMENTS: &[&str] = &[
+    "about",
+    "account",
+    "accounts",
+    "admin",
+    "administrator",
+    "api",
+    "app",
+    "auth",
+    "config",
+    "configuration",
+    "console",
+    "contact",
+    "dashboard",
+    "health",
+    "healthz",
+    "help",
+    "home",
+    "index",
+    "login",
+    "logout",
+    "oauth",
+    "portal",
+    "profile",
+    "public",
+    "register",
+    "search",
+    "setting",
+    "settings",
+    "sign-in",
+    "signin",
+    "signup",
+    "static",
+    "status",
+    "support",
+    "user",
+    "users",
+    "v1",
+    "v2",
+    "v3",
+    "web",
+];
+
+/// Classifies a request path without changing any matching decision. The path
+/// is trimmed, lowercased, and split on `/`; empty segments are ignored.
+/// Empty/root paths, generic basenames, and paths made solely of generic
+/// segments are `Generic`; every other path is `Distinctive`.
+pub fn path_distinctiveness(path: &str) -> PathDistinctiveness {
+    let normalized = path.trim().to_ascii_lowercase();
+    let segments = normalized
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>();
+    let Some(basename) = segments.last() else {
+        return PathDistinctiveness::Generic;
+    };
+    if GENERIC_BASENAMES.contains(basename)
+        || segments
+            .iter()
+            .all(|segment| GENERIC_SEGMENTS.contains(segment))
+    {
+        PathDistinctiveness::Generic
+    } else {
+        PathDistinctiveness::Distinctive
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ConversionStatus {
@@ -260,6 +368,7 @@ pub struct RequestMatcherView {
     pub fragment: Option<String>,
     pub headers: Vec<(String, String)>,
     pub request_specificity: RequestSpecificity,
+    pub path_distinctiveness: PathDistinctiveness,
 }
 
 /// The template IDs eligible for a production hunt according to a frozen
@@ -318,6 +427,12 @@ impl ValidatedNucleiDetection {
         self.detection.request_specificity()
     }
 
+    /// Path-only distinctiveness of this literal Detection IR alternative.
+    /// This labels matches for review and never excludes them.
+    pub fn path_distinctiveness(&self) -> PathDistinctiveness {
+        path_distinctiveness(&self.detection.path)
+    }
+
     /// Returns a copy of the exact literal request conditions that this
     /// validated detection matches. This read-only view never executes a
     /// template or accesses telemetry.
@@ -329,6 +444,7 @@ impl ValidatedNucleiDetection {
             fragment: self.detection.fragment.clone(),
             headers: self.detection.headers.clone(),
             request_specificity: self.request_specificity(),
+            path_distinctiveness: self.path_distinctiveness(),
         }
     }
 }

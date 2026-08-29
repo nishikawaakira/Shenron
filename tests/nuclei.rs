@@ -2,8 +2,8 @@ use std::{fs, path::Path};
 
 use assert_cmd::Command;
 use shenron::nuclei::{
-    combined_header_dependencies, compare_telemetry, coverage, inventory, ConversionStatus,
-    Detectability, RequestSpecificity,
+    combined_header_dependencies, compare_telemetry, coverage, inventory, path_distinctiveness,
+    ConversionStatus, Detectability, PathDistinctiveness, RequestSpecificity,
 };
 use shenron::waf::parse_line;
 use tempfile::tempdir;
@@ -121,6 +121,21 @@ fn classifies_request_specificity_from_detection_ir_shape() {
 }
 
 #[test]
+fn classifies_path_distinctiveness_with_a_transparent_path_only_heuristic() {
+    for path in ["/robots.txt", "/login", "/user/login", "/api/config", "/"] {
+        assert_eq!(path_distinctiveness(path), PathDistinctiveness::Generic);
+    }
+    for path in [
+        "/.env",
+        "/remote/login",
+        "/wp-json/gravitysmtp/v1/tests/mock-data",
+        "/wp-content/plugins/x/y.php",
+    ] {
+        assert_eq!(path_distinctiveness(path), PathDistinctiveness::Distinctive);
+    }
+}
+
+#[test]
 fn exposes_a_template_derived_request_matcher_view() {
     let approved = ["synthetic-cve-2024-10001"]
         .into_iter()
@@ -144,6 +159,10 @@ fn exposes_a_template_derived_request_matcher_view() {
     assert_eq!(
         matcher.request_specificity,
         RequestSpecificity::RequestSpecific
+    );
+    assert_eq!(
+        matcher.path_distinctiveness,
+        PathDistinctiveness::Distinctive
     );
 }
 
@@ -176,6 +195,7 @@ fn lab_matchers_lists_supported_template_literals_and_respects_frozen_report_gat
     assert_eq!(raw_matcher["path"], "/vulnerable/raw");
     assert_eq!(raw_matcher["query"], "mode=check");
     assert_eq!(raw_matcher["request_specificity"], "request-specific");
+    assert_eq!(raw_matcher["path_distinctiveness"], "distinctive");
 
     let filtered_output = output_directory.path().join("filtered-matchers.json");
     Command::cargo_bin("shenron-lab")

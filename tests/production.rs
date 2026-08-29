@@ -337,6 +337,8 @@ fn hunt_uses_validated_matchers_and_separates_sensitive_output() {
     assert_eq!(report.metrics.cve_related_request_matches, 2);
     assert_eq!(report.metrics.request_specific_matches, 2);
     assert_eq!(report.metrics.response_unverified_matches, 0);
+    assert_eq!(report.metrics.distinctive_path_matches, 2);
+    assert_eq!(report.metrics.generic_path_matches, 0);
     assert_eq!(
         report.metrics.request_specific_matches + report.metrics.response_unverified_matches,
         report.metrics.cve_related_request_matches
@@ -348,6 +350,8 @@ fn hunt_uses_validated_matchers_and_separates_sensitive_output() {
     assert_eq!(report.cve_findings[0].outcomes.allowed_or_not_blocked, 1);
     assert_eq!(report.cve_findings[0].outcomes.blocked, 1);
     assert_eq!(report.cve_findings[0].protection_gap_rate, Some(0.5));
+    assert_eq!(report.cve_findings[0].distinctive_path_matches, 2);
+    assert_eq!(report.cve_findings[0].generic_path_matches, 0);
     assert!(report.cve_findings[0].response_status_counts.is_empty());
 
     let private = fs::read_to_string(output.path().join("private-findings.jsonl")).unwrap();
@@ -356,6 +360,9 @@ fn hunt_uses_validated_matchers_and_separates_sensitive_output() {
     assert!(!sanitized.contains("secret-token"));
     assert!(!sanitized.contains("internal.example.test"));
     assert!(!sanitized.contains("198.51.100.1"));
+    assert!(!sanitized.contains("/vulnerable/execute"));
+    assert!(sanitized.contains("\"distinctive_path_matches\":2"));
+    assert!(sanitized.contains("\"generic_path_matches\":0"));
     let manifest = fs::read_to_string(output.path().join("run-manifest.json")).unwrap();
     assert!(manifest.contains("\"report_kind\": \"RUN_MANIFEST\""));
     assert!(manifest.contains("\"shenron_version\": \"0.1.0\""));
@@ -454,6 +461,39 @@ fn hunt_uses_validated_matchers_and_separates_sensitive_output() {
         .stdout(contains("198.51.100.1"))
         .stdout(contains("Grouping identity: observed-peer"))
         .stdout(contains("Matching request observations: 1"));
+}
+
+#[test]
+fn explain_labels_generic_and_distinctive_paths_without_excluding_either() {
+    let directory = tempdir().unwrap();
+    let findings = directory.path().join("private-findings.jsonl");
+    fs::write(
+        &findings,
+        concat!(
+            r#"{"template_id":"path-review","cves":["CVE-2024-20001"],"detectability":"LOW","timestamp":null,"source_ip":"198.51.100.9","host":"example.test","method":"GET","uri_path":"/login","uri_query":null,"headers":[],"ja3":null,"ja4":null,"waf_action":null,"request_id":null}"#,
+            "\n",
+            r#"{"template_id":"path-review","cves":["CVE-2024-20001"],"detectability":"LOW","timestamp":null,"source_ip":"198.51.100.9","host":"example.test","method":"GET","uri_path":"/.env","uri_query":null,"headers":[],"ja3":null,"ja4":null,"waf_action":null,"request_id":null}"#,
+            "\n"
+        ),
+    )
+    .unwrap();
+
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "production",
+            "explain",
+            "--findings",
+            findings.to_str().unwrap(),
+            "--show-request",
+        ])
+        .assert()
+        .success()
+        .stdout(contains(
+            "Matches: 2 (distinctive-path: 1, generic-path: 1)",
+        ))
+        .stdout(contains("Path distinctiveness: generic"))
+        .stdout(contains("Path distinctiveness: distinctive"));
 }
 
 #[test]

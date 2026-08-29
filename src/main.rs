@@ -20,6 +20,7 @@ use shenron::{
         save as save_candidate, save_batch, Backend,
     },
     event::{TelemetryProfile, TrustedProxy, TrustedProxySet},
+    nuclei::{path_distinctiveness, PathDistinctiveness},
     output::{Finding, FindingWriter},
     production::{
         ablation as production_ablation, count_hypotheses as production_count_hypotheses,
@@ -1019,6 +1020,10 @@ fn print_explanations(
                     .unwrap_or_else(|| "unknown".to_owned()),
                 target
             );
+            println!(
+                "Path distinctiveness: {}",
+                path_distinctiveness(finding.uri_path.as_deref().unwrap_or_default()).label()
+            );
         } else {
             println!("Request: hidden (pass --show-request to display method/path/query)");
         }
@@ -1108,17 +1113,23 @@ fn print_explanations(
 }
 
 fn print_explanation_summary(findings: &[shenron::production::FindingExplanation], limit: usize) {
-    let mut counts = BTreeMap::<(String, String), usize>::new();
+    let mut counts = BTreeMap::<(String, String), (usize, usize, usize)>::new();
     for finding in findings {
-        *counts
+        let count = counts
             .entry((finding.cves.join(", "), finding.template_id.clone()))
-            .or_default() += 1;
+            .or_default();
+        count.0 += 1;
+        match path_distinctiveness(finding.uri_path.as_deref().unwrap_or_default()) {
+            PathDistinctiveness::Distinctive => count.1 += 1,
+            PathDistinctiveness::Generic => count.2 += 1,
+        }
     }
     let mut summary = counts.into_iter().collect::<Vec<_>>();
     summary.sort_by(|left, right| {
-        right
-            .1
-            .cmp(&left.1)
+        let left_total = left.1 .0;
+        let right_total = right.1 .0;
+        right_total
+            .cmp(&left_total)
             .then_with(|| left.0 .0.cmp(&right.0 .0))
             .then_with(|| left.0 .1.cmp(&right.0 .1))
     });
@@ -1128,12 +1139,14 @@ fn print_explanation_summary(findings: &[shenron::production::FindingExplanation
         &summary[..summary.len().min(limit)]
     };
     println!("\nTop CVE / Nuclei template mappings:");
-    for ((cves, template_id), count) in displayed {
+    for ((cves, template_id), (count, distinctive, generic)) in displayed {
         println!(
-            "{}\n  Nuclei template: {}\n  Matches: {}",
+            "{}\n  Nuclei template: {}\n  Matches: {} (distinctive-path: {}, generic-path: {})",
             terminal_safe(cves),
             terminal_safe(template_id),
-            count
+            count,
+            distinctive,
+            generic,
         );
     }
     if displayed.len() < summary.len() {
