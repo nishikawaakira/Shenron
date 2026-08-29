@@ -10,4 +10,5 @@ pub mod nuclei;
 pub mod output;
 pub mod production;
 pub mod sigma;
+pub mod triage;
 pub mod waf;
