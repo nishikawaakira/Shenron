@@ -70,6 +70,8 @@ shenron production explain \
 
 `production ablation` は URI-only と検証済み Nuclei IR の間で一致件数を集計比較します。これは volume（件数割合）の比較であり、precision、ground truth、攻撃・侵害の判定ではありません。詳細は [Detection-strategy ablation](docs/ablation.md) を参照してください。
 
+`production explain` と sanitized hunt report は、照合 path を透明な `generic` / `distinctive` のトリアージ補助でラベル付けします。一致を除外せず、precision、攻撃、悪用成功、侵害の判定ではありません。
+
 ## Defensive candidate workflow
 
 finding と防御条件は意図的に別のものです。candidate は防御仮説であり、AWS WAF / Terraform 向けの出力には、完全な backend 互換性、local historical replay、明示的な Web ACL priority が必要です。
