@@ -22,6 +22,7 @@ Shenron はスキャン、exploit 実行、AWS 変更、AWS API 呼び出し、W
 - `production inspect` によるテレメトリ可視性の確認
 - `production hunt` による、検証済み Nuclei detection のローカル過去ログ照合
 - `production ablation` による、URI-only から Nuclei IR / request-specific IR までの集計一致ボリューム比較
+- `production replay` による、ローカル履歴コーパス全体に対する保守的な既知 finding 再観測とその他の一致のサニタイズ集計
 - CVE / template / request evidence の `production explain` 表示
 - 接続/クライアント IP（`--show-source-ips`）、ローカル ASN データセットで解決した ASN（`--show-asn`）、および JA4 フィンガープリント（`--show-fingerprints`）ごとの breadth/depth/windowed トリアージと、観測挙動のみから算出するオフライン behavior priority score（悪性確率・攻撃成立・攻撃者特定ではない）。任意のローカル IP/ASN reputation enrichment は凍結データセットだけを参照し、外部照会をせず、第三者意見として表示する
 - 防御 candidate の作成、historical replay、backend compatibility 確認

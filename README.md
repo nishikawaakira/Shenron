@@ -16,6 +16,8 @@ Read-only local AWS WAF production inspection and validated Nuclei hunting are a
 
 `shenron production ablation` compares aggregate match volume from URI-only through validated Nuclei IR and request-specific IR. It is a volume comparison, not precision, ground truth, or an attack/compromise determination; see [detection-strategy ablation](docs/ablation.md).
 
+`shenron production replay` measures conservative known-finding re-observation and other aggregate historical matcher matches across a local corpus, writing only a sanitized report; see [historical replay coverage](docs/historical-replay.md).
+
 Defensive candidates can be built from private hunt findings, replayed locally, reviewed for backend compatibility, and exported as COUNT-only AWS WAF JSON, Terraform rule fragments, or OSSEC detection XML. Export never deploys a control and refuses non-faithful translations. See the [candidate model](docs/waf-candidate-model.md).
 
 The same passive scanner supports explicit `--format nginx` and `--format apache` parsing for standard combined logs. Source capabilities remain explicit; see [telemetry capabilities](docs/telemetry-capabilities.md).

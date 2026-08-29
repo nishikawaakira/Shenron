@@ -24,7 +24,9 @@ shenron candidate export --candidate ./candidates/candidate-replayed.json \
 
 ## Why replay matters
 
-Replay is the VALIDATE step of the hunting workflow. A candidate built from findings only describes the specific past requests that matched a known indicator; it says nothing about how the proposed condition would behave against the rest of your traffic. Replay closes that gap by evaluating the candidate against the complete local history — every request, not only the source findings — entirely offline, with no deployment and no network call.
+For an aggregate, matcher-wide VALIDATE measurement rather than one defensive-condition gate, see [historical replay coverage](historical-replay.md).
+
+Candidate replay is the ACT-side pre-export gate of the hunting workflow. A candidate built from findings only describes the specific past requests that matched a known indicator; it says nothing about how the proposed condition would behave against the rest of your traffic. Replay closes that gap by evaluating the candidate against the complete local history — every request, not only the source findings — entirely offline, with no deployment and no network call.
 
 That answers the questions an analyst must settle before shipping a control:
 
