@@ -3,7 +3,8 @@
 //! Standard nginx/Apache formats have the same field shape. Apache's
 //! `other_vhosts_access.log` vhost-prefixed Combined Log Format is an explicit
 //! additional source, because it supplies a server host that standard Combined
-//! logs do not contain.
+//! logs do not contain. Its leading vhost accepts either `%v:%p` or `%v` and
+//! is normalized to `host`.
 
 use std::{
     io::{BufRead, BufReader, Read},
@@ -149,12 +150,18 @@ fn apache_vhost_combined_regex() -> &'static Regex {
     })
 }
 
+// Apache vhost-combined has an extra leading field before the connection peer,
+// so accepting a port-less `%v` here cannot reinterpret plain Combined lines.
 fn parse_vhost(value: &str) -> Result<Option<String>, AccessLogParseError> {
-    let (host, port) = value.rsplit_once(':').ok_or(AccessLogParseError::Format)?;
-    if host.is_empty() || port.parse::<u16>().is_err() {
-        return Err(AccessLogParseError::Format);
+    if value == "-" {
+        return Ok(None);
     }
-    Ok(Some(host.to_owned()))
+    if let Some((host, port)) = value.rsplit_once(':') {
+        if !host.is_empty() && port.parse::<u16>().is_ok() {
+            return Ok(Some(host.to_owned()));
+        }
+    }
+    Ok(Some(value.to_owned()))
 }
 
 fn parse_optional<T: std::str::FromStr>(value: &str) -> Option<T> {
@@ -304,6 +311,47 @@ mod tests {
         assert_eq!(event.uri_path.as_deref(), Some("/foo/bar"));
         assert_eq!(event.uri_query.as_deref(), Some("id=123"));
         assert_eq!(event.log_source, LogSource::ApacheVhostCombined);
+    }
+
+    #[test]
+    fn parses_portless_apache_vhost_combined_and_preserves_host() {
+        let event = parse_combined_line(
+            r#"kagosec.net 198.51.100.9 - - [24/Aug/2026:11:20:30 +0000] "GET /path?x=1 HTTP/1.1" 200 12 "-" "UA""#,
+            AccessLogFormat::ApacheVhostCombined,
+        )
+        .unwrap();
+        assert_eq!(event.host.as_deref(), Some("kagosec.net"));
+        assert_eq!(event.source_ip.as_deref(), Some("198.51.100.9"));
+        assert_eq!(event.method.as_deref(), Some("GET"));
+        assert_eq!(event.uri_path.as_deref(), Some("/path"));
+        assert_eq!(event.uri_query.as_deref(), Some("x=1"));
+    }
+
+    #[test]
+    fn parses_unknown_apache_vhost_without_rejecting_the_line() {
+        let event = parse_combined_line(
+            r#"- 198.51.100.9 - - [24/Aug/2026:11:20:30 +0000] "GET /path HTTP/1.1" 200 12 "-" "UA""#,
+            AccessLogFormat::ApacheVhostCombined,
+        )
+        .unwrap();
+        assert_eq!(event.host, None);
+    }
+
+    #[test]
+    fn parses_vhost_tokens_with_or_without_ports() {
+        assert_eq!(
+            parse_vhost("kagosec.net").unwrap().as_deref(),
+            Some("kagosec.net")
+        );
+        assert_eq!(
+            parse_vhost("example.com:80").unwrap().as_deref(),
+            Some("example.com")
+        );
+        assert_eq!(
+            parse_vhost("example.com:not-a-port").unwrap().as_deref(),
+            Some("example.com:not-a-port")
+        );
+        assert_eq!(parse_vhost("-").unwrap(), None);
     }
 
     #[test]

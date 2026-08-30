@@ -26,6 +26,6 @@ shenron production hunt --input ./other_vhosts_access.log --format apache-vhost 
 shenron-lab nuclei compare-telemetry --templates ./nuclei-templates --revision <sha>
 ```
 
-The combined parser does not guess arbitrary custom formats. `apache-vhost` is the explicit Apache `other_vhosts_access.log` form with a leading `vhost:port`; its vhost is normalized to `host`. The telemetry comparison also includes analysis-only counterfactuals: `nginx-combined+host` and `nginx-security`. The latter models a reviewed custom format with Host and explicitly selected, non-sensitive request headers; it is not a recommendation to log credentials, cookies, tokens, or request bodies, and it is not yet a custom-format parser.
+The combined parser does not guess arbitrary custom formats. `apache-vhost` is the explicit Apache `other_vhosts_access.log` form with a leading vhost that accepts either `%v:%p` (with port) or `%v` (without port); its vhost is normalized to `host`. The telemetry comparison also includes analysis-only counterfactuals: `nginx-combined+host` and `nginx-security`. The latter models a reviewed custom format with Host and explicitly selected, non-sensitive request headers; it is not a recommendation to log credentials, cookies, tokens, or request bodies, and it is not yet a custom-format parser.
 
 For combined logs, WAF outcome is unavailable. A production hunt therefore never calculates a WAF protection-gap rate from nginx or Apache evidence alone.
