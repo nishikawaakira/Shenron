@@ -2,9 +2,39 @@
 
 [日本語版 README](README.ja.md)
 
-Shenron is a passive Rust threat-hunting engine for historical web telemetry. Its purpose is not merely to alert on suspicious requests: it is designed to help analysts turn public threat intelligence into local evidence and, in later phases, reviewable AWS WAF rule candidates with historical replay.
+Shenron is a passive Rust threat-hunting engine for historical web telemetry. Its purpose is not merely to alert on suspicious requests: it helps analysts turn public threat intelligence into local evidence and into reviewable AWS WAF rule candidates validated by historical replay.
 
-The MVP implements the first reliable vertical slice: streamed AWS WAF JSONL (including gzip) → normalized `WebEvent` → a deliberately small Sigma subset → JSONL or CSV findings. It supports AWS WAF action, labels, request metadata, and optional JA3/JA4 fingerprints. No network requests, exploit execution, AWS changes, candidate deployment, or automatic BLOCK actions occur.
+## How it works (architecture overview)
+
+In one line: **Shenron correlates public CTI with your own historical logs, entirely offline, to produce confidence-labeled evidence and COUNT-only WAF rule candidates that you review before deploying.**
+
+```
+input logs ─▶ parser ─▶ WebEvent ─▶ matching engine ─▶ findings ─▶ aggregate / triage / scoring ─▶ candidates / COUNT rules
+(AWS WAF /            (source-        (Sigma or Nuclei-    (private +          (per IP / ASN / JA4,             (a human reviews,
+ nginx / Apache)      neutral)         derived matchers)    sanitized split)   behavior score + reputation)     then applies)
+```
+
+1. **Normalize inputs.** Different log formats are parsed into one internal `WebEvent`, so downstream logic is format-agnostic. Fields a log does not contain (JA3/JA4, WAF outcome, request body) are never invented.
+2. **Ingest public CTI statically.** Nuclei CVE templates (YAML) are parsed, never executed, into a literal request subset (method, path, query, fragment, headers). Anything needing payload expansion, multi-request state, or response/OAST confirmation is rejected with a stable reason instead of being silently approximated.
+3. **Match.** Those matchers run over each historical `WebEvent` to surface CVE-related requests. A small Sigma subset provides a second, independent rule-matching path.
+4. **Label fidelity.** Every match is labeled on two transparent axes: request-specificity (`request-specific` vs `response-unverified`) and path-distinctiveness (`distinctive` vs `generic` — `/robots.txt` and `/login` are generic). Matches are labeled, never dropped.
+5. **Triage and score.** Findings are grouped by connection/client IP, JA4, or (with a dataset) ASN, and each group gets an offline behavior priority score from observed behavior alone. Optional local IP/ASN reputation and IP-to-ASN datasets add context with no external API calls.
+6. **Candidates and COUNT output.** Defensive conditions are proposed and simulated across the full history offline. Exported WAF rules always start as `COUNT` (observe, do not block); a human applies them.
+
+The whole tool follows a **FIND → EXPLAIN → PIVOT → ACT → VALIDATE** workflow:
+
+| Stage | Purpose | Commands |
+| --- | --- | --- |
+| FIND | Match known indicators in historical logs | `production hunt` |
+| EXPLAIN / PIVOT | Read results by CVE/template, IP, JA4, ASN | `production explain`, `production ablation` |
+| ACT | Propose and COUNT-evaluate defensive conditions | `production count-hypotheses`, `candidate ...` |
+| VALIDATE | Measure threat coverage across the corpus | `production replay` |
+
+Four design pillars: (1) static conversion — templates are never executed; (2) fidelity made explicit as scores and labels; (3) reproducibility via frozen input snapshots recorded with SHA-256; and (4) never asserting an attack, exploitation, compromise, or attacker identity.
+
+## Capabilities
+
+The scanner pipeline streams AWS WAF JSONL (including gzip) → normalized `WebEvent` → a deliberately small Sigma subset → JSONL or CSV findings. It supports AWS WAF action, labels, request metadata, and optional JA3/JA4 fingerprints. No network requests, exploit execution, AWS changes, candidate deployment, or automatic BLOCK actions occur.
 
 It also includes a reproducible synthetic validation loop: project-owned AWS WAF-shaped corpora, separate ground truth, mutation tests, regression fixtures, and machine-readable validation results. See [validation](docs/validation.md) and [synthetic corpus generation](docs/synthetic-corpus.md).
 
