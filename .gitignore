@@ -1,6 +1,6 @@
 /target/
 .DS_Store
-/arkaya/
+/logs/
 /private-results/
 *-hunt/
 *.log
