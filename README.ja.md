@@ -4,7 +4,7 @@
 
 Shenron は、Web アクセスログを対象にした Rust 製の「受動的（パッシブ）な脅威ハンティング・エンジン」です。公開されている脅威インテリジェンス（Nuclei テンプレートや CISA KEV Catalog）を、自組織のログと突き合わせ、防御ルールの候補作成を支援します。
 
-Shenron の解析本体 `shenron` は、ターゲットへのスキャン、エクスプロイトの実行、AWS の変更や AWS API の呼び出し、WAF ルールの自動適用、`terraform plan/apply`、OSSEC の再起動、解析中のネットワーク接続を一切行いません。ログ・検出結果・IP・リクエスト値などの顧客データを外部へ送信・アップロードする機能もありません。準備用の `shenron-lab nuclei update` だけは、明示的に実行した場合に公開 Nuclei テンプレートをダウンロードしますが、顧客データは送信しません。出力は必ず人間のレビューを前提とした「提案」であり、Shenron 自身が何かをデプロイすることはありません。
+Shenron の解析本体 `shenron` は、ターゲットへのスキャン、エクスプロイトの実行、AWS の変更や AWS API の呼び出し、WAF ルールの自動適用、`terraform plan/apply`、OSSEC の再起動、解析中のネットワーク接続を一切行いません。ログ・検出結果・IP・リクエスト値などの顧客データを外部へ送信・アップロードする機能もありません。準備用の `shenron-lab nuclei update` と `shenron-lab reputation update` は、明示的に実行した場合に公開インテリジェンスをダウンロードしますが、顧客データは送信しません。出力は必ず人間のレビューを前提とした「提案」であり、Shenron 自身が何かをデプロイすることはありません。
 
 ## 仕組み（アーキテクチャ概要）
 
@@ -17,12 +17,12 @@ Shenron の解析本体 `shenron` は、ターゲットへのスキャン、エ�
 ```
 
 1. **入力の正規化** — 形式の異なるログ（AWS WAF の JSON、nginx/Apache のアクセスログ）を、共通の内部形式 `WebEvent` に変換します。以降の処理はログ形式に依存しません。
-2. **公開CTIの静的取り込み** — `shenron-lab nuclei update` を明示的に実行すると、公開 Nuclei テンプレートをローカル checkout へ取得できます。その後、YAML を静的解析し、「method・path・query・fragment・ヘッダ」というリクエスト条件だけを抽出します。テンプレートは実行せず、顧客データも送信しません。ペイロードを展開、多段リクエストやレスポンス確認が必要なものは False Positive を避けたいので理由を付けて対象外にします。
+2. **公開CTIの静的取り込み** — `shenron-lab nuclei update` を明示的に実行すると公開 Nuclei テンプレートを、`shenron-lab reputation update` を実行すると公開 IP レピュテーション／IPv4 ASN リストをローカルに取得できます。いずれも顧客データは送信しません。Nuclei テンプレートは静的解析し、「method・path・query・fragment・ヘッダ」というリクエスト条件だけを抽出します。ペイロードを展開、多段リクエストやレスポンス確認が必要なものは False Positive を避けたいので理由を付けて対象外にします。
 3. **照合（マッチング）** — 上記のマッチャをログの各 `WebEvent` に当て、CVE 関連のリクエストを検出します。Sigma の小さなサブセットによるルール照合も別系統で持っています。
 4. **確度（fidelity）の明示** — 検出をそのまま信じさせず、2つのクリアな軸でラベル付けします。
    - **request-specificity**：`request-specific`（識別性の高い query/ヘッダ等まで一致）か、`response-unverified`（method と path だけ一致）か。
    - **path-distinctiveness**：`distinctive`（製品固有の特徴的なパス）か、`generic`（`/robots.txt` や `/login` のように誰でも叩く汎用パス）か。件数は除外せず、あくまでラベルとして付けます。
-5. **トリアージ・スコアリング** — 接続元 IP・クライアント IP・JA4・（データセットがあれば）ASN 単位に集約し、観測された挙動から**挙動優先度スコア（behavior priority score）**を算出します。任意で、ローカルに用意した IP/ASN のレピュテーションデータセットや ASN 解決データを突き合わせて補足情報を付けられます（外部 API は叩きません）。
+5. **トリアージ・スコアリング** — 接続元 IP・クライアント IP・JA4・（データセットがあれば）ASN 単位に集約し、観測された挙動から**挙動優先度スコア（behavior priority score）**を算出します。`shenron-lab reputation update` で任意の公開 IP/ASN データをローカル準備でき、`explain` は外部 API を使わず参照します。
 6. **防御候補と COUNT 出力** — 検出結果から防御条件の候補を作り、過去のログ全体に「もし有効だったら何件検知するか」をローカルでシミュレーションできます。書き出す WAF ルールは初期アクションが必ず `COUNT`（＝ブロックせず観測のみ）で、適用は人間が行います。
 
 そして全体は **FIND → EXPLAIN → PIVOT → ACT → VALIDATE** というワークフローになっており、各段が下記のコマンドに対応します。
@@ -56,7 +56,7 @@ Shenron の解析本体 `shenron` は、ターゲットへのスキャン、エ�
 - `production ablation`：URI-only から Nuclei IR・request-specific IR まで、条件の広さ別に一致件数（ボリューム）を比較
 - `production replay`：ローカルの履歴コーパス全体に対し、既知検出の再観測カバレッジとその他の一致を、機微情報を含まない集計として算出
 - `production count-hypotheses`：CVE ごとに「広い→狭い」WAF 条件を、ローカルの COUNT シミュレーションとして比較（推奨する条件を自動で選んだり、デプロイしたりはしません）
-- `production explain`：CVE / テンプレート / リクエスト証拠の表示。既定では `response-unverified` かつ generic path の低確度ノイズを隠し、`--include-generic` で保存済みの全 finding を表示します。接続元・クライアント IP（`--show-source-ips`）、ローカル ASN データで解決した ASN（`--show-asn`）、JA4 フィンガープリント（`--show-fingerprints`）ごとの breadth/depth/時間窓トリアージと、観測挙動のみから算出する挙動優先度スコアを表示（悪性確率・攻撃成立・攻撃者特定の判定ではありません）。任意の IP/ASN レピュテーション付与は、凍結データセットだけを参照し外部照会をせず、第三者の意見として示します
+- `production explain`：CVE / テンプレート / リクエスト証拠の表示。既定では `response-unverified` かつ generic path の低確度ノイズを隠し、`--include-generic` で保存済みの全 finding を表示します。接続元・クライアント IP（`--show-source-ips`）、ローカル ASN データで解決した ASN（`--show-asn`）、JA4 フィンガープリント（`--show-fingerprints`）ごとの breadth/depth/時間窓トリアージと、観測挙動のみから算出する挙動優先度スコアを表示（悪性確率・攻撃成立・攻撃者特定の判定ではありません）。`shenron-lab reputation update` で準備されたローカル IP/ASN データは既定で自動参照し、明示指定のデータセットは引き続き優先します。レピュテーションは外部照会をせず、第三者の意見として示します
 - 防御候補（candidate）の作成、履歴での replay、バックエンド互換性の確認
 - COUNT 固定の AWS WAF JSON / Terraform ルール断片、または OSSEC 検知 XML の出力
 

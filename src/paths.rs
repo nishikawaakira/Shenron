@@ -30,6 +30,16 @@ pub fn default_nuclei_report() -> PathBuf {
     default_data_dir().join("nuclei-report.json")
 }
 
+/// Default local reputation dataset created by `shenron-lab reputation update`.
+pub fn default_reputation_dataset() -> PathBuf {
+    default_data_dir().join("reputation.jsonl")
+}
+
+/// Default local IPv4 ASN-range dataset created by `shenron-lab reputation update`.
+pub fn default_asn_dataset() -> PathBuf {
+    default_data_dir().join("asn-ranges.tsv")
+}
+
 fn data_dir_from_environment(
     shenron_data_dir: Option<OsString>,
     xdg_data_home: Option<OsString>,

@@ -11,6 +11,7 @@ pub mod output;
 pub mod paths;
 pub mod production;
 pub mod reputation;
+pub mod reputation_update;
 pub mod sigma;
 pub mod triage;
 pub mod waf;

@@ -45,6 +45,28 @@ The update command downloads public intelligence only. Coverage, inventory,
 matchers, and all production analysis remain local; matchers in particular do
 not access the network or execute templates.
 
+## Updating public reputation and ASN inputs
+
+`shenron-lab reputation update` is a separate, explicit preparation command. It
+uses system `curl` only to download public Spamhaus DROP, FireHOL level 1, CINS
+Army, blocklist.de, and iptoasn IPv4 data; it never uploads customer logs,
+findings, observed IPs, request values, or any other customer data. The command
+writes local `reputation.jsonl`, `asn-ranges.tsv`, and
+`reputation-manifest.json` files under `SHENRON_DATA_DIR` (or the standard
+XDG/home data directory), recording source URLs, retrieval time, output hashes,
+and record counts. The main `shenron` binary remains offline and automatically
+uses those local files during `production explain` when no explicit dataset
+paths are supplied.
+
+```bash
+shenron-lab reputation update
+shenron production explain --findings ./private-findings.jsonl --show-source-ips --show-asn
+```
+
+The generated opinions are third-party context, not a determination of attack,
+exploitation, compromise, or attribution. Review and comply with the terms of
+use for each source before downloading or relying on its list.
+
 `shenron-lab nuclei coverage` includes a template capability funnel: all CVE templates, HTTP CVE templates, templates with supported request IR, and the resulting IR alternatives split into `request-specific` and `response-unverified`. This separates the request-feature distribution of the convertible template corpus from the limitations of a selected telemetry source. It is not a field precision, true-positive-rate, attack, exploitation, compromise, or vulnerability-presence measurement; the funnel contains no ground truth.
 
 | Level | Meaning |

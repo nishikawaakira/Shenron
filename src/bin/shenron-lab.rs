@@ -1,11 +1,16 @@
 use std::{
+    fs::{self, File},
+    io::Read,
     path::{Path, PathBuf},
     process::Command as ProcessCommand,
 };
 
-use anyhow::{Context, Result};
-use clap::{Parser, Subcommand, ValueEnum};
+use anyhow::{bail, Context, Result};
+use chrono::Utc;
+use clap::{ArgAction, Parser, Subcommand, ValueEnum};
+use flate2::read::GzDecoder;
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 
 use shenron::event::TelemetryProfile;
 use shenron::kev::{coverage as kev_coverage, KevCoverageReport};
@@ -20,7 +25,12 @@ use shenron::nuclei::{
     validated_detections, CoverageReport, InventoryReport, RequestMatcherView,
     TelemetryComparisonReport, TelemetryCoverageReport,
 };
-use shenron::paths::{default_nuclei_report, default_templates_dir};
+use shenron::paths::{default_data_dir, default_nuclei_report, default_templates_dir};
+use shenron::reputation_update::{
+    parse_blocklist_de, parse_cins, parse_firehol_level1, parse_iptoasn_v4, parse_spamhaus_drop,
+    write_asn_ranges, write_reputation_jsonl, BLOCKLIST_DE_URL, CINS_URL, FIREHOL_LEVEL1_URL,
+    IPTOASN_V4_URL, SPAMHAUS_DROP_URL,
+};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -87,6 +97,11 @@ enum Command {
     Kev {
         #[command(subcommand)]
         command: KevCommand,
+    },
+    /// Download public IP reputation and ASN inputs. No customer data is transmitted.
+    Reputation {
+        #[command(subcommand)]
+        command: ReputationCommand,
     },
     /// Measure minimum additional, non-sensitive web telemetry from frozen local artifacts.
     MinimumTelemetry {
@@ -195,6 +210,37 @@ enum KevCommand {
         nuclei_report: PathBuf,
         #[arg(long)]
         report: Option<PathBuf>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum ReputationCommand {
+    /// Download public lists and write local, offline explain inputs only.
+    Update {
+        /// Output directory (defaults to Shenron's local data directory).
+        #[arg(long)]
+        out_dir: Option<PathBuf>,
+        /// Generate reputation.jsonl. Pass --reputation false to omit it.
+        #[arg(long, default_value_t = true, action = ArgAction::Set)]
+        reputation: bool,
+        /// Generate asn-ranges.tsv. Pass --asn false to omit it.
+        #[arg(long, default_value_t = true, action = ArgAction::Set)]
+        asn: bool,
+        /// Public Spamhaus DROP source URL.
+        #[arg(long, default_value = SPAMHAUS_DROP_URL)]
+        spamhaus_drop_source: String,
+        /// Public FireHOL level 1 source URL.
+        #[arg(long, default_value = FIREHOL_LEVEL1_URL)]
+        firehol_source: String,
+        /// Public CINS Army source URL.
+        #[arg(long, default_value = CINS_URL)]
+        cins_source: String,
+        /// Public blocklist.de source URL.
+        #[arg(long, default_value = BLOCKLIST_DE_URL)]
+        blocklist_de_source: String,
+        /// Public iptoasn IPv4 source URL.
+        #[arg(long, default_value = IPTOASN_V4_URL)]
+        iptoasn_source: String,
     },
 }
 
@@ -416,6 +462,29 @@ fn main() -> Result<()> {
                 }
             }
         },
+        Command::Reputation { command } => match command {
+            ReputationCommand::Update {
+                out_dir,
+                reputation,
+                asn,
+                spamhaus_drop_source,
+                firehol_source,
+                cins_source,
+                blocklist_de_source,
+                iptoasn_source,
+            } => update_reputation_inputs(
+                &out_dir.unwrap_or_else(default_data_dir),
+                reputation,
+                asn,
+                ReputationSources {
+                    spamhaus_drop: &spamhaus_drop_source,
+                    firehol: &firehol_source,
+                    cins: &cins_source,
+                    blocklist_de: &blocklist_de_source,
+                    iptoasn: &iptoasn_source,
+                },
+            )?,
+        },
         Command::MinimumTelemetry {
             templates,
             comparison,
@@ -587,6 +656,218 @@ fn checked_git(command: &mut ProcessCommand, description: &str) -> Result<String
         );
     }
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+}
+
+struct ReputationSources<'a> {
+    spamhaus_drop: &'a str,
+    firehol: &'a str,
+    cins: &'a str,
+    blocklist_de: &'a str,
+    iptoasn: &'a str,
+}
+
+#[derive(Serialize)]
+struct ReputationUpdateManifest {
+    report_kind: &'static str,
+    generated_at: chrono::DateTime<Utc>,
+    safety_note: &'static str,
+    sources: Vec<ReputationSourceManifest>,
+    outputs: Vec<ReputationOutputManifest>,
+}
+
+#[derive(Serialize)]
+struct ReputationSourceManifest {
+    name: &'static str,
+    url: String,
+    records: usize,
+}
+
+#[derive(Serialize)]
+struct ReputationOutputManifest {
+    path: String,
+    sha256: String,
+    records: usize,
+}
+
+/// The only network-capable reputation path: curl downloads public lists to
+/// temporary local files. Neither logs nor findings nor observed IPs are ever
+/// provided to curl or any remote service.
+fn update_reputation_inputs(
+    out_dir: &Path,
+    include_reputation: bool,
+    include_asn: bool,
+    sources: ReputationSources<'_>,
+) -> Result<()> {
+    if !include_reputation && !include_asn {
+        bail!("at least one of --reputation or --asn must be true");
+    }
+    fs::create_dir_all(out_dir)
+        .with_context(|| format!("creating reputation output directory {}", out_dir.display()))?;
+    let download_dir = out_dir.join(format!(
+        ".reputation-downloads-{}-{}",
+        std::process::id(),
+        Utc::now().timestamp_nanos_opt().unwrap_or_default()
+    ));
+    fs::create_dir(&download_dir).with_context(|| {
+        format!(
+            "creating temporary download directory {}",
+            download_dir.display()
+        )
+    })?;
+
+    let result = (|| {
+        let mut source_manifest = Vec::new();
+        let mut output_manifest = Vec::new();
+
+        if include_reputation {
+            let spamhaus = download_dir.join("spamhaus-drop.txt");
+            curl_download(sources.spamhaus_drop, &spamhaus)?;
+            let spamhaus_records = parse_spamhaus_drop(&fs::read_to_string(&spamhaus)?);
+            source_manifest.push(ReputationSourceManifest {
+                name: "spamhaus-drop",
+                url: sources.spamhaus_drop.to_owned(),
+                records: spamhaus_records.len(),
+            });
+
+            let firehol = download_dir.join("firehol-level1.netset");
+            curl_download(sources.firehol, &firehol)?;
+            let firehol_records = parse_firehol_level1(&fs::read_to_string(&firehol)?);
+            source_manifest.push(ReputationSourceManifest {
+                name: "firehol-level1",
+                url: sources.firehol.to_owned(),
+                records: firehol_records.len(),
+            });
+
+            let cins = download_dir.join("cins.txt");
+            curl_download(sources.cins, &cins)?;
+            let cins_records = parse_cins(&fs::read_to_string(&cins)?);
+            source_manifest.push(ReputationSourceManifest {
+                name: "cins-army",
+                url: sources.cins.to_owned(),
+                records: cins_records.len(),
+            });
+
+            let blocklist_de = download_dir.join("blocklist-de.txt");
+            curl_download(sources.blocklist_de, &blocklist_de)?;
+            let blocklist_de_records = parse_blocklist_de(&fs::read_to_string(&blocklist_de)?);
+            source_manifest.push(ReputationSourceManifest {
+                name: "blocklist.de",
+                url: sources.blocklist_de.to_owned(),
+                records: blocklist_de_records.len(),
+            });
+
+            let reputation = out_dir.join("reputation.jsonl");
+            let reputation_records = [
+                spamhaus_records,
+                firehol_records,
+                cins_records,
+                blocklist_de_records,
+            ]
+            .concat();
+            write_reputation_jsonl(&reputation, &reputation_records)?;
+            output_manifest.push(output_manifest_entry(
+                &reputation,
+                reputation_records.len(),
+            )?);
+        }
+
+        if include_asn {
+            let iptoasn = download_dir.join("ip2asn-v4.tsv.gz");
+            curl_download(sources.iptoasn, &iptoasn)?;
+            let mut source = GzDecoder::new(File::open(&iptoasn)?);
+            let mut text = String::new();
+            source.read_to_string(&mut text).with_context(|| {
+                format!(
+                    "decompressing public iptoasn download {}",
+                    iptoasn.display()
+                )
+            })?;
+            let ranges = parse_iptoasn_v4(&text);
+            source_manifest.push(ReputationSourceManifest {
+                name: "iptoasn-v4",
+                url: sources.iptoasn.to_owned(),
+                records: ranges.len(),
+            });
+            let asn = out_dir.join("asn-ranges.tsv");
+            write_asn_ranges(&asn, &ranges)?;
+            output_manifest.push(output_manifest_entry(&asn, ranges.len())?);
+        }
+
+        let manifest = ReputationUpdateManifest {
+            report_kind: "PUBLIC_REPUTATION_UPDATE",
+            generated_at: Utc::now(),
+            safety_note: "Public threat-intelligence downloads only. No customer logs, findings, observed IP addresses, request values, or other customer data were transmitted.",
+            sources: source_manifest,
+            outputs: output_manifest,
+        };
+        let manifest_path = out_dir.join("reputation-manifest.json");
+        serde_json::to_writer_pretty(File::create(&manifest_path)?, &manifest)?;
+
+        println!(
+            "Public reputation/ASN inputs written to: {}",
+            out_dir.display()
+        );
+        println!("Manifest: {}", manifest_path.display());
+        println!("Public lists only were downloaded; no customer data was transmitted. The shenron analysis binary remains offline.");
+        println!("production explain automatically uses these local files when no --reputation-dataset or --asn-dataset override is supplied.");
+        println!(
+            "Review and comply with each source's terms of use before relying on these lists."
+        );
+        Ok(())
+    })();
+    let _ = fs::remove_dir_all(&download_dir);
+    result
+}
+
+fn curl_download(url: &str, destination: &Path) -> Result<()> {
+    let description = format!("curl download from {url}");
+    let output = ProcessCommand::new("curl")
+        .args([
+            "--fail",
+            "--location",
+            "--silent",
+            "--show-error",
+            "--output",
+        ])
+        .arg(destination)
+        .arg(url)
+        .output()
+        .with_context(|| {
+            format!(
+                "failed to start system curl while running `{description}`; install curl and retry"
+            )
+        })?;
+    if !output.status.success() {
+        bail!(
+            "`{description}` exited with {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(())
+}
+
+fn output_manifest_entry(path: &Path, records: usize) -> Result<ReputationOutputManifest> {
+    Ok(ReputationOutputManifest {
+        path: path.display().to_string(),
+        sha256: sha256_file(path)?,
+        records,
+    })
+}
+
+fn sha256_file(path: &Path) -> Result<String> {
+    let mut file =
+        File::open(path).with_context(|| format!("hashing output {}", path.display()))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let bytes_read = file.read(&mut buffer)?;
+        if bytes_read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..bytes_read]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
 }
 
 fn print_report(report: &ValidationReport) {

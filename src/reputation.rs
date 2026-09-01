@@ -8,7 +8,7 @@ use std::{
     collections::HashMap,
     fs::File,
     io::{BufRead, BufReader, Read},
-    net::IpAddr,
+    net::{IpAddr, Ipv4Addr},
     path::Path,
 };
 
@@ -34,20 +34,45 @@ pub struct DatasetProvenance {
     pub records: usize,
 }
 
-/// A GeoLite2-ASN-compatible network-to-ASN lookup database.
+/// A local ASN lookup database backed by either GeoLite-compatible networks or
+/// non-overlapping IPv4 ranges. Both forms are loaded from local files only.
 pub struct AsnDatabase {
-    entries: Vec<(IpNet, AsnInfo)>,
+    entries: AsnEntries,
     provenance: DatasetProvenance,
+}
+
+enum AsnEntries {
+    Networks(Vec<(IpNet, AsnInfo)>),
+    Ranges(Vec<AsnRange>),
+}
+
+struct AsnRange {
+    start: u32,
+    end: u32,
+    info: AsnInfo,
 }
 
 impl AsnDatabase {
     /// Return the most-specific ASN record that contains `ip`.
     pub fn lookup(&self, ip: IpAddr) -> Option<&AsnInfo> {
-        self.entries
-            .iter()
-            .filter(|(network, _)| network.contains(&ip))
-            .max_by_key(|(network, _)| network.prefix_len())
-            .map(|(_, asn)| asn)
+        match &self.entries {
+            AsnEntries::Networks(entries) => entries
+                .iter()
+                .filter(|(network, _)| network.contains(&ip))
+                .max_by_key(|(network, _)| network.prefix_len())
+                .map(|(_, asn)| asn),
+            AsnEntries::Ranges(entries) => {
+                let IpAddr::V4(ip) = ip else {
+                    return None;
+                };
+                let value = u32::from(ip);
+                let index = entries.partition_point(|range| range.start <= value);
+                entries
+                    .get(index.checked_sub(1)?)
+                    .filter(|range| value <= range.end)
+                    .map(|range| &range.info)
+            }
+        }
     }
 
     /// Return the immutable provenance for the local CSV file.
@@ -65,8 +90,14 @@ impl AsnResolver for AsnDatabase {
     }
 }
 
-/// Load a GeoLite2-ASN-compatible CSV file without contacting any network.
+/// Load a local ASN dataset without contacting any network.
+///
+/// `.tsv` files use Shenron's `start_ip<TAB>end_ip<TAB>asn<TAB>org` range
+/// format; every other extension keeps GeoLite2-ASN-compatible CSV support.
 pub fn load_asn_database(path: &Path) -> Result<AsnDatabase> {
+    if path.extension().is_some_and(|extension| extension == "tsv") {
+        return load_asn_ranges(path);
+    }
     let mut reader = csv::Reader::from_path(path)
         .with_context(|| format!("opening ASN dataset {}", path.display()))?;
     let headers = reader
@@ -115,7 +146,85 @@ pub fn load_asn_database(path: &Path) -> Result<AsnDatabase> {
     }
     let provenance = provenance(path, entries.len())?;
     Ok(AsnDatabase {
-        entries,
+        entries: AsnEntries::Networks(entries),
+        provenance,
+    })
+}
+
+/// Load sorted, non-overlapping IPv4 ASN ranges and resolve them in O(log n).
+pub fn load_asn_ranges(path: &Path) -> Result<AsnDatabase> {
+    let reader = BufReader::new(
+        File::open(path)
+            .with_context(|| format!("opening ASN range dataset {}", path.display()))?,
+    );
+    let mut entries = Vec::new();
+    for (line_number, line) in reader.lines().enumerate() {
+        let line = line.with_context(|| {
+            format!(
+                "reading ASN range dataset {} at line {}",
+                path.display(),
+                line_number + 1
+            )
+        })?;
+        if line.trim().is_empty() || line.starts_with('#') || line.starts_with("start_ip\t") {
+            continue;
+        }
+        let fields = line.splitn(4, '\t').collect::<Vec<_>>();
+        if fields.len() != 4 {
+            bail!(
+                "invalid ASN range in {} at line {} (expected start_ip<TAB>end_ip<TAB>asn<TAB>org)",
+                path.display(),
+                line_number + 1
+            );
+        }
+        let start = fields[0].trim().parse::<Ipv4Addr>().with_context(|| {
+            format!(
+                "invalid ASN range start in {} at line {}",
+                path.display(),
+                line_number + 1
+            )
+        })?;
+        let end = fields[1].trim().parse::<Ipv4Addr>().with_context(|| {
+            format!(
+                "invalid ASN range end in {} at line {}",
+                path.display(),
+                line_number + 1
+            )
+        })?;
+        let start = u32::from(start);
+        let end = u32::from(end);
+        if start > end {
+            bail!(
+                "invalid descending ASN range in {} at line {}",
+                path.display(),
+                line_number + 1
+            );
+        }
+        let asn = fields[2].trim().parse::<u32>().with_context(|| {
+            format!(
+                "invalid ASN number in {} at line {}",
+                path.display(),
+                line_number + 1
+            )
+        })?;
+        entries.push(AsnRange {
+            start,
+            end,
+            info: AsnInfo {
+                asn,
+                org: fields[3].trim().to_owned(),
+            },
+        });
+    }
+    entries.sort_by_key(|range| range.start);
+    for pair in entries.windows(2) {
+        if pair[0].end >= pair[1].start {
+            bail!("overlapping ASN ranges in {}", path.display());
+        }
+    }
+    let provenance = provenance(path, entries.len())?;
+    Ok(AsnDatabase {
+        entries: AsnEntries::Ranges(entries),
         provenance,
     })
 }
@@ -419,9 +528,10 @@ fn sha256_file(path: &Path) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
-    use std::{net::IpAddr, path::Path};
+    use std::{fs, net::IpAddr, path::Path};
 
     use super::{load_asn_database, load_reputation_database};
+    use tempfile::tempdir;
 
     const ASN_FIXTURE: &str = "tests/fixtures/reputation/asn.csv";
     const REPUTATION_FIXTURE: &str = "tests/fixtures/reputation/reputation.jsonl";
@@ -432,6 +542,35 @@ mod tests {
         let ip = "203.0.113.7".parse::<IpAddr>().unwrap();
         assert_eq!(database.lookup(ip).unwrap().asn, 64_501);
         assert_eq!(database.lookup(ip).unwrap().org, "EXAMPLE-NARROW");
+    }
+
+    #[test]
+    fn resolves_generated_asn_ranges_with_binary_search() {
+        let directory = tempdir().unwrap();
+        let ranges = directory.path().join("asn-ranges.tsv");
+        fs::write(
+            &ranges,
+            "192.0.2.0\t192.0.2.10\t64500\tFIRST\n198.51.100.0\t198.51.100.255\t64501\tSECOND\n",
+        )
+        .unwrap();
+        let database = load_asn_database(&ranges).unwrap();
+        assert_eq!(
+            database.lookup("192.0.2.0".parse().unwrap()).unwrap().asn,
+            64_500
+        );
+        assert_eq!(
+            database.lookup("192.0.2.10".parse().unwrap()).unwrap().org,
+            "FIRST"
+        );
+        assert_eq!(
+            database
+                .lookup("198.51.100.255".parse().unwrap())
+                .unwrap()
+                .asn,
+            64_501
+        );
+        assert!(database.lookup("192.0.2.11".parse().unwrap()).is_none());
+        assert!(database.lookup("2001:db8::1".parse().unwrap()).is_none());
     }
 
     #[test]

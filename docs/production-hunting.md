@@ -95,7 +95,7 @@ This behavioral score is intentionally computed offline and involves no network 
 
 ## IP/ASN reputation enrichment (offline)
 
-`production explain --show-source-ips` can join the private IP groups to analyst-supplied frozen datasets without any HTTP request or external API call. Add `--asn-dataset ./GeoLite2-ASN-Blocks-CSV.csv` for a GeoLite2-ASN-compatible CSV and `--reputation-dataset ./reputation.jsonl` for local third-party opinions. The ASN CSV accepts `network,autonomous_system_number,autonomous_system_organization` or `network,asn,as_org`/`as_name`; overlapping IPv4 and IPv6 CIDRs resolve by longest prefix. The JSONL dataset has one record per opinion, for example `{"scope":"ip","value":"203.0.113.7","score":90,"source":"example-feed","categories":["scanner"],"as_of":"2026-08-01"}`. `scope` is `ip`, `cidr`, or `asn`; scores are integer values from 0 through 100, categories default to an empty list, and ASN values can be strings or numbers.
+`production explain --show-source-ips` can join the private IP groups to frozen local datasets without any HTTP request or external API call. `shenron-lab reputation update` can prepare public reputation and ASN inputs once; when `<data-dir>/reputation.jsonl` and/or `<data-dir>/asn-ranges.tsv` exist, `explain` automatically uses them unless an explicit `--reputation-dataset` or `--asn-dataset` path overrides them. The data directory is `SHENRON_DATA_DIR`, then `$XDG_DATA_HOME/shenron`, then `~/.local/share/shenron`. Explicit datasets also remain supported: `--asn-dataset ./GeoLite2-ASN-Blocks-CSV.csv` accepts a GeoLite2-ASN-compatible CSV, while the prepared `asn-ranges.tsv` is a sorted IPv4 `start_ip<TAB>end_ip<TAB>asn<TAB>org` file resolved by binary search. The JSONL dataset has one record per opinion, for example `{"scope":"ip","value":"203.0.113.7","score":90,"source":"example-feed","categories":["scanner"],"as_of":"2026-08-01"}`. `scope` is `ip`, `cidr`, or `asn`; scores are integer values from 0 through 100, categories default to an empty list, and ASN values can be strings or numbers.
 
 ```bash
 cargo run --bin shenron -- production explain \
@@ -109,7 +109,7 @@ The display records each supplied dataset's path, streaming SHA-256, and record 
 
 ### ASN grouping
 
-Add `--show-asn` with `--asn-dataset` to group private findings by a locally resolved ASN. `--show-asn` without the ASN dataset prints a warning and no ASN groups. Like IP grouping, it keeps `validated-client` and `observed-peer` identities separate even when they resolve to the same ASN. Its spread is the number of distinct member IPs in the larger of those two separate identity populations; they are never merged. Findings whose selected client/peer IP is absent, malformed, or unresolved by the local ASN CSV are excluded from ASN aggregation and counted in the output.
+Add `--show-asn` to group private findings by a locally resolved ASN. It uses the prepared default ASN file when available, or an explicit `--asn-dataset`; without either it prints a warning and no ASN groups. Like IP grouping, it keeps `validated-client` and `observed-peer` identities separate even when they resolve to the same ASN. Its spread is the number of distinct member IPs in the larger of those two separate identity populations; they are never merged. Findings whose selected client/peer IP is absent, malformed, or unresolved by the local ASN dataset are excluded from ASN aggregation and counted in the output.
 
 ```bash
 cargo run --bin shenron -- production explain \

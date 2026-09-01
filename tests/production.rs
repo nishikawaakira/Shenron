@@ -635,6 +635,49 @@ fn explain_bundles_multiple_cves_and_templates_by_request_path() {
 }
 
 #[test]
+fn explain_uses_prepared_default_reputation_and_asn_datasets_when_available() {
+    let directory = tempdir().unwrap();
+    let findings = directory.path().join("private-findings.jsonl");
+    let data_dir = directory.path().join("shenron-data");
+    fs::create_dir_all(&data_dir).unwrap();
+    fs::write(
+        &findings,
+        r#"{"template_id":"default-enrichment","cves":["CVE-2024-42001"],"detectability":"HIGH","request_specificity":"request-specific","timestamp":null,"source_ip":"198.51.100.9","host":null,"method":"GET","uri_path":"/distinctive","uri_query":"q=1","headers":[],"ja3":null,"ja4":null,"waf_action":null,"request_id":null}
+"#,
+    )
+    .unwrap();
+    fs::write(
+        data_dir.join("asn-ranges.tsv"),
+        "198.51.100.0\t198.51.100.255\t64510\tPREPARED-ASN\n",
+    )
+    .unwrap();
+    fs::write(
+        data_dir.join("reputation.jsonl"),
+        r#"{"scope":"cidr","value":"198.51.100.0/24","score":90,"source":"prepared-public-list","categories":["example"]}
+"#,
+    )
+    .unwrap();
+
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .env("SHENRON_DATA_DIR", &data_dir)
+        .args([
+            "production",
+            "explain",
+            "--findings",
+            findings.to_str().unwrap(),
+            "--show-source-ips",
+            "--show-asn",
+        ])
+        .assert()
+        .success()
+        .stdout(contains("ASN dataset provenance:"))
+        .stdout(contains("Reputation dataset provenance:"))
+        .stdout(contains("Resolved ASN: 64510 (PREPARED-ASN)"))
+        .stdout(contains("Reputation: 90/100 (high) via cidr"));
+}
+
+#[test]
 fn explain_hides_only_response_unverified_generic_paths_by_default() {
     let directory = tempdir().unwrap();
     let findings = directory.path().join("private-findings.jsonl");

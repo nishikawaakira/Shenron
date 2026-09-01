@@ -22,7 +22,10 @@ use shenron::{
     event::{TelemetryProfile, TrustedProxy, TrustedProxySet},
     nuclei::{path_distinctiveness, PathDistinctiveness},
     output::{Finding, FindingWriter},
-    paths::{default_nuclei_report, default_templates_dir},
+    paths::{
+        default_asn_dataset, default_nuclei_report, default_reputation_dataset,
+        default_templates_dir,
+    },
     production::{
         ablation_with_optional_kev as production_ablation,
         count_hypotheses_with_optional_kev as production_count_hypotheses,
@@ -277,10 +280,10 @@ enum ProductionCommand {
         /// Summarize source IP addresses from the selected private findings.
         #[arg(long)]
         show_source_ips: bool,
-        /// Summarize selected findings by locally resolved ASN. Requires --asn-dataset.
+        /// Summarize selected findings by locally resolved ASN. Uses a prepared default dataset when available.
         #[arg(long)]
         show_asn: bool,
-        /// Local GeoLite2-ASN-compatible CSV used only to enrich displayed IP groups.
+        /// Local ASN CSV or Shenron range TSV used only to enrich displayed IP groups.
         #[arg(long)]
         asn_dataset: Option<PathBuf>,
         /// Local JSONL third-party reputation opinions used only to enrich displayed IP groups.
@@ -549,6 +552,9 @@ fn main() -> Result<()> {
                 triage_window,
                 limit,
             } => {
+                let asn_dataset = resolve_optional_local_dataset(asn_dataset, default_asn_dataset);
+                let reputation_dataset =
+                    resolve_optional_local_dataset(reputation_dataset, default_reputation_dataset);
                 let asn_database = asn_dataset.as_deref().map(load_asn_database).transpose()?;
                 let reputation_database = reputation_dataset
                     .as_deref()
@@ -750,6 +756,18 @@ fn resolve_nuclei_inputs(
         );
     }
     Ok((templates, report))
+}
+
+/// Prefer an explicit local dataset; otherwise use the prepared public input
+/// only when it already exists. Explain remains strictly offline in both cases.
+fn resolve_optional_local_dataset(
+    selected: Option<PathBuf>,
+    default_path: impl FnOnce() -> PathBuf,
+) -> Option<PathBuf> {
+    selected.or_else(|| {
+        let path = default_path();
+        path.is_file().then_some(path)
+    })
 }
 
 fn default_hunt_output() -> PathBuf {
