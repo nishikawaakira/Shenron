@@ -71,6 +71,27 @@ Findings go to stdout as JSONL; the scan summary and malformed-record warnings g
 cargo run --bin shenron -- validate-rules --rules ./rules/
 ```
 
+## Quick production hunt
+
+Prepare public Nuclei intelligence once, then hunt local logs with only an
+input and its format:
+
+```bash
+shenron-lab nuclei update
+shenron production hunt --input ./logs --format apache
+```
+
+`nuclei update` stores its checkout in `$SHENRON_DATA_DIR/nuclei-templates`
+when `SHENRON_DATA_DIR` is set; otherwise it uses
+`$XDG_DATA_HOME/shenron/nuclei-templates` or
+`~/.local/share/shenron/nuclei-templates`. It writes the matching frozen report
+alongside it as `nuclei-report.json`. Hunt, ablation, replay, and
+count-hypotheses use those locations by default. A hunt without `--output`
+writes private artifacts to `./private-results/hunt-<UTC timestamp>/`.
+`--nuclei-templates`, `--nuclei-report`, `--kev-report`, and `--output` remain
+available for an explicit, reproducible workflow. KEV is optional; omitting it
+uses an empty KEV set.
+
 ## Sigma and log limits
 
 See [supported aliases and syntax](docs/sigma-support.md). Unsupported rules are reported and skipped; nothing is matched with silently weakened logic. This MVP expects newline-delimited AWS WAF JSON records, not a complete JSON array or Firehose envelope.
@@ -108,7 +129,7 @@ For OSSEC, the exporter produces a detection XML rule for raw nginx/Apache combi
 
 ## Design
 
-The current design, AWS schema research, Sigma research, workflow, candidate safety model, and Nuclei limitation are documented under [docs](docs/).
+The current design, AWS schema research, Sigma research, workflow, candidate safety model, and Nuclei limitation are documented under [docs](docs/). A worked, four-dataset evaluation is in the [case study](docs/case-study.md).
 
 ## Development
 

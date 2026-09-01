@@ -11,30 +11,34 @@ addresses, request values, or any other customer data. The analysis binary
 `shenron`, including its production and candidate commands, remains offline
 during analysis.
 
-Pin a reviewed commit when reproducibility matters:
+Run this once to use the standard local layout. It writes the checkout to
+`$SHENRON_DATA_DIR/nuclei-templates`, or to
+`$XDG_DATA_HOME/shenron/nuclei-templates` / `~/.local/share/shenron/nuclei-templates`
+when the override is absent, and generates the matching frozen coverage report
+at `nuclei-report.json` in the same data directory:
+
+```bash
+shenron-lab nuclei update
+```
+
+Pin a reviewed commit when reproducibility matters. `--templates` and `--report`
+can override the standard locations:
 
 ```bash
 shenron-lab nuclei update \
+  --revision <full-commit-sha> \
   --templates ./nuclei-templates \
-  --revision <full-commit-sha>
+  --report ./research/nuclei/<full-commit-sha>/final.json
 ```
 
 When `--revision` is omitted, the command checks out the current remote default
-branch tip and prints its resolved full SHA. Record that SHA, then regenerate
-the frozen local analysis and validation artifacts before hunting:
+branch tip, prints its resolved full SHA, and writes a frozen report generated
+by the same coverage logic as `shenron-lab nuclei coverage`. After either form,
+production hunt uses the default prepared inputs without repeating their paths:
 
 ```bash
-shenron-lab nuclei coverage \
-  --templates ./nuclei-templates \
-  --revision <resolved-full-commit-sha> \
-  --report ./research/nuclei/<resolved-full-commit-sha>/final.json
-
 shenron production hunt \
-  --input ./historical-logs --format aws-waf \
-  --nuclei-templates ./nuclei-templates \
-  --nuclei-report ./research/nuclei/<resolved-full-commit-sha>/final.json \
-  --kev-report ./research/kev/<snapshot>/coverage.json \
-  --output ./private-results/hunt
+  --input ./historical-logs --format aws-waf
 ```
 
 The update command downloads public intelligence only. Coverage, inventory,

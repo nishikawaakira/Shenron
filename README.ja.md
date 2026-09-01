@@ -77,16 +77,14 @@ cargo run --bin shenron -- validate-rules --rules ./rules/
 
 ## Production hunt（本番ログのハンティング）
 
-```bash
-shenron production inspect --input ./logs --format aws-waf
+公開 Nuclei テンプレートを一度準備すれば、以後はログと形式だけで hunt を実行できます。
 
-shenron production hunt \
-  --input ./logs --format aws-waf \
-  --nuclei-templates ./nuclei-templates \
-  --nuclei-report ./coverage.json \
-  --kev-report ./kev.json \
-  --output ./private-hunt-results
+```bash
+shenron-lab nuclei update
+shenron production hunt --input ./logs --format apache
 ```
+
+`nuclei update` は `SHENRON_DATA_DIR` があればその配下、なければ `$XDG_DATA_HOME/shenron`、さらに無ければ `~/.local/share/shenron` に `nuclei-templates/` と凍結済みの `nuclei-report.json` を保存します。`hunt`、`ablation`、`replay`、`count-hypotheses` は既定でこの場所を参照します。`hunt` の `--output` を省略した場合、`./private-results/hunt-<UTC日時>/` に private artifacts を出力します。従来どおり `--nuclei-templates`、`--nuclei-report`、`--kev-report`、`--output` で明示指定もできます。KEV は任意で、省略時は空集合として扱います。
 
 `hunt` は、機微なリクエスト値を含む **private findings** と、それを含まない **sanitized（無害化済み）レポート**を分離して出力します。AWS WAF の検出結果は `explain` で `BLOCK` / `not-blocked` を絞り込めます。
 
@@ -140,6 +138,7 @@ JA4 のように、選択した telemetry/backend では忠実に表現できな
 
 ## ドキュメント
 
+- [ケーススタディ（4データセットの実証）](docs/case-study.md)
 - [Production hunting](docs/production-hunting.md)
 - [Telemetry capabilities](docs/telemetry-capabilities.md)
 - [Candidate model](docs/waf-candidate-model.md)

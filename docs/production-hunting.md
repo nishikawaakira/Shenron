@@ -8,17 +8,29 @@ Inspect structure before a hunt. This command reports only counts, timestamps, a
 cargo run --bin shenron -- production inspect --input ./production-waf-logs --format aws-waf --sample 10000
 ```
 
-Run a full hunt only with the pinned Nuclei template checkout and frozen reports that validated the detections:
+Prepare the public Nuclei checkout and its frozen validation report once. This
+downloads public templates only and never sends customer data:
+
+```bash
+shenron-lab nuclei update
+```
+
+The default data directory is `$SHENRON_DATA_DIR` when set, otherwise
+`$XDG_DATA_HOME/shenron` and then `~/.local/share/shenron`. Update writes
+`nuclei-templates/` and `nuclei-report.json` there. A full hunt then needs only
+the local input and its explicit format:
 
 ```bash
 cargo run --bin shenron -- production hunt \
   --input ./production-waf-logs \
-  --format aws-waf \
-  --nuclei-templates /path/to/nuclei-templates \
-  --nuclei-report ./research/nuclei/<revision>/final.json \
-  --kev-report ./research/kev/<snapshot>/coverage.json \
-  --output ./private-results/hunt-2026-08-24
+  --format aws-waf
 ```
+
+`--nuclei-templates` and `--nuclei-report` remain available to select an
+explicit frozen checkout/report pair. If neither default input exists, Shenron
+asks you to run `shenron-lab nuclei update` first. `--kev-report` is optional;
+when omitted, KEV membership is empty. The same prepared-input defaults apply
+to `production ablation`, `production replay`, and `production count-hypotheses`.
 
 If the direct peer is a known CDN, load balancer, or reverse proxy, supply every trusted proxy IP or CIDR explicitly to verify a forwarded end-client address. Shenron ignores `X-Forwarded-For` unless the observed direct peer is in this configured set: an untrusted peer can forge that header. Shenron evaluates a verified chain from right to left, removes only trusted proxy hops, and uses the first non-trusted address as `client_ip`. A missing, malformed, or all-trusted chain remains unavailable. Standard nginx/Apache Combined Log Format does not retain `X-Forwarded-For`, so it normally cannot provide `client_ip` even when `--trusted-proxy` is supplied.
 
@@ -27,11 +39,7 @@ cargo run --bin shenron -- production hunt \
   --input ./production-waf-logs \
   --format aws-waf \
   --trusted-proxy 198.51.100.0/24 \
-  --trusted-proxy 2001:db8:1234::/48 \
-  --nuclei-templates /path/to/nuclei-templates \
-  --nuclei-report ./research/nuclei/<revision>/final.json \
-  --kev-report ./research/kev/<snapshot>/coverage.json \
-  --output ./private-results/hunt-behind-proxy
+  --trusted-proxy 2001:db8:1234::/48
 ```
 
 Restrict a hunt to an inclusive UTC time interval with RFC 3339 timestamps. The report records the selected interval and how many parseable events were excluded because they were outside the interval or had no timestamp.
@@ -40,17 +48,13 @@ Restrict a hunt to an inclusive UTC time interval with RFC 3339 timestamps. The 
 cargo run --bin shenron -- production hunt \
   --input ./production-waf-logs \
   --format aws-waf \
-  --nuclei-templates /path/to/nuclei-templates \
-  --nuclei-report ./research/nuclei/<revision>/final.json \
-  --kev-report ./research/kev/<snapshot>/coverage.json \
   --from 2026-04-01T00:00:00Z \
-  --to 2026-04-30T23:59:59Z \
-  --output ./private-results/april-2026
+  --to 2026-04-30T23:59:59Z
 ```
 
-`--output` must be outside the raw-input tree. The command writes `private-findings.jsonl` locally with investigation evidence, including fields that may be sensitive. `sanitized-research.json` has aggregate CVE/KEV counts, time ranges, WAF outcomes, and cardinalities only; it never includes raw request values, IPs, hostnames, JA3/JA4 values, queries, or headers. The default `private-results/` location is ignored by Git, but that is only an additional safeguard and not a data-security boundary.
+`--output` must be outside the raw-input tree. When omitted, hunt writes to `./private-results/hunt-<UTC timestamp>/`. The command writes `private-findings.jsonl` locally with investigation evidence, including fields that may be sensitive. `sanitized-research.json` has aggregate CVE/KEV counts, time ranges, WAF outcomes, and cardinalities only; it never includes raw request values, IPs, hostnames, JA3/JA4 values, queries, or headers. The default `private-results/` location is ignored by Git, but that is only an additional safeguard and not a data-security boundary.
 
-Every hunt also writes `run-manifest.json` beside the sanitized report. It records the Shenron version, generated time, telemetry profile, Nuclei report revision and provenance, KEV/Nuclei report byte lengths, trusted-proxy configuration, fixed triage baseline, time filters, and aggregate exclusion counts. The Nuclei and KEV report files also receive streaming SHA-256 values so reviewers can verify that frozen research inputs are identical; the templates directory remains identified by its pinned Nuclei revision rather than a directory-wide hash. This makes a run reviewable and reproducible without placing raw telemetry in the artifact: the manifest never contains raw request values, client or peer IP addresses, hosts, URI/query values, headers, or JA3/JA4 values.
+Every hunt also writes `run-manifest.json` beside the sanitized report. It records the Shenron version, generated time, telemetry profile, Nuclei report revision and provenance, optional KEV/Nuclei report byte lengths, trusted-proxy configuration, fixed triage baseline, time filters, and aggregate exclusion counts. The Nuclei report and, when supplied, the KEV report receive streaming SHA-256 values so reviewers can verify that frozen research inputs are identical; the templates directory remains identified by its pinned Nuclei revision rather than a directory-wide hash. This makes a run reviewable and reproducible without placing raw telemetry in the artifact: the manifest never contains raw request values, client or peer IP addresses, hosts, URI/query values, headers, or JA3/JA4 values.
 
 Review the request-to-template mappings locally with `production explain`. It displays a CVE/template summary (up to 20 mappings) by default so a large hunt remains readable; small demo hunts therefore display all their mappings just as before. Each summary includes `distinctive-path` and `generic-path` counts, and `--show-request` prints the deterministic path label for each individual matched method/path/query record. Generic paths, especially with response-unverified evidence, may be shared by unrelated applications and deserve closer review; the label is a triage heuristic only, never a precision, attack, exploitation, compromise, or vulnerable-product determination, and it never excludes a match. Add `--show-evidence` for all locally stored evidence, `--show-source-ips` for an IP-group summary, or `--show-fingerprints` for a JA4 client-fingerprint summary. Evidence labels distinguish the observed connection peer from a validated forwarded client IP. IP addresses and JA4 values are shown only from the local private findings file and are never added to the sanitized report. Use `--limit 0` only when intentionally reviewing every mapping, IP address, and individual finding.
 
