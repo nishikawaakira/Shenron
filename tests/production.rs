@@ -584,11 +584,54 @@ fn explain_labels_generic_and_distinctive_paths_without_excluding_either() {
         ])
         .assert()
         .success()
-        .stdout(contains(
-            "Matches: 2 (distinctive-path: 1, generic-path: 1)",
-        ))
+        .stdout(contains("Top request paths (CVEs bundled per path):"))
+        .stdout(contains("GET /login\n  Matches: 1  |  CVEs (1): CVE-2024-20001\n  Templates: 1  |  Path: generic"))
+        .stdout(contains("GET /.env\n  Matches: 1  |  CVEs (1): CVE-2024-20001\n  Templates: 1  |  Path: distinctive"))
         .stdout(contains("Path distinctiveness: generic"))
         .stdout(contains("Path distinctiveness: distinctive"));
+}
+
+#[test]
+fn explain_bundles_multiple_cves_and_templates_by_request_path() {
+    let directory = tempdir().unwrap();
+    let findings = directory.path().join("private-findings.jsonl");
+    fs::write(
+        &findings,
+        concat!(
+            r#"{"template_id":"gitlab-a","cves":["CVE-2024-41001"],"detectability":"HIGH","request_specificity":"request-specific","timestamp":null,"source_ip":"198.51.100.41","host":null,"method":"GET","uri_path":"/users/sign_in","uri_query":"next=/admin","headers":[],"ja3":null,"ja4":null,"waf_action":null,"request_id":null}"#,
+            "\n",
+            r#"{"template_id":"gitlab-b","cves":["CVE-2024-41002"],"detectability":"HIGH","request_specificity":"request-specific","timestamp":null,"source_ip":"198.51.100.42","host":null,"method":"GET","uri_path":"/users/sign_in","uri_query":"next=/admin","headers":[],"ja3":null,"ja4":null,"waf_action":null,"request_id":null}"#,
+            "\n",
+            r#"{"template_id":"gitlab-c","cves":["CVE-2024-41003"],"detectability":"HIGH","request_specificity":"request-specific","timestamp":null,"source_ip":"198.51.100.43","host":null,"method":"GET","uri_path":"/users/sign_in","uri_query":"next=/admin","headers":[],"ja3":null,"ja4":null,"waf_action":null,"request_id":null}"#,
+            "\n",
+            r#"{"template_id":"other-path","cves":["CVE-2024-41004"],"detectability":"HIGH","request_specificity":"request-specific","timestamp":null,"source_ip":"198.51.100.44","host":null,"method":"GET","uri_path":"/different","uri_query":"next=/admin","headers":[],"ja3":null,"ja4":null,"waf_action":null,"request_id":null}"#,
+            "\n"
+        ),
+    )
+    .unwrap();
+
+    let output = Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "production",
+            "explain",
+            "--findings",
+            findings.to_str().unwrap(),
+            "--limit",
+            "0",
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(stdout.matches("GET /users/sign_in").count(), 1);
+    assert!(stdout.contains(
+        "GET /users/sign_in\n  Matches: 3  |  CVEs (3): CVE-2024-41001, CVE-2024-41002, CVE-2024-41003\n  Templates: 3  |  Path: distinctive"
+    ));
+    assert_eq!(stdout.matches("GET /different").count(), 1);
+    assert!(stdout.contains(
+        "GET /different\n  Matches: 1  |  CVEs (1): CVE-2024-41004\n  Templates: 1  |  Path: distinctive"
+    ));
 }
 
 #[test]

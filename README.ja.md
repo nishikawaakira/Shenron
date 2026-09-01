@@ -99,7 +99,7 @@ shenron production explain \
 
 `production ablation` は、URI-only から検証済み Nuclei IR までの間で一致件数を集計比較します。これは件数割合（ボリューム）の比較であって、精度（precision）・正解データ・攻撃や侵害の判定ではありません。詳細は [Detection-strategy ablation](docs/ablation.md) を参照してください。
 
-`production explain` と sanitized レポートは、一致したパスを透明な `generic` / `distinctive` のトリアージ補助としてラベル付けします。一致を除外することはなく、精度・攻撃・悪用成功・侵害の判定でもありません。
+`production explain` のサマリはリクエストの method/path 単位で CVE とテンプレートを束ねるため、同一パスに複数の CVE が割り当たる場合も1項目で確認できます。`production explain` と sanitized レポートは、一致したパスを透明な `generic` / `distinctive` のトリアージ補助としてラベル付けします。一致を除外することはなく、精度・攻撃・悪用成功・侵害の判定でもありません。
 
 ## 防御候補（candidate）のワークフロー
 

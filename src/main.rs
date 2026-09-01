@@ -1181,45 +1181,56 @@ fn print_explanations(
 }
 
 fn print_explanation_summary(findings: &[shenron::production::FindingExplanation], limit: usize) {
-    let mut counts = BTreeMap::<(String, String), (usize, usize, usize)>::new();
+    let mut counts = BTreeMap::<
+        (Option<String>, Option<String>),
+        (usize, BTreeSet<String>, BTreeSet<String>),
+    >::new();
     for finding in findings {
         let count = counts
-            .entry((finding.cves.join(", "), finding.template_id.clone()))
+            .entry((finding.method.clone(), finding.uri_path.clone()))
             .or_default();
         count.0 += 1;
-        match path_distinctiveness(finding.uri_path.as_deref().unwrap_or_default()) {
-            PathDistinctiveness::Distinctive => count.1 += 1,
-            PathDistinctiveness::Generic => count.2 += 1,
-        }
+        count.1.extend(finding.cves.iter().cloned());
+        count.2.insert(finding.template_id.clone());
     }
     let mut summary = counts.into_iter().collect::<Vec<_>>();
     summary.sort_by(|left, right| {
-        let left_total = left.1 .0;
-        let right_total = right.1 .0;
-        right_total
-            .cmp(&left_total)
-            .then_with(|| left.0 .0.cmp(&right.0 .0))
+        right
+            .1
+             .0
+            .cmp(&left.1 .0)
             .then_with(|| left.0 .1.cmp(&right.0 .1))
+            .then_with(|| left.0 .0.cmp(&right.0 .0))
     });
     let displayed = if limit == 0 {
         summary.as_slice()
     } else {
         &summary[..summary.len().min(limit)]
     };
-    println!("\nTop CVE / Nuclei template mappings:");
-    for ((cves, template_id), (count, distinctive, generic)) in displayed {
+    println!("\nTop request paths (CVEs bundled per path):");
+    for ((method, path), (count, cves, templates)) in displayed {
+        let method = method.as_deref().unwrap_or("<unavailable>");
+        let path = path.as_deref().unwrap_or("<unavailable>");
+        let distinctiveness = path_distinctiveness(path);
+        let cve_count = cves.len();
+        let cves = cves.iter().cloned().collect::<Vec<_>>().join(", ");
         println!(
-            "{}\n  Nuclei template: {}\n  Matches: {} (distinctive-path: {}, generic-path: {})",
-            terminal_safe(cves),
-            terminal_safe(template_id),
+            "{} {}\n  Matches: {}  |  CVEs ({}): {}\n  Templates: {}  |  Path: {}",
+            terminal_safe(method),
+            terminal_safe(path),
             count,
-            distinctive,
-            generic,
+            cve_count,
+            terminal_safe(&cves),
+            templates.len(),
+            match distinctiveness {
+                PathDistinctiveness::Generic => "generic",
+                PathDistinctiveness::Distinctive => "distinctive",
+            },
         );
     }
     if displayed.len() < summary.len() {
         println!(
-            "{} additional CVE/template mappings omitted. Pass --limit 0 to display all.",
+            "{} additional request paths omitted. Pass --limit 0 to display all.",
             summary.len() - displayed.len()
         );
     }
