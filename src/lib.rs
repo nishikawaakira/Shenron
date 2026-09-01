@@ -8,6 +8,7 @@ pub mod lab;
 pub mod minimum_telemetry;
 pub mod nuclei;
 pub mod output;
+pub mod paths;
 pub mod production;
 pub mod reputation;
 pub mod sigma;

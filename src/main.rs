@@ -22,9 +22,12 @@ use shenron::{
     event::{TelemetryProfile, TrustedProxy, TrustedProxySet},
     nuclei::{path_distinctiveness, PathDistinctiveness},
     output::{Finding, FindingWriter},
+    paths::{default_nuclei_report, default_templates_dir},
     production::{
-        ablation as production_ablation, count_hypotheses as production_count_hypotheses,
-        explain_private_findings, historical_replay as production_historical_replay,
+        ablation_with_optional_kev as production_ablation,
+        count_hypotheses_with_optional_kev as production_count_hypotheses,
+        explain_private_findings,
+        historical_replay_with_optional_kev as production_historical_replay,
         hunt_with_options as production_hunt, inspect_with_trusted_proxies as production_inspect,
         terminal_safe, AblationReport, CountHypothesisReport, HistoricalReplayReport, HuntOptions,
         HuntTimeRange, HuntTriagePolicy, InspectionReport, SanitizedHuntReport,
@@ -161,13 +164,13 @@ enum ProductionCommand {
         #[arg(long, value_enum, default_value_t = InputFormat::AwsWaf)]
         format: InputFormat,
         #[arg(long)]
-        nuclei_templates: PathBuf,
+        nuclei_templates: Option<PathBuf>,
         #[arg(long)]
-        nuclei_report: PathBuf,
+        nuclei_report: Option<PathBuf>,
         #[arg(long)]
-        kev_report: PathBuf,
+        kev_report: Option<PathBuf>,
         #[arg(long)]
-        output: PathBuf,
+        output: Option<PathBuf>,
         /// Inclusive UTC start time in RFC 3339 format, for example 2026-04-01T00:00:00Z.
         #[arg(long, value_parser = parse_rfc3339_utc)]
         from: Option<DateTime<Utc>>,
@@ -186,11 +189,11 @@ enum ProductionCommand {
         #[arg(long, value_enum, default_value_t = InputFormat::AwsWaf)]
         format: InputFormat,
         #[arg(long)]
-        nuclei_templates: PathBuf,
+        nuclei_templates: Option<PathBuf>,
         #[arg(long)]
-        nuclei_report: PathBuf,
+        nuclei_report: Option<PathBuf>,
         #[arg(long)]
-        kev_report: PathBuf,
+        kev_report: Option<PathBuf>,
         /// Optional aggregate-only JSON report destination.
         #[arg(long)]
         output: Option<PathBuf>,
@@ -208,11 +211,11 @@ enum ProductionCommand {
         #[arg(long, value_enum, default_value_t = InputFormat::AwsWaf)]
         format: InputFormat,
         #[arg(long)]
-        nuclei_templates: PathBuf,
+        nuclei_templates: Option<PathBuf>,
         #[arg(long)]
-        nuclei_report: PathBuf,
+        nuclei_report: Option<PathBuf>,
         #[arg(long)]
-        kev_report: PathBuf,
+        kev_report: Option<PathBuf>,
         /// Local private findings from a prior hunt; read only for conservative coverage.
         #[arg(long)]
         findings: PathBuf,
@@ -236,11 +239,11 @@ enum ProductionCommand {
         #[arg(long, value_enum, default_value_t = InputFormat::AwsWaf)]
         format: InputFormat,
         #[arg(long)]
-        nuclei_templates: PathBuf,
+        nuclei_templates: Option<PathBuf>,
         #[arg(long)]
-        nuclei_report: PathBuf,
+        nuclei_report: Option<PathBuf>,
         #[arg(long)]
-        kev_report: PathBuf,
+        kev_report: Option<PathBuf>,
         /// Local private findings from a prior hunt; read only to establish conservative coverage.
         #[arg(long)]
         findings: PathBuf,
@@ -416,11 +419,14 @@ fn main() -> Result<()> {
                 to,
                 trusted_proxy,
             } => {
+                let (nuclei_templates, nuclei_report) =
+                    resolve_nuclei_inputs(nuclei_templates, nuclei_report)?;
+                let output = output.unwrap_or_else(default_hunt_output);
                 let report = production_hunt(
                     &input,
                     &nuclei_templates,
                     &nuclei_report,
-                    &kev_report,
+                    kev_report.as_deref(),
                     &output,
                     format.telemetry_profile(),
                     HuntOptions {
@@ -444,11 +450,13 @@ fn main() -> Result<()> {
                 from,
                 to,
             } => {
+                let (nuclei_templates, nuclei_report) =
+                    resolve_nuclei_inputs(nuclei_templates, nuclei_report)?;
                 let report = production_ablation(
                     &input,
                     &nuclei_templates,
                     &nuclei_report,
-                    &kev_report,
+                    kev_report.as_deref(),
                     format.telemetry_profile(),
                     HuntTimeRange { from, to },
                 )?;
@@ -469,6 +477,8 @@ fn main() -> Result<()> {
                 from,
                 to,
             } => {
+                let (nuclei_templates, nuclei_report) =
+                    resolve_nuclei_inputs(nuclei_templates, nuclei_report)?;
                 if let Some(path) = output.as_deref() {
                     shenron::production::ensure_separate_output(&input, path)?;
                 }
@@ -476,7 +486,7 @@ fn main() -> Result<()> {
                     &input,
                     &nuclei_templates,
                     &nuclei_report,
-                    &kev_report,
+                    kev_report.as_deref(),
                     &findings,
                     format.telemetry_profile(),
                     HuntTimeRange { from, to },
@@ -499,6 +509,8 @@ fn main() -> Result<()> {
                 to,
                 limit,
             } => {
+                let (nuclei_templates, nuclei_report) =
+                    resolve_nuclei_inputs(nuclei_templates, nuclei_report)?;
                 if let Some(path) = output.as_deref() {
                     shenron::production::ensure_separate_output(&input, path)?;
                 }
@@ -506,7 +518,7 @@ fn main() -> Result<()> {
                     &input,
                     &nuclei_templates,
                     &nuclei_report,
-                    &kev_report,
+                    kev_report.as_deref(),
                     &findings,
                     format.telemetry_profile(),
                     HuntTimeRange { from, to },
@@ -686,6 +698,33 @@ fn main() -> Result<()> {
             }
         },
     }
+}
+
+fn resolve_nuclei_inputs(
+    templates: Option<PathBuf>,
+    report: Option<PathBuf>,
+) -> Result<(PathBuf, PathBuf)> {
+    let templates_were_defaulted = templates.is_none();
+    let report_was_defaulted = report.is_none();
+    let templates = templates.unwrap_or_else(default_templates_dir);
+    let report = report.unwrap_or_else(default_nuclei_report);
+    if templates_were_defaulted && !templates.is_dir() {
+        anyhow::bail!(
+            "default Nuclei templates checkout is missing at {}; first run `shenron-lab nuclei update`",
+            templates.display()
+        );
+    }
+    if report_was_defaulted && !report.is_file() {
+        anyhow::bail!(
+            "default frozen Nuclei report is missing at {}; first run `shenron-lab nuclei update`",
+            report.display()
+        );
+    }
+    Ok((templates, report))
+}
+
+fn default_hunt_output() -> PathBuf {
+    PathBuf::from("private-results").join(format!("hunt-{}", Utc::now().format("%Y%m%dT%H%M%SZ")))
 }
 
 fn parse_rfc3339_utc(value: &str) -> std::result::Result<DateTime<Utc>, String> {

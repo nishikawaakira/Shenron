@@ -389,7 +389,7 @@ struct RunManifest {
 struct RunManifestInputs {
     nuclei_templates: PathProvenance,
     nuclei_report: PathProvenance,
-    kev_report: PathProvenance,
+    kev_report: Option<PathProvenance>,
     approved_validated_template_count: usize,
 }
 
@@ -614,7 +614,7 @@ pub fn hunt(
         input,
         nuclei_templates,
         nuclei_report,
-        kev_report,
+        Some(kev_report),
         output,
         telemetry_profile,
         HuntOptions {
@@ -629,7 +629,7 @@ pub fn hunt_with_options(
     input: &Path,
     nuclei_templates: &Path,
     nuclei_report: &Path,
-    kev_report: &Path,
+    kev_report: Option<&Path>,
     output: &Path,
     telemetry_profile: TelemetryProfile,
     options: HuntOptions,
@@ -829,6 +829,26 @@ pub fn ablation(
     telemetry_profile: TelemetryProfile,
     time_range: HuntTimeRange,
 ) -> anyhow::Result<AblationReport> {
+    ablation_with_optional_kev(
+        input,
+        nuclei_templates,
+        nuclei_report,
+        Some(kev_report),
+        telemetry_profile,
+        time_range,
+    )
+}
+
+/// Same aggregate-only comparison as [`ablation`], with optional local KEV
+/// context. Omitting KEV treats its set as empty.
+pub fn ablation_with_optional_kev(
+    input: &Path,
+    nuclei_templates: &Path,
+    nuclei_report: &Path,
+    kev_report: Option<&Path>,
+    telemetry_profile: TelemetryProfile,
+    time_range: HuntTimeRange,
+) -> anyhow::Result<AblationReport> {
     time_range.validate()?;
     let (approved_templates, _) = approved_template_ids(nuclei_report)?;
     let detections = validated_detections(nuclei_templates, &approved_templates);
@@ -929,6 +949,28 @@ pub fn historical_replay(
     nuclei_templates: &Path,
     nuclei_report: &Path,
     kev_report: &Path,
+    findings: &Path,
+    telemetry_profile: TelemetryProfile,
+    time_range: HuntTimeRange,
+) -> anyhow::Result<HistoricalReplayReport> {
+    historical_replay_with_optional_kev(
+        input,
+        nuclei_templates,
+        nuclei_report,
+        Some(kev_report),
+        findings,
+        telemetry_profile,
+        time_range,
+    )
+}
+
+/// Same sanitized replay as [`historical_replay`], with optional local KEV
+/// context. Omitting KEV treats every CVE as not in KEV.
+pub fn historical_replay_with_optional_kev(
+    input: &Path,
+    nuclei_templates: &Path,
+    nuclei_report: &Path,
+    kev_report: Option<&Path>,
     findings: &Path,
     telemetry_profile: TelemetryProfile,
     time_range: HuntTimeRange,
@@ -1073,7 +1115,7 @@ pub fn historical_replay(
         parse_errors,
         inputs: ReplayInputs {
             nuclei_report_sha256: sha256_file(nuclei_report),
-            kev_report_sha256: sha256_file(kev_report),
+            kev_report_sha256: kev_report.and_then(sha256_file),
             findings_sha256: sha256_file(findings),
         },
         per_cve: cve_coverage,
@@ -1089,6 +1131,28 @@ pub fn count_hypotheses(
     nuclei_templates: &Path,
     nuclei_report: &Path,
     kev_report: &Path,
+    findings: &Path,
+    telemetry_profile: TelemetryProfile,
+    time_range: HuntTimeRange,
+) -> anyhow::Result<CountHypothesisReport> {
+    count_hypotheses_with_optional_kev(
+        input,
+        nuclei_templates,
+        nuclei_report,
+        Some(kev_report),
+        findings,
+        telemetry_profile,
+        time_range,
+    )
+}
+
+/// Same COUNT-hypothesis measurement as [`count_hypotheses`], with optional
+/// local KEV context. Omitting KEV treats every CVE as not in KEV.
+pub fn count_hypotheses_with_optional_kev(
+    input: &Path,
+    nuclei_templates: &Path,
+    nuclei_report: &Path,
+    kev_report: Option<&Path>,
     findings: &Path,
     telemetry_profile: TelemetryProfile,
     time_range: HuntTimeRange,
@@ -1238,7 +1302,7 @@ pub fn count_hypotheses(
         parse_errors,
         inputs: ReplayInputs {
             nuclei_report_sha256: sha256_file(nuclei_report),
-            kev_report_sha256: sha256_file(kev_report),
+            kev_report_sha256: kev_report.and_then(sha256_file),
             findings_sha256: sha256_file(findings),
         },
         per_cve: cve_hypotheses,
@@ -1290,7 +1354,7 @@ fn write_run_manifest(
     telemetry_profile: TelemetryProfile,
     nuclei_templates: &Path,
     nuclei_report: &Path,
-    kev_report: &Path,
+    kev_report: Option<&Path>,
     nuclei_revision: Option<String>,
     approved_validated_template_count: usize,
     time_range: &HuntTimeRange,
@@ -1308,7 +1372,7 @@ fn write_run_manifest(
         inputs: RunManifestInputs {
             nuclei_templates: path_provenance(nuclei_templates),
             nuclei_report: path_provenance(nuclei_report),
-            kev_report: path_provenance(kev_report),
+            kev_report: kev_report.map(path_provenance),
             approved_validated_template_count,
         },
         hunt_parameters: RunManifestParameters {
@@ -1362,7 +1426,10 @@ fn sha256_file(path: &Path) -> Option<String> {
     Some(format!("{:x}", hasher.finalize()))
 }
 
-fn kev_cves(path: &Path) -> anyhow::Result<BTreeSet<String>> {
+fn kev_cves(path: Option<&Path>) -> anyhow::Result<BTreeSet<String>> {
+    let Some(path) = path else {
+        return Ok(BTreeSet::new());
+    };
     let report: KevReportInput = serde_json::from_reader(File::open(path)?)?;
     Ok(report
         .entries

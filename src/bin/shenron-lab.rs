@@ -20,6 +20,7 @@ use shenron::nuclei::{
     validated_detections, CoverageReport, InventoryReport, RequestMatcherView,
     TelemetryComparisonReport, TelemetryCoverageReport,
 };
+use shenron::paths::{default_nuclei_report, default_templates_dir};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -109,7 +110,7 @@ enum NucleiCommand {
     Update {
         /// Local checkout directory to create or update.
         #[arg(long)]
-        templates: PathBuf,
+        templates: Option<PathBuf>,
         /// Pin a specific revision (commit SHA). Omit to use the default branch tip.
         #[arg(long)]
         revision: Option<String>,
@@ -119,6 +120,9 @@ enum NucleiCommand {
             default_value = "https://github.com/projectdiscovery/nuclei-templates.git"
         )]
         repo: String,
+        /// Frozen Nuclei coverage report written after checkout.
+        #[arg(long)]
+        report: Option<PathBuf>,
     },
     /// Statistically inventory untrusted local Nuclei YAML. Nothing is executed.
     Inventory {
@@ -305,7 +309,23 @@ fn main() -> Result<()> {
                 templates,
                 revision,
                 repo,
-            } => update_nuclei_templates(&templates, revision.as_deref(), &repo)?,
+                report,
+            } => {
+                let templates = templates.unwrap_or_else(default_templates_dir);
+                let report = report.unwrap_or_else(default_nuclei_report);
+                let resolved_revision =
+                    update_nuclei_templates(&templates, revision.as_deref(), &repo)?;
+                let coverage = nuclei_coverage(&templates, &resolved_revision);
+                if let Some(parent) = report
+                    .parent()
+                    .filter(|parent| !parent.as_os_str().is_empty())
+                {
+                    std::fs::create_dir_all(parent)?;
+                }
+                serde_json::to_writer_pretty(std::fs::File::create(&report)?, &coverage)?;
+                println!("Frozen Nuclei report: {}", report.display());
+                println!("Next: shenron production hunt --input <logs> --format <fmt>");
+            }
             NucleiCommand::Inventory {
                 templates,
                 revision,
@@ -496,7 +516,7 @@ fn ensure_template_directory(path: &std::path::Path) -> Result<()> {
 /// The only network-capable path in Shenron. It invokes system git solely to
 /// download public Nuclei templates; analysis inputs and results are never
 /// passed to git or any other external process.
-fn update_nuclei_templates(templates: &Path, revision: Option<&str>, repo: &str) -> Result<()> {
+fn update_nuclei_templates(templates: &Path, revision: Option<&str>, repo: &str) -> Result<String> {
     if templates.exists() && templates.join(".git").exists() {
         git_in(templates, &["fetch", "--filter=blob:none", "origin"])?;
     } else {
@@ -515,8 +535,8 @@ fn update_nuclei_templates(templates: &Path, revision: Option<&str>, repo: &str)
 
     println!("Resolved Nuclei templates revision: {resolved_revision}");
     println!("Public templates only were downloaded; no customer data was transmitted. The shenron analysis binary remains offline.");
-    println!("Pin this revision with --revision, regenerate frozen validation reports, then run production hunt.");
-    Ok(())
+    println!("Pin this revision with --revision for later reproducibility.");
+    Ok(resolved_revision)
 }
 
 fn default_branch_target(templates: &Path) -> Result<String> {

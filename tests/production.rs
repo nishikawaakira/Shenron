@@ -1,4 +1,7 @@
-use std::{fs, path::Path};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 use assert_cmd::Command;
 use chrono::{DateTime, Utc};
@@ -9,6 +12,7 @@ use shenron::production::{
     inspect_with_trusted_proxies, HuntTimeRange,
 };
 use tempfile::tempdir;
+use walkdir::WalkDir;
 
 #[test]
 fn ablation_compares_aggregate_match_volume_without_private_values() {
@@ -461,6 +465,95 @@ fn hunt_uses_validated_matchers_and_separates_sensitive_output() {
         .stdout(contains("198.51.100.1"))
         .stdout(contains("Grouping identity: observed-peer"))
         .stdout(contains("Matching request observations: 1"));
+}
+
+#[test]
+fn hunt_uses_prepared_default_inputs_and_output_without_kev() {
+    let directory = tempdir().unwrap();
+    let project = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let data_dir = directory.path().join("shenron-data");
+    let templates = data_dir.join("nuclei-templates");
+    copy_tree(&project.join("tests/fixtures/nuclei"), &templates);
+    let nuclei_report = data_dir.join("nuclei-report.json");
+    fs::create_dir_all(&data_dir).unwrap();
+    fs::copy(
+        project.join("tests/fixtures/production/nuclei-report.json"),
+        &nuclei_report,
+    )
+    .unwrap();
+    let input = project.join("tests/fixtures/production/waf.jsonl");
+
+    let mut command = Command::cargo_bin("shenron").unwrap();
+    command
+        .current_dir(directory.path())
+        .env("SHENRON_DATA_DIR", &data_dir)
+        .args([
+            "production",
+            "hunt",
+            "--input",
+            input.to_str().unwrap(),
+            "--format",
+            "aws-waf",
+        ])
+        .assert()
+        .success();
+
+    let default_outputs = fs::read_dir(directory.path().join("private-results"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.is_dir())
+        .collect::<Vec<_>>();
+    assert_eq!(default_outputs.len(), 1);
+    let default_output = &default_outputs[0];
+    assert!(default_output.join("private-findings.jsonl").is_file());
+    assert!(default_output.join("sanitized-research.json").is_file());
+    let default_report: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(default_output.join("sanitized-research.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(default_report["metrics"]["unique_cisa_kevs_observed"], 0);
+    assert_eq!(default_report["cve_findings"][0]["cisa_kev"], false);
+
+    let explicit_output = directory.path().join("explicit-output");
+    let mut explicit = Command::cargo_bin("shenron").unwrap();
+    explicit
+        .current_dir(directory.path())
+        .env("SHENRON_DATA_DIR", &data_dir)
+        .args([
+            "production",
+            "hunt",
+            "--input",
+            input.to_str().unwrap(),
+            "--format",
+            "aws-waf",
+            "--nuclei-templates",
+            templates.to_str().unwrap(),
+            "--nuclei-report",
+            nuclei_report.to_str().unwrap(),
+            "--output",
+            explicit_output.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    let explicit_report: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(explicit_output.join("sanitized-research.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(default_report, explicit_report);
+}
+
+fn copy_tree(source: &Path, destination: &Path) {
+    for entry in WalkDir::new(source) {
+        let entry = entry.unwrap();
+        let relative = entry.path().strip_prefix(source).unwrap();
+        let target = destination.join(relative);
+        if entry.file_type().is_dir() {
+            fs::create_dir_all(&target).unwrap();
+        } else {
+            fs::create_dir_all(target.parent().unwrap()).unwrap();
+            fs::copy(entry.path(), target).unwrap();
+        }
+    }
 }
 
 #[test]

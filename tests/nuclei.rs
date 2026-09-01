@@ -236,6 +236,7 @@ fn lab_update_checks_out_an_explicit_local_revision() {
     let directory = tempdir().unwrap();
     let (source, first_revision, _) = local_template_repo(directory.path());
     let destination = directory.path().join("checkouts/nuclei-templates");
+    let report = directory.path().join("nuclei-report.json");
     let repository = format!("file://{}", source.display());
 
     let mut command = Command::cargo_bin("shenron-lab").unwrap();
@@ -250,12 +251,15 @@ fn lab_update_checks_out_an_explicit_local_revision() {
             &repository,
             "--revision",
             &first_revision,
+            "--report",
+            report.to_str().unwrap(),
         ])
         .assert()
         .success()
         .stdout(contains(&first_revision))
         .stdout(contains("no customer data was transmitted"));
     assert_eq!(git_at(&destination, &["rev-parse", "HEAD"]), first_revision);
+    assert!(report.is_file());
 }
 
 #[test]
@@ -263,6 +267,7 @@ fn lab_update_uses_the_local_remote_default_branch_tip_when_unpinned() {
     let directory = tempdir().unwrap();
     let (source, _, latest_revision) = local_template_repo(directory.path());
     let destination = directory.path().join("nuclei-templates");
+    let report = directory.path().join("nuclei-report.json");
     let repository = format!("file://{}", source.display());
 
     let mut command = Command::cargo_bin("shenron-lab").unwrap();
@@ -275,6 +280,8 @@ fn lab_update_uses_the_local_remote_default_branch_tip_when_unpinned() {
             destination.to_str().unwrap(),
             "--repo",
             &repository,
+            "--report",
+            report.to_str().unwrap(),
         ])
         .assert()
         .success()
@@ -283,6 +290,7 @@ fn lab_update_uses_the_local_remote_default_branch_tip_when_unpinned() {
         git_at(&destination, &["rev-parse", "HEAD"]),
         latest_revision
     );
+    assert!(report.is_file());
 }
 
 fn local_template_repo(root: &Path) -> (PathBuf, String, String) {
