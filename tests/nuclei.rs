@@ -1,6 +1,11 @@
-use std::{fs, path::Path};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    process::Command as ProcessCommand,
+};
 
 use assert_cmd::Command;
+use predicates::str::contains;
 use shenron::nuclei::{
     combined_header_dependencies, compare_telemetry, coverage, inventory, path_distinctiveness,
     ConversionStatus, Detectability, PathDistinctiveness, RequestSpecificity,
@@ -222,6 +227,114 @@ fn lab_matchers_lists_supported_template_literals_and_respects_frozen_report_gat
         filtered_records[0]["template_id"],
         "synthetic-cve-2024-10001"
     );
+}
+
+// These tests use only file:// remotes. CI never contacts GitHub while
+// exercising the clone, fetch, default-branch, and pinned-checkout paths.
+#[test]
+fn lab_update_checks_out_an_explicit_local_revision() {
+    let directory = tempdir().unwrap();
+    let (source, first_revision, _) = local_template_repo(directory.path());
+    let destination = directory.path().join("checkouts/nuclei-templates");
+    let repository = format!("file://{}", source.display());
+
+    let mut command = Command::cargo_bin("shenron-lab").unwrap();
+    command.env("GIT_ALLOW_PROTOCOL", "file");
+    command
+        .args([
+            "nuclei",
+            "update",
+            "--templates",
+            destination.to_str().unwrap(),
+            "--repo",
+            &repository,
+            "--revision",
+            &first_revision,
+        ])
+        .assert()
+        .success()
+        .stdout(contains(&first_revision))
+        .stdout(contains("no customer data was transmitted"));
+    assert_eq!(git_at(&destination, &["rev-parse", "HEAD"]), first_revision);
+}
+
+#[test]
+fn lab_update_uses_the_local_remote_default_branch_tip_when_unpinned() {
+    let directory = tempdir().unwrap();
+    let (source, _, latest_revision) = local_template_repo(directory.path());
+    let destination = directory.path().join("nuclei-templates");
+    let repository = format!("file://{}", source.display());
+
+    let mut command = Command::cargo_bin("shenron-lab").unwrap();
+    command.env("GIT_ALLOW_PROTOCOL", "file");
+    command
+        .args([
+            "nuclei",
+            "update",
+            "--templates",
+            destination.to_str().unwrap(),
+            "--repo",
+            &repository,
+        ])
+        .assert()
+        .success()
+        .stdout(contains(&latest_revision));
+    assert_eq!(
+        git_at(&destination, &["rev-parse", "HEAD"]),
+        latest_revision
+    );
+}
+
+fn local_template_repo(root: &Path) -> (PathBuf, String, String) {
+    let source = root.join("public-nuclei-templates");
+    fs::create_dir_all(source.join("http/cves")).unwrap();
+    git_at(&source, &["init"]);
+    fs::write(source.join("http/cves/first.yaml"), "id: first\n").unwrap();
+    git_at(&source, &["add", "."]);
+    git_at(
+        &source,
+        &[
+            "-c",
+            "user.name=Shenron Test",
+            "-c",
+            "user.email=shenron-test@example.invalid",
+            "commit",
+            "-m",
+            "first",
+        ],
+    );
+    let first_revision = git_at(&source, &["rev-parse", "HEAD"]);
+    fs::write(source.join("http/cves/second.yaml"), "id: second\n").unwrap();
+    git_at(&source, &["add", "."]);
+    git_at(
+        &source,
+        &[
+            "-c",
+            "user.name=Shenron Test",
+            "-c",
+            "user.email=shenron-test@example.invalid",
+            "commit",
+            "-m",
+            "second",
+        ],
+    );
+    let latest_revision = git_at(&source, &["rev-parse", "HEAD"]);
+    (source, first_revision, latest_revision)
+}
+
+fn git_at(directory: &Path, args: &[&str]) -> String {
+    let output = ProcessCommand::new("git")
+        .current_dir(directory)
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "git {} failed: {}",
+        args.join(" "),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).unwrap().trim().to_owned()
 }
 
 #[test]

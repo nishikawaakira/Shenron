@@ -1,6 +1,9 @@
-use std::path::PathBuf;
+use std::{
+    path::{Path, PathBuf},
+    process::Command as ProcessCommand,
+};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use serde::Serialize;
 
@@ -101,6 +104,22 @@ enum Command {
 
 #[derive(Debug, Subcommand)]
 enum NucleiCommand {
+    /// Fetch or update the local Nuclei templates checkout over the network.
+    /// Downloads public templates only; no customer data is transmitted.
+    Update {
+        /// Local checkout directory to create or update.
+        #[arg(long)]
+        templates: PathBuf,
+        /// Pin a specific revision (commit SHA). Omit to use the default branch tip.
+        #[arg(long)]
+        revision: Option<String>,
+        /// Templates git repository URL.
+        #[arg(
+            long,
+            default_value = "https://github.com/projectdiscovery/nuclei-templates.git"
+        )]
+        repo: String,
+    },
     /// Statistically inventory untrusted local Nuclei YAML. Nothing is executed.
     Inventory {
         #[arg(long)]
@@ -282,6 +301,11 @@ fn main() -> Result<()> {
             println!("Events: {events}\nInput bytes: {bytes}\nWall seconds: {seconds:.3}\nEvents/sec: {:.0}\nInput MB/sec: {:.2}", events as f64 / seconds, bytes as f64 / 1_000_000.0 / seconds);
         }
         Command::Nuclei { command } => match command {
+            NucleiCommand::Update {
+                templates,
+                revision,
+                repo,
+            } => update_nuclei_templates(&templates, revision.as_deref(), &repo)?,
             NucleiCommand::Inventory {
                 templates,
                 revision,
@@ -467,6 +491,82 @@ fn ensure_template_directory(path: &std::path::Path) -> Result<()> {
             path.display()
         )
     }
+}
+
+/// The only network-capable path in Shenron. It invokes system git solely to
+/// download public Nuclei templates; analysis inputs and results are never
+/// passed to git or any other external process.
+fn update_nuclei_templates(templates: &Path, revision: Option<&str>, repo: &str) -> Result<()> {
+    if templates.exists() && templates.join(".git").exists() {
+        git_in(templates, &["fetch", "--filter=blob:none", "origin"])?;
+    } else {
+        if let Some(parent) = templates.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        git_clone(repo, templates)?;
+    }
+
+    let target = match revision {
+        Some(revision) => revision.to_owned(),
+        None => default_branch_target(templates)?,
+    };
+    git_in(templates, &["checkout", &target])?;
+    let resolved_revision = git_in(templates, &["rev-parse", "HEAD"])?;
+
+    println!("Resolved Nuclei templates revision: {resolved_revision}");
+    println!("Public templates only were downloaded; no customer data was transmitted. The shenron analysis binary remains offline.");
+    println!("Pin this revision with --revision, regenerate frozen validation reports, then run production hunt.");
+    Ok(())
+}
+
+fn default_branch_target(templates: &Path) -> Result<String> {
+    let output = git_in(templates, &["ls-remote", "--symref", "origin", "HEAD"])?;
+    let branch = output.lines().find_map(|line| {
+        line.strip_prefix("ref: refs/heads/")
+            .and_then(|value| value.strip_suffix("\tHEAD"))
+    });
+    let Some(branch) = branch else {
+        anyhow::bail!(
+            "could not resolve the default branch from origin; specify --revision explicitly"
+        );
+    };
+    Ok(format!("origin/{branch}"))
+}
+
+fn git_clone(repo: &str, templates: &Path) -> Result<String> {
+    let description = format!(
+        "git clone --filter=blob:none --no-checkout {} {}",
+        repo,
+        templates.display()
+    );
+    let mut command = ProcessCommand::new("git");
+    command
+        .args(["clone", "--filter=blob:none", "--no-checkout"])
+        .arg(repo)
+        .arg(templates);
+    checked_git(&mut command, &description)
+}
+
+fn git_in(directory: &Path, args: &[&str]) -> Result<String> {
+    let description = format!("git -C {} {}", directory.display(), args.join(" "));
+    let mut command = ProcessCommand::new("git");
+    command.arg("-C").arg(directory).args(args);
+    checked_git(&mut command, &description)
+}
+
+fn checked_git(command: &mut ProcessCommand, description: &str) -> Result<String> {
+    let output = command
+        .output()
+        .with_context(|| format!("failed to start system git while running `{description}`"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!(
+            "`{description}` exited with {}: {}",
+            output.status,
+            stderr.trim()
+        );
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
 fn print_report(report: &ValidationReport) {
