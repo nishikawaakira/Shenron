@@ -5,6 +5,7 @@ use std::{
 
 use assert_cmd::Command;
 use chrono::{DateTime, Utc};
+use predicates::prelude::PredicateBooleanExt;
 use predicates::str::contains;
 use shenron::event::{TelemetryProfile, TrustedProxy, TrustedProxySet};
 use shenron::production::{
@@ -578,6 +579,7 @@ fn explain_labels_generic_and_distinctive_paths_without_excluding_either() {
             "explain",
             "--findings",
             findings.to_str().unwrap(),
+            "--include-generic",
             "--show-request",
         ])
         .assert()
@@ -587,6 +589,66 @@ fn explain_labels_generic_and_distinctive_paths_without_excluding_either() {
         ))
         .stdout(contains("Path distinctiveness: generic"))
         .stdout(contains("Path distinctiveness: distinctive"));
+}
+
+#[test]
+fn explain_hides_only_response_unverified_generic_paths_by_default() {
+    let directory = tempdir().unwrap();
+    let findings = directory.path().join("private-findings.jsonl");
+    fs::write(
+        &findings,
+        concat!(
+            r#"{"template_id":"generic-noise","cves":["CVE-2024-30001"],"detectability":"LOW","request_specificity":"response-unverified","timestamp":null,"source_ip":"198.51.100.30","host":null,"method":"GET","uri_path":"/robots.txt","uri_query":null,"headers":[],"ja3":null,"ja4":null,"waf_action":null,"request_id":null}"#,
+            "\n",
+            r#"{"template_id":"distinctive-uri","cves":["CVE-2024-30002"],"detectability":"LOW","request_specificity":"response-unverified","timestamp":null,"source_ip":"198.51.100.31","host":null,"method":"GET","uri_path":"/.env","uri_query":null,"headers":[],"ja3":null,"ja4":null,"waf_action":null,"request_id":null}"#,
+            "\n",
+            r#"{"template_id":"specific-generic","cves":["CVE-2024-30003"],"detectability":"HIGH","request_specificity":"request-specific","timestamp":null,"source_ip":"198.51.100.32","host":null,"method":"GET","uri_path":"/login","uri_query":"next=/admin","headers":[],"ja3":null,"ja4":null,"waf_action":null,"request_id":null}"#,
+            "\n"
+        ),
+    )
+    .unwrap();
+
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "production",
+            "explain",
+            "--findings",
+            findings.to_str().unwrap(),
+            "--show-request",
+            "--show-source-ips",
+            "--limit",
+            "0",
+        ])
+        .assert()
+        .success()
+        .stdout(contains(
+            "Hidden 1 low-confidence matches (response-unverified on generic paths such as /robots.txt), spanning 1 CVEs. Pass --include-generic to show them.",
+        ))
+        .stdout(contains("CVE-2024-30001").not())
+        .stdout(contains("198.51.100.30").not())
+        .stdout(contains("CVE-2024-30002"))
+        .stdout(contains("CVE-2024-30003"))
+        .stdout(contains("198.51.100.31"))
+        .stdout(contains("198.51.100.32"));
+
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "production",
+            "explain",
+            "--findings",
+            findings.to_str().unwrap(),
+            "--include-generic",
+            "--show-request",
+            "--limit",
+            "0",
+        ])
+        .assert()
+        .success()
+        .stdout(contains("CVE-2024-30001"))
+        .stdout(contains("Request: GET /robots.txt"))
+        .stdout(contains("Hidden 1 low-confidence matches").not());
 }
 
 #[test]

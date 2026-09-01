@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs::File,
     io::{self, Write},
     net::IpAddr,
@@ -264,6 +264,9 @@ enum ProductionCommand {
         /// Restrict results to a WAF enforcement outcome. nginx/Apache findings have an unknown outcome.
         #[arg(long, value_enum)]
         waf_outcome: Option<WafOutcomeFilter>,
+        /// Include URI-only matches on generic paths such as /robots.txt.
+        #[arg(long)]
+        include_generic: bool,
         /// Display matched method, path, and query. This may expose sensitive request values.
         #[arg(long)]
         show_request: bool,
@@ -532,6 +535,7 @@ fn main() -> Result<()> {
             ProductionCommand::Explain {
                 findings,
                 waf_outcome,
+                include_generic,
                 show_request,
                 show_evidence,
                 show_source_ips,
@@ -558,6 +562,25 @@ fn main() -> Result<()> {
                         .collect(),
                     None => findings,
                 };
+                let (findings, hidden) = if include_generic {
+                    (findings, Vec::new())
+                } else {
+                    let (hidden, findings) = findings
+                        .into_iter()
+                        .partition::<Vec<_>, _>(is_low_confidence_generic_match);
+                    (findings, hidden)
+                };
+                if !hidden.is_empty() {
+                    let hidden_cves = hidden
+                        .iter()
+                        .flat_map(|finding| finding.cves.iter())
+                        .collect::<BTreeSet<_>>();
+                    println!(
+                        "Hidden {} low-confidence matches (response-unverified on generic paths such as /robots.txt), spanning {} CVEs. Pass --include-generic to show them.",
+                        hidden.len(),
+                        hidden_cves.len()
+                    );
+                }
                 print_explanations(
                     &findings,
                     ExplainDisplay {
@@ -698,6 +721,12 @@ fn main() -> Result<()> {
             }
         },
     }
+}
+
+fn is_low_confidence_generic_match(finding: &shenron::production::FindingExplanation) -> bool {
+    finding.request_specificity == shenron::nuclei::RequestSpecificity::ResponseUnverified
+        && path_distinctiveness(finding.uri_path.as_deref().unwrap_or_default())
+            == PathDistinctiveness::Generic
 }
 
 fn resolve_nuclei_inputs(
