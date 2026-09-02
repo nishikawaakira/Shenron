@@ -1,9 +1,11 @@
 # Temporal comparison and retro-hunting (design proposal)
 
-Status: **proposal**. This document records the design decisions before any code
-is written, so that the implementation stays inside Shenron's pillars. It is not
-yet a settled specification; the open decisions at the end must be resolved
-first.
+Status: **design agreed, not yet implemented**. This document records the design
+decisions before any code is written, so that the implementation stays inside
+Shenron's pillars. The formerly open decisions on the robust statistic and the
+retro-hunt scope are now settled (see "Settled decisions"); the delivery is a
+single-pass command rather than a family of subcommands (see "One command, not a
+family").
 
 ## Why
 
@@ -47,12 +49,14 @@ frozen inputs, exactly like a single run is a read-only function of one corpus.
    detail comes from the private `request-concentration.json`; the aggregate
    shape (how much mass shifted, how many paths newly crossed a share threshold)
    is sanitizable.
-4. **Retro-hunt.** Re-run the *same* corpus window under a newer Nuclei/KEV
-   revision and diff the `cve_findings` against the earlier run. New matches are
-   "probes we can now attribute to a CVE we could not before." The two runs'
-   `run-manifest.json` records (Nuclei revision, report SHA-256, KEV SHA-256)
-   distinguish a CTI-revision diff from a calendar-window diff; both are the same
-   diff machinery.
+4. **Retro-hunt.** After the operator re-runs `hunt` over the *same* corpus
+   window under a newer Nuclei/KEV revision, diff that run's `cve_findings`
+   against the earlier one. New matches are "probes we can now attribute to a CVE
+   we could not before." Shenron does not re-stream the corpus itself for this;
+   it diffs two runs the operator already produced (see the retro-hunt decision).
+   The two runs' `run-manifest.json` records (Nuclei revision, report SHA-256,
+   KEV SHA-256) distinguish a CTI-revision diff from a calendar-window diff; both
+   are the same diff machinery.
 
 ## Design decisions
 
@@ -75,12 +79,23 @@ frozen inputs, exactly like a single run is a read-only function of one corpus.
   documentation states the benign explanations explicitly.
 - **Robust baselines, not naive deltas.** Week-over-week volume varies by base
   rate and seasonality, so a raw "increased since last week" is a false-positive
-  generator. Volume deltas are expressed relative to a robust baseline statistic
-  (for example a ratio to the baseline window's median or an interquartile
-  reference), never a single prior point, and the baseline definition is recorded
-  so the number is auditable. First-seen and CVE-appearance signals are set
-  membership, which is robust by construction; the seasonality caveat is a
-  volume-delta concern.
+  generator. The rule is fixed and documented, in the same spirit as the triage
+  baseline's fixed 3/2/10 constants — no dynamic thresholds, no model:
+  - The headline for a volume delta is the **ratio of the current value to the
+    baseline window's median** (median, not mean, so a single outlier minute or
+    day cannot move it), computed per path and per source and for the
+    per-minute rate. The raw ratio is always shown.
+  - A delta is labeled **`elevated`** only when `ratio >= 3.0` (a fixed constant,
+    not a CLI knob, so runs stay comparable).
+  - A **minimum-baseline floor** guards against tiny denominators: a path or
+    source whose baseline count is below **30 requests in the baseline window**
+    does not get a ratio at all; it is labeled **`low-baseline`** (effectively a
+    near-first-seen), because "1 request last week, 5 this week" is not a
+    meaningful 5x.
+  - First-seen and CVE-appearance signals are **set membership**, robust by
+    construction; the seasonality caveat applies only to volume deltas.
+  The two fixed constants (`elevated` ratio `3.0`, baseline floor `30`) are part
+  of the recorded, comparable baseline, exactly like the triage thresholds.
 - **Privacy separation is preserved exactly.** The comparison writes the same
   two-artifact split as a hunt: a **sanitized** report (counts, ratios,
   cardinalities, CVE identifiers — no paths, IPs, hosts, headers, JA3/JA4, or
@@ -98,31 +113,60 @@ frozen inputs, exactly like a single run is a read-only function of one corpus.
   are reported as unavailable for that pair with a reason, and only the
   sanitizable modes run. Nothing is inferred to fill the gap.
 
-## Proposed command shape
+## One command, not a family
 
-A single read-only command that consumes two run directories:
+The primary path is a **single command that already does most of this**:
+`production hunt` runs Nuclei, Sigma, and concentration in one pass over the
+corpus. Rather than add a family of comparison subcommands the analyst must
+orchestrate, temporal comparison is folded into that one pass, and a single
+consolidated view is added, in the spirit of a one-command tool like Hayabusa —
+"run once, get everything worth looking at first" — while keeping Shenron's
+non-assertion register.
 
-```
-shenron production compare \
-  --baseline ./private-results/hunt-2026-08-01T.../ \
-  --current  ./private-results/hunt-2026-08-08T.../ \
-  --output   ./compare-2026-08-08/
-```
+Two additions:
 
-- Reads each side's `sanitized-research.json`, and (when present and permitted)
-  `private-findings.jsonl` and `request-concentration.json`.
-- Writes a **sanitized** `comparison-summary.json`
-  (`report_kind: SANITIZED_TEMPORAL_COMPARISON`) and a **private**
-  `comparison-detail.json` (`report_kind: TEMPORAL_COMPARISON_PRIVATE`).
-- `--show-entities` / `--show-paths` / `--show-source-ips` gate the private lists
-  on stdout, exactly as `explain` and `concentration` do; `--limit` bounds
-  displayed rows.
-- Retro-hunt is the same command with two runs over the same corpus window under
-  different Nuclei/KEV revisions; the summary labels the pair as a CTI-revision
-  diff when the time filters match but the Nuclei revisions differ.
+1. **`hunt --baseline <prior-run-dir>` (optional).** When supplied, the same hunt
+   pass also emits the temporal diff (first-seen entities, CVE finding diff,
+   concentration delta) against the baseline run. The baseline is only **read**
+   from its existing artifacts — it is never re-streamed — so the comparison
+   stays cheap and the corpus is scanned exactly once. Without `--baseline`, hunt
+   behaves exactly as today.
+2. **A consolidated triage view.** Instead of making the analyst run `explain`
+   separately, hunt writes a single prioritized view that ranks entities by the
+   existing **behavior priority score**, layered with reputation and a
+   first-seen flag, alongside the aggregate counts. This is the "one prioritized
+   output" a Hayabusa-style timeline provides — but it is a **triage ordinal
+   (the order a human should look), not a threat severity or a probability of
+   malice**, and a first-seen mark means "new, worth review", never "new,
+   therefore malicious". The consolidated view contains paths and IPs, so it is a
+   **private** artifact printed only behind the existing `--show-*` gates; the
+   sanitized report stays aggregate.
 
-No network access, no template execution, no AWS calls, COUNT-only downstream —
-unchanged. The comparison is pure aggregation over local files.
+The focused subcommands stay available for re-analysis rather than being the
+common path:
+
+- `production explain`, `production concentration` — unchanged, for deep dives.
+- `production compare --baseline <run-A> --current <run-B> --output <dir>` — the
+  same diff over two arbitrary pre-existing runs, for when neither is the run you
+  just produced. It is a **pure read-only function of two local run directories**
+  and **never re-streams a corpus** (see the retro-hunt decision).
+
+### Artifacts and gating
+
+Whether the diff is produced by `hunt --baseline` or by `compare`, it writes the
+same two-artifact split:
+
+- a **sanitized** comparison summary (`report_kind:
+  SANITIZED_TEMPORAL_COMPARISON`) — counts, ratios, cardinalities, CVE
+  identifiers, comparability label; no paths, IPs, hosts, headers, JA3/JA4, or
+  request values;
+- a **private** comparison detail (`report_kind: TEMPORAL_COMPARISON_PRIVATE`) —
+  the first-seen entity lists and per-path/per-source deltas.
+
+`--show-entities` / `--show-paths` / `--show-source-ips` gate the private lists on
+stdout exactly as `explain` and `concentration` do; `--limit` bounds displayed
+rows. No network access, no template execution, no AWS calls, COUNT-only
+downstream — unchanged. The comparison is pure aggregation over local files.
 
 ## Report contents (sketch)
 
@@ -153,27 +197,41 @@ Private `comparison-detail.json` (paths + connection-peer IPs + JA4):
 - **Not** a new telemetry store. Baselines are prior run outputs the operator
   already chose to keep.
 
-## Open decisions to resolve before implementation
+## Settled decisions
 
-1. **Baseline robustness statistic.** Which reference for volume deltas — ratio
-   to baseline-window median, an interquartile band, or both — and the exact
-   thresholds for "newly concentrated." These must be fixed and documented like
-   the triage baseline so runs stay comparable.
-2. **Multi-baseline vs. single-baseline.** Start with one baseline vs. one
-   current (simplest, fully deterministic), or accept several baseline runs to
-   damp seasonality. Recommendation: ship single-vs-single first; add
-   multi-baseline only if the single-baseline false-positive rate warrants it.
-3. **Entity identity across runs.** Source IP, ASN, JA4, host, and path are
+1. **Baseline robustness statistic — fixed.** Volume deltas use the ratio to the
+   baseline window's **median**; a delta is labeled `elevated` at `ratio >= 3.0`;
+   a baseline count below **30 requests in the window** is labeled `low-baseline`
+   and gets no ratio. First-seen and CVE-appearance are set membership. Both
+   constants (`3.0`, `30`) are fixed and part of the recorded, comparable
+   baseline — no CLI knobs, no dynamic thresholds. (See "Robust baselines" above.)
+2. **Single baseline first.** One baseline run vs. one current run — the simplest
+   fully deterministic form. Multi-baseline seasonality damping is deferred and
+   added only if the single-baseline false-positive rate warrants it.
+3. **Retro-hunt = diff pre-existing runs only.** Neither `hunt --baseline` nor
+   `compare` re-streams a corpus under a new revision. Retro-hunting is "run
+   `hunt` again after `nuclei update`/`kev` refresh, then diff the two run
+   directories." The diff stays a pure, fast function of local files; a
+   CTI-revision diff is distinguished from a calendar-window diff by the two
+   `run-manifest` records (matching time filters, differing Nuclei revisions).
+4. **Delivery = one command, plus focused re-analysis.** `hunt --baseline` folds
+   the diff and a consolidated triage view into the single existing pass;
+   `compare` handles two arbitrary prior runs. (See "One command, not a family".)
+
+## Open decisions to resolve during implementation
+
+1. **Entity identity across runs.** Source IP, ASN, JA4, host, and path are
    stable keys; whether "first-seen" should also consider verified `client_ip`
    when a trusted-proxy chain was configured (it is only available on some runs)
-   needs a rule for mixed availability.
-4. **Retro-hunt window pinning.** Whether `compare` should re-run the corpus
-   itself under a new revision, or only diff two pre-existing runs the operator
-   produced. Recommendation: diff pre-existing runs only, so `compare` stays a
-   pure function of local files and never re-streams a corpus.
-5. **Where the first-seen counts live.** Confirm that per-class new-entity counts
+   needs a rule for mixed availability — likely: only compare `client_ip` when
+   both runs recorded it, and disclose when it was unavailable on one side.
+2. **Where the first-seen counts live.** Confirm that per-class new-entity counts
    are safe for the sanitized report (they are cardinalities, not values) and
    that only the lists are private.
+3. **Consolidated view exact shape.** The ordering key (behavior score, then
+   reputation, then first-seen), how the first-seen flag and `elevated`/
+   `low-baseline` labels render, and the display cap — to be pinned when the view
+   is built, keeping it a triage ordinal and never a threat severity.
 
 ## Fit with the pillars
 
