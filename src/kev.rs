@@ -106,8 +106,12 @@ pub struct KevCoverageMetrics {
     pub web_relevant_no_nuclei_template: usize,
 }
 
+/// `report_kind` discriminator for the KEV web-relevance coverage report.
+pub const KEV_COVERAGE_KIND: &str = "KEV_COVERAGE_REPORT";
+
 #[derive(Debug, Serialize)]
 pub struct KevCoverageReport {
+    pub report_kind: &'static str,
     pub catalog_version: Option<String>,
     pub catalog_date_released: Option<String>,
     pub nuclei_revision: String,
@@ -123,9 +127,8 @@ pub fn coverage(kev_path: &Path, nuclei_report_path: &Path) -> anyhow::Result<Ke
             .with_context(|| format!("opening KEV catalog {}", kev_path.display()))?,
     )
     .with_context(|| format!("parsing KEV catalog {}", kev_path.display()))?;
-    let nuclei: NucleiCoverageInput = serde_json::from_reader(
-        fs::File::open(nuclei_report_path)
-            .with_context(|| format!("opening Nuclei report {}", nuclei_report_path.display()))?,
+    let nuclei: NucleiCoverageInput = serde_json::from_value(
+        crate::nuclei::validate_frozen_report_value(nuclei_report_path)?,
     )
     .with_context(|| format!("parsing Nuclei report {}", nuclei_report_path.display()))?;
 
@@ -202,6 +205,7 @@ pub fn coverage(kev_path: &Path, nuclei_report_path: &Path) -> anyhow::Result<Ke
     }
     entries.sort_by(|left, right| left.cve.cmp(&right.cve));
     Ok(KevCoverageReport {
+        report_kind: KEV_COVERAGE_KIND,
         catalog_version: catalog.catalog_version,
         catalog_date_released: catalog.date_released,
         nuclei_revision: nuclei.nuclei_revision,

@@ -9,7 +9,7 @@ use std::{
     path::Path,
 };
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_yaml::Value;
@@ -256,8 +256,16 @@ pub struct InventoryReport {
     pub feature_combinations: BTreeMap<String, usize>,
 }
 
+/// `report_kind` discriminator for the frozen coverage report consumed by
+/// `production hunt`/`ablation`/`replay`/`count-hypotheses` and `kev coverage`.
+pub const NUCLEI_COVERAGE_KIND: &str = "NUCLEI_COVERAGE_REPORT";
+/// `report_kind` discriminator for the `--telemetry` coverage assessment, which
+/// is an analysis-only artifact and is not a frozen hunt input.
+pub const NUCLEI_TELEMETRY_COVERAGE_KIND: &str = "NUCLEI_TELEMETRY_COVERAGE";
+
 #[derive(Debug, Serialize)]
 pub struct CoverageReport {
+    pub report_kind: &'static str,
     pub nuclei_revision: String,
     pub inventory: InventoryMetrics,
     pub coverage: CoverageMetrics,
@@ -282,6 +290,7 @@ pub struct TelemetryCoverageMetrics {
 
 #[derive(Debug, Serialize)]
 pub struct TelemetryCoverageReport {
+    pub report_kind: &'static str,
     pub nuclei_revision: String,
     pub telemetry: TelemetryProfile,
     pub metrics: TelemetryCoverageMetrics,
@@ -789,6 +798,7 @@ pub fn coverage(templates: &Path, nuclei_revision: &str) -> CoverageReport {
         }
     }
     CoverageReport {
+        report_kind: NUCLEI_COVERAGE_KIND,
         nuclei_revision: nuclei_revision.to_owned(),
         inventory: inventory_metrics,
         coverage,
@@ -841,8 +851,41 @@ pub fn supported_detections(templates: &Path) -> Vec<ValidatedNucleiDetection> {
 /// Reads the same frozen-report eligibility gates used by production hunt.
 /// This is local JSON parsing only; it does not execute templates or access a
 /// network resource.
+/// Read a frozen Nuclei report and confirm its `report_kind` before the body is
+/// deserialized, so a wrong report shape yields an actionable message that names
+/// the mismatch and the fix rather than an opaque serde field error. A report
+/// with no `report_kind` predates the discriminator and is accepted for
+/// backward compatibility.
+pub fn validate_frozen_report_value(path: &Path) -> Result<serde_json::Value> {
+    let value: serde_json::Value = serde_json::from_reader(std::io::BufReader::new(
+        fs::File::open(path)
+            .with_context(|| format!("opening Nuclei report {}", path.display()))?,
+    ))
+    .with_context(|| format!("parsing Nuclei report {}", path.display()))?;
+    match value.get("report_kind").and_then(|kind| kind.as_str()) {
+        Some(NUCLEI_COVERAGE_KIND) => Ok(value),
+        Some(NUCLEI_TELEMETRY_COVERAGE_KIND) => anyhow::bail!(
+            "the Nuclei report at {} is a --telemetry coverage assessment (report_kind {}), which is an analysis-only artifact and not a frozen hunt input (report_kind {}). Regenerate the frozen report with `shenron-lab nuclei update`, or `shenron-lab nuclei coverage` without --telemetry, and pass that file.",
+            path.display(),
+            NUCLEI_TELEMETRY_COVERAGE_KIND,
+            NUCLEI_COVERAGE_KIND
+        ),
+        Some(other) => anyhow::bail!(
+            "the Nuclei report at {} has report_kind {:?}, but a frozen hunt input must be {}. Regenerate it with `shenron-lab nuclei update`.",
+            path.display(),
+            other,
+            NUCLEI_COVERAGE_KIND
+        ),
+        // Backward-compatible path: reports written before report_kind existed
+        // carry no discriminator and are accepted as frozen hunt inputs.
+        None => Ok(value),
+    }
+}
+
 pub fn frozen_nuclei_selection(path: &Path) -> Result<FrozenNucleiSelection> {
-    let report: FrozenNucleiReport = serde_json::from_reader(fs::File::open(path)?)?;
+    let value = validate_frozen_report_value(path)?;
+    let report: FrozenNucleiReport = serde_json::from_value(value)
+        .with_context(|| format!("parsing Nuclei report {}", path.display()))?;
     let template_ids = report
         .templates
         .into_iter()
@@ -1029,6 +1072,7 @@ fn telemetry_report(
         });
     }
     TelemetryCoverageReport {
+        report_kind: NUCLEI_TELEMETRY_COVERAGE_KIND,
         nuclei_revision: nuclei_revision.to_owned(),
         telemetry,
         metrics,
@@ -1598,5 +1642,60 @@ fn feature_combination(features: &TemplateFeatures) -> String {
 fn count_values(output: &mut BTreeMap<String, usize>, values: &[String]) {
     for value in values {
         *output.entry(value.clone()).or_default() += 1;
+    }
+}
+
+#[cfg(test)]
+mod report_kind_tests {
+    use super::*;
+    use std::io::Write;
+
+    fn write(dir: &std::path::Path, name: &str, body: &str) -> std::path::PathBuf {
+        let path = dir.join(name);
+        let mut file = fs::File::create(&path).unwrap();
+        file.write_all(body.as_bytes()).unwrap();
+        path
+    }
+
+    #[test]
+    fn frozen_loader_rejects_a_telemetry_report_with_an_actionable_message() {
+        let dir = tempfile::tempdir().unwrap();
+        // A --telemetry-shaped report: it carries the telemetry report_kind and
+        // its templates have level/convertible/validated, not conversion_status.
+        let telemetry = write(
+            dir.path(),
+            "telemetry.json",
+            r#"{"report_kind":"NUCLEI_TELEMETRY_COVERAGE","nuclei_revision":"abc","telemetry":"aws-waf","metrics":{},"detectability_reasons":{},"templates":[{"template_id":"t","level":"high","convertible":true,"validated":true}]}"#,
+        );
+        let error = frozen_nuclei_selection(&telemetry).unwrap_err().to_string();
+        assert!(error.contains("NUCLEI_TELEMETRY_COVERAGE"), "{error}");
+        assert!(error.contains("NUCLEI_COVERAGE_REPORT"), "{error}");
+        assert!(error.contains("nuclei update"), "{error}");
+        // The mismatch is reported, not an opaque serde field error.
+        assert!(!error.contains("missing field"), "{error}");
+    }
+
+    #[test]
+    fn frozen_loader_accepts_a_coverage_report_and_a_legacy_report_without_a_kind() {
+        let dir = tempfile::tempdir().unwrap();
+        let body = |kind: &str| {
+            format!(
+                r#"{{{kind}"nuclei_revision":"abc","templates":[{{"template_id":"t","cves":["CVE-2026-1"],"conversion_status":"SUPPORTED","validation_status":"passed"}}]}}"#
+            )
+        };
+        let current = write(
+            dir.path(),
+            "coverage.json",
+            &body(r#""report_kind":"NUCLEI_COVERAGE_REPORT","#),
+        );
+        let legacy = write(dir.path(), "legacy.json", &body(""));
+        assert_eq!(
+            frozen_nuclei_selection(&current).unwrap().template_ids,
+            frozen_nuclei_selection(&legacy).unwrap().template_ids
+        );
+        assert!(frozen_nuclei_selection(&current)
+            .unwrap()
+            .template_ids
+            .contains("t"));
     }
 }
