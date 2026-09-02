@@ -54,6 +54,8 @@ Read-only local AWS WAF production inspection and validated Nuclei hunting are a
 
 `shenron production concentration` measures bounded, aggregate request-volume distribution without CTI inputs and keeps paths/IPs in a separate private artifact. It is not a denial-of-service, attack, abuse, compromise, or attribution determination; see [request concentration](docs/request-concentration.md).
 
+Use `production concentration --path /example/path --show-source-ips` to review private, deterministic request counts for observed connection peers on one exact path. This is concentration context only; observed peers are not attacker attribution.
+
 `shenron production compare` diffs two local frozen run artifacts, while `hunt --baseline <prior-run>` writes the same temporal comparison after a new hunt. CVE changes and aggregate counts are sanitized; first-seen entities and path/IP detail remain private. Neither first-seen nor elevated-volume labels determine maliciousness, attack, compromise, or attribution; see [temporal comparison](docs/temporal-comparison.md).
 
 Every `production hunt` also writes an aggregate-only `triage-summary.json` and a private ranked `triage-view.json`; pass `--show-triage` (and optionally `--limit`) to display private entries. This order is for human triage, not threat severity or probability of malice; first-seen means review, never malicious.

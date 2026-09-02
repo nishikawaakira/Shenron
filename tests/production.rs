@@ -95,6 +95,7 @@ fn concentration_writes_private_detail_without_leaking_it_to_sanitized_or_defaul
         &output,
         TelemetryProfile::ApacheCombined,
         HuntTimeRange::default(),
+        None,
     )
     .unwrap();
     assert_eq!(report.report_kind, "SANITIZED_REQUEST_CONCENTRATION");
@@ -150,6 +151,59 @@ fn concentration_writes_private_detail_without_leaking_it_to_sanitized_or_defaul
         .assert()
         .success()
         .stdout(contains("/private-hot-path"))
+        .stdout(contains("198.51.100.1"));
+}
+
+#[test]
+fn concentration_path_focus_keeps_sources_private_until_explicitly_requested() {
+    let directory = tempdir().unwrap();
+    let output = directory.path().join("focused");
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "production",
+            "concentration",
+            "--input",
+            "tests/fixtures/production/waf.jsonl",
+            "--format",
+            "aws-waf",
+            "--output",
+            output.to_str().unwrap(),
+            "--path",
+            "/vulnerable/execute",
+        ])
+        .assert()
+        .success()
+        .stdout(contains("Focus path: /vulnerable/execute"))
+        .stdout(contains("198.51.100.1").not());
+    let sanitized = fs::read_to_string(output.join("sanitized-research.json")).unwrap();
+    assert!(!sanitized.contains("/vulnerable/execute"));
+    assert!(!sanitized.contains("198.51.100.1"));
+    let private = fs::read_to_string(output.join("request-concentration.json")).unwrap();
+    assert!(private.contains("\"focus\""));
+    assert!(private.contains("/vulnerable/execute"));
+    assert!(private.contains("198.51.100.1"));
+
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "production",
+            "concentration",
+            "--input",
+            "tests/fixtures/production/waf.jsonl",
+            "--format",
+            "aws-waf",
+            "--output",
+            directory.path().join("shown-focused").to_str().unwrap(),
+            "--path",
+            "/vulnerable/execute",
+            "--show-source-ips",
+        ])
+        .assert()
+        .success()
+        .stdout(contains(
+            "Private observed connection-peer IPs requesting the focused path",
+        ))
         .stdout(contains("198.51.100.1"));
 }
 

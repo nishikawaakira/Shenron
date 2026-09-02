@@ -947,6 +947,7 @@ pub fn concentration(
     output: &Path,
     telemetry_profile: TelemetryProfile,
     time_range: HuntTimeRange,
+    focus_path: Option<&str>,
 ) -> anyhow::Result<SanitizedConcentrationReport> {
     time_range.validate()?;
     ensure_separate_output(input, output)?;
@@ -971,6 +972,9 @@ pub fn concentration(
     };
     let mut accumulator =
         RequestConcentration::new(telemetry_profile.capabilities().response_bytes);
+    if let Some(path) = focus_path {
+        accumulator.focus_on_path(path);
+    }
     let mut progress = ProgressReporter::new("concentration");
     for path in files {
         stream_events(&path, telemetry_profile, |result| {

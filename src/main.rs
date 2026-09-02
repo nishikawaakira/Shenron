@@ -235,6 +235,9 @@ enum ProductionCommand {
         /// Directory for the private detail and sanitized aggregate artifacts.
         #[arg(long)]
         output: PathBuf,
+        /// Focus the private source-IP breakdown on this exact URI path.
+        #[arg(long)]
+        path: Option<String>,
         /// Inclusive UTC start time in RFC 3339 format.
         #[arg(long, value_parser = parse_rfc3339_utc)]
         from: Option<DateTime<Utc>>,
@@ -588,6 +591,7 @@ fn main() -> Result<()> {
                 input,
                 format,
                 output,
+                path,
                 from,
                 to,
                 show_paths,
@@ -599,6 +603,7 @@ fn main() -> Result<()> {
                     &output,
                     format.telemetry_profile(),
                     HuntTimeRange { from, to },
+                    path.as_deref(),
                 )?;
                 let private_path = output.join("request-concentration.json");
                 let private = (show_paths || show_source_ips)
@@ -611,6 +616,7 @@ fn main() -> Result<()> {
                     show_paths,
                     show_source_ips,
                     limit,
+                    path.as_deref(),
                 );
                 Ok(())
             }
@@ -1263,6 +1269,7 @@ fn print_concentration(
     show_paths: bool,
     show_source_ips: bool,
     limit: usize,
+    focus_path: Option<&str>,
 ) {
     let time_range = match (&report.filter_from, &report.filter_to) {
         (None, None) => "Time filter:                all timestamps".to_owned(),
@@ -1292,6 +1299,23 @@ fn print_concentration(
         &report.request_concentration,
         "request-concentration.json",
     );
+    if let (Some(path), Some(focus)) = (focus_path, report.request_concentration.focus.as_ref()) {
+        let rate = match (
+            focus.peak_requests_per_minute,
+            focus.median_requests_per_minute,
+        ) {
+            (Some(peak), Some(median)) => format!("peak {peak} / median {median:.1}"),
+            _ => "unavailable (no timestamped focused requests)".to_owned(),
+        };
+        println!(
+            "\nPath focus (aggregate requests to this path only; not a DoS/attack/abuse/compromise/attribution determination):\n  Focus path: {}\n  Requests: {}\n  Distinct observed connection-peer IPs: {}\n  Peak / median requests per minute: {}\n  Focus source IPs beyond cap: {}\n  Observed peers may be CDN/LB/NAT/proxy addresses and are not attacker attribution.",
+            terminal_safe(path),
+            focus.total_requests,
+            focus.distinct_source_ips,
+            rate,
+            focus.source_ips_beyond_cap,
+        );
+    }
     if let Some(private) = private {
         if show_paths {
             println!("\nPrivate top request paths:");
@@ -1324,6 +1348,30 @@ fn print_concentration(
                             || "unavailable (not retained before tracking cap)".to_owned()
                         ),
                 );
+            }
+            if let Some(focus) = &private.focus {
+                println!(
+                    "\nPrivate observed connection-peer IPs requesting the focused path (requests only; not a DoS/attack/abuse/compromise/attribution determination):"
+                );
+                for source in focus.sources.iter().take(display_limit(limit)) {
+                    println!(
+                        "  {}\n    Requests to focus path: {}",
+                        terminal_safe(&source.source_ip),
+                        source.requests,
+                    );
+                }
+                if focus.sources.len() > display_limit(limit) {
+                    println!(
+                        "  {} focused source IPs omitted. Pass --limit 0 to display all.",
+                        focus.sources.len() - display_limit(limit)
+                    );
+                }
+                if focus.source_ips_beyond_cap != 0 {
+                    println!(
+                        "  Focused source IP observations beyond tracking cap: {}",
+                        focus.source_ips_beyond_cap
+                    );
+                }
             }
         }
     }

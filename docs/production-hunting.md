@@ -88,6 +88,13 @@ that contains paths and observed connection-peer IPs. Use the CTI-independent
 hunt. Neither command classifies concentration as a denial-of-service attempt,
 attack, abuse, compromise, or attacker identity.
 
+Use `production concentration --path /example/path --show-source-ips` to
+inspect deterministic request counts for observed connection peers on one exact
+normalized path. The path and peer values remain private in
+`request-concentration.json`; the sanitized report contains only aggregate
+focus counts and rates. This is volume context only, never a DoS, attack,
+abuse, compromise, or attribution determination.
+
 ## Temporal comparison and retro-hunting
 
 Compare two existing local run directories without re-streaming either corpus:

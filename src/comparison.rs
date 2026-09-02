@@ -641,6 +641,7 @@ mod tests {
                     peak_to_median_ratio: None,
                     observations_without_timestamp: 0,
                 },
+                focus: None,
             },
             paths: paths
                 .into_iter()
@@ -663,6 +664,7 @@ mod tests {
                     most_requested_uri_path: None,
                 })
                 .collect(),
+            focus: None,
         }
     }
     #[test]

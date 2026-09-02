@@ -27,6 +27,36 @@ generic rule matches a request. Hunt writes the private concentration artifact
 alongside `private-findings.jsonl`; its sanitized concentration summary is
 embedded in `sanitized-research.json`.
 
+## Path focus (`--path`)
+
+For a local review of the observed connection peers that requested one exact
+path, use `--path` with `production concentration`:
+
+```bash
+shenron production concentration \
+  --input ./logs \
+  --format apache \
+  --output ./private-results/concentration \
+  --path /example/path \
+  --show-source-ips
+```
+
+Matching is exact against the normalized `uri_path`; query strings do not alter
+the focused path. The normal transcript echoes the analyst-supplied focus path
+and reports aggregate request/source-IP counts and per-minute statistics, but
+does not print IPs unless `--show-source-ips` is supplied. The private
+`request-concentration.json` contains the focus path and deterministic
+per-peer request counts; `sanitized-research.json` contains only the aggregate
+focus counts and never contains the path or an IP address. Focused source-IP
+tracking has its own fixed cap, and the output discloses observations from new
+peers that could not be retained after that cap.
+
+A focused peer is only the observed direct connection address. It may be a CDN,
+load balancer, NAT, proxy, or other intermediary, and concentration on a path
+does not determine a denial-of-service attempt, attack, abuse, exploitation,
+compromise, or attacker identity. The output states only that an observed peer
+requested the selected path a counted number of times.
+
 ## Interpretation boundary
 
 This is a request-volume distribution only. It is not a determination of a

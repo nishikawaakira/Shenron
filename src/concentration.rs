@@ -14,6 +14,10 @@ use crate::event::WebEvent;
 
 pub const DEFAULT_MAX_TRACKED_PATHS: usize = 100_000;
 pub const DEFAULT_MAX_TRACKED_SOURCE_IPS: usize = 1_000_000;
+/// Separate bounded tracking for the explicitly selected path focus. This is
+/// intentionally independent of the top-level source-IP map so a focus remains
+/// useful even if the general distribution reaches its own admission cap.
+pub const DEFAULT_MAX_FOCUS_SOURCE_IPS: usize = 1_000_000;
 /// A separate cap keeps source-to-path detail bounded even when both top-level
 /// key spaces are within their respective limits.
 pub const DEFAULT_MAX_TRACKED_SOURCE_PATH_PAIRS: usize = 2_000_000;
@@ -22,6 +26,7 @@ pub const DEFAULT_MAX_TRACKED_SOURCE_PATH_PAIRS: usize = 2_000_000;
 pub struct ConcentrationLimits {
     pub max_paths: usize,
     pub max_source_ips: usize,
+    pub max_focus_source_ips: usize,
     pub max_source_path_pairs: usize,
 }
 
@@ -30,6 +35,7 @@ impl Default for ConcentrationLimits {
         Self {
             max_paths: DEFAULT_MAX_TRACKED_PATHS,
             max_source_ips: DEFAULT_MAX_TRACKED_SOURCE_IPS,
+            max_focus_source_ips: DEFAULT_MAX_FOCUS_SOURCE_IPS,
             max_source_path_pairs: DEFAULT_MAX_TRACKED_SOURCE_PATH_PAIRS,
         }
     }
@@ -65,6 +71,18 @@ pub struct RequestRateSummary {
     pub observations_without_timestamp: u64,
 }
 
+/// Aggregate-only focus output. The requested path and observed peer IPs stay
+/// exclusively in the private artifact, even though the path was supplied by
+/// the analyst on the command line.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SanitizedFocusSummary {
+    pub total_requests: u64,
+    pub distinct_source_ips: usize,
+    pub source_ips_beyond_cap: u64,
+    pub peak_requests_per_minute: Option<u64>,
+    pub median_requests_per_minute: Option<f64>,
+}
+
 /// Aggregate-only output safe to include in a sanitized artifact. It contains
 /// no URI paths, IP addresses, hosts, headers, or other raw request values.
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -86,6 +104,10 @@ pub struct RequestConcentrationSummary {
     pub top_ten_paths_request_share: f64,
     pub top_ten_source_ips_request_share: f64,
     pub requests_per_minute: RequestRateSummary,
+    /// Present only when `production concentration --path` selected an exact
+    /// URI path. This aggregate is safe for sanitized output.
+    #[serde(default)]
+    pub focus: Option<SanitizedFocusSummary>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -105,12 +127,35 @@ pub struct PrivateSourceConcentration {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct PrivateFocusSource {
+    pub source_ip: String,
+    pub requests: u64,
+}
+
+/// Private detail for one exact URI-path focus. Connection-peer IPs are not
+/// client/attacker attribution: they can be CDN, LB, NAT, or proxy addresses.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct PrivateFocusSummary {
+    pub uri_path: String,
+    pub total_requests: u64,
+    pub distinct_source_ips: usize,
+    pub source_ips_beyond_cap: u64,
+    pub peak_requests_per_minute: Option<u64>,
+    pub median_requests_per_minute: Option<f64>,
+    pub response_status_classes: StatusClassCounts,
+    pub sources: Vec<PrivateFocusSource>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PrivateRequestConcentrationReport {
     pub report_kind: String,
     pub safety_note: String,
     pub summary: RequestConcentrationSummary,
     pub paths: Vec<PrivatePathConcentration>,
     pub source_ips: Vec<PrivateSourceConcentration>,
+    /// Omitted from historical artifacts created before path focus support.
+    #[serde(default)]
+    pub focus: Option<PrivateFocusSummary>,
 }
 
 #[derive(Debug, Default)]
@@ -144,6 +189,12 @@ pub struct RequestConcentration {
     source_ips_beyond_tracking_cap: u64,
     source_path_pairs_beyond_tracking_cap: u64,
     observations_without_timestamp: u64,
+    focus_path: Option<String>,
+    focus_total: u64,
+    focus_sources: BTreeMap<String, u64>,
+    focus_minute_buckets: BTreeMap<i64, u64>,
+    focus_status_classes: StatusClassCounts,
+    focus_source_ips_beyond_cap: u64,
 }
 
 impl RequestConcentration {
@@ -167,7 +218,19 @@ impl RequestConcentration {
             source_ips_beyond_tracking_cap: 0,
             source_path_pairs_beyond_tracking_cap: 0,
             observations_without_timestamp: 0,
+            focus_path: None,
+            focus_total: 0,
+            focus_sources: BTreeMap::new(),
+            focus_minute_buckets: BTreeMap::new(),
+            focus_status_classes: StatusClassCounts::default(),
+            focus_source_ips_beyond_cap: 0,
         }
+    }
+
+    /// Enable exact path focus for subsequent observations. It is used only by
+    /// `production concentration`; hunt keeps the default `None` focus.
+    pub fn focus_on_path(&mut self, path: impl Into<String>) {
+        self.focus_path = Some(path.into());
     }
 
     pub fn observe(&mut self, event: &WebEvent) {
@@ -191,6 +254,7 @@ impl RequestConcentration {
                 self.track_source_path_pair(source_ip, path);
             }
         }
+        self.observe_focus(event);
     }
 
     pub fn summary(&self) -> RequestConcentrationSummary {
@@ -232,6 +296,7 @@ impl RequestConcentration {
                 peak_to_median_ratio: ratio,
                 observations_without_timestamp: self.observations_without_timestamp,
             },
+            focus: self.sanitized_focus_summary(),
         }
     }
 
@@ -257,7 +322,75 @@ impl RequestConcentration {
                     most_requested_uri_path: self.most_requested_path(source_ip),
                 })
                 .collect(),
+            focus: self.private_focus_summary(),
         }
+    }
+
+    fn observe_focus(&mut self, event: &WebEvent) {
+        if self.focus_path.as_deref() != event.uri_path.as_deref() {
+            return;
+        }
+        self.focus_total += 1;
+        if let Some(timestamp) = event.timestamp {
+            *self
+                .focus_minute_buckets
+                .entry(timestamp.timestamp().div_euclid(60))
+                .or_default() += 1;
+        }
+        record_status_class(&mut self.focus_status_classes, event.status);
+        let Some(source_ip) = event.source_ip.as_deref() else {
+            return;
+        };
+        if !self.focus_sources.contains_key(source_ip)
+            && self.focus_sources.len() >= self.limits.max_focus_source_ips
+        {
+            self.focus_source_ips_beyond_cap += 1;
+            return;
+        }
+        *self.focus_sources.entry(source_ip.to_owned()).or_default() += 1;
+    }
+
+    fn sanitized_focus_summary(&self) -> Option<SanitizedFocusSummary> {
+        self.focus_path.as_ref().map(|_| {
+            let (peak, median, _) = Self::request_rate_for(&self.focus_minute_buckets);
+            SanitizedFocusSummary {
+                total_requests: self.focus_total,
+                distinct_source_ips: self.focus_sources.len(),
+                source_ips_beyond_cap: self.focus_source_ips_beyond_cap,
+                peak_requests_per_minute: peak,
+                median_requests_per_minute: median,
+            }
+        })
+    }
+
+    fn private_focus_summary(&self) -> Option<PrivateFocusSummary> {
+        self.focus_path.as_ref().map(|path| {
+            let (peak, median, _) = Self::request_rate_for(&self.focus_minute_buckets);
+            let mut sources = self
+                .focus_sources
+                .iter()
+                .map(|(source_ip, requests)| PrivateFocusSource {
+                    source_ip: source_ip.clone(),
+                    requests: *requests,
+                })
+                .collect::<Vec<_>>();
+            sources.sort_by(|left, right| {
+                right
+                    .requests
+                    .cmp(&left.requests)
+                    .then_with(|| left.source_ip.cmp(&right.source_ip))
+            });
+            PrivateFocusSummary {
+                uri_path: path.clone(),
+                total_requests: self.focus_total,
+                distinct_source_ips: self.focus_sources.len(),
+                source_ips_beyond_cap: self.focus_source_ips_beyond_cap,
+                peak_requests_per_minute: peak,
+                median_requests_per_minute: median,
+                response_status_classes: self.focus_status_classes.clone(),
+                sources,
+            }
+        })
     }
 
     fn observe_minute(&mut self, timestamp: Option<DateTime<Utc>>) {
@@ -369,10 +502,14 @@ impl RequestConcentration {
     }
 
     fn request_rate(&self) -> (Option<u64>, Option<f64>, Option<f64>) {
-        if self.minute_buckets.is_empty() {
+        Self::request_rate_for(&self.minute_buckets)
+    }
+
+    fn request_rate_for(buckets: &BTreeMap<i64, u64>) -> (Option<u64>, Option<f64>, Option<f64>) {
+        if buckets.is_empty() {
             return (None, None, None);
         }
-        let mut values = self.minute_buckets.values().copied().collect::<Vec<_>>();
+        let mut values = buckets.values().copied().collect::<Vec<_>>();
         values.sort_unstable();
         let peak = *values.last().expect("checked non-empty minute buckets");
         let middle = values.len() / 2;
@@ -509,6 +646,7 @@ mod tests {
             ConcentrationLimits {
                 max_paths: 1,
                 max_source_ips: 1,
+                max_focus_source_ips: 1,
                 max_source_path_pairs: 1,
             },
         );
@@ -552,6 +690,7 @@ mod tests {
             ConcentrationLimits {
                 max_paths: 10,
                 max_source_ips: 10,
+                max_focus_source_ips: 10,
                 max_source_path_pairs: 1,
             },
         );
@@ -588,5 +727,55 @@ mod tests {
                 previous_full_scan
             );
         }
+    }
+
+    #[test]
+    fn focuses_on_one_exact_path_and_sorts_private_sources_deterministically() {
+        let mut concentration = RequestConcentration::new(true);
+        concentration.focus_on_path("/target");
+        for (path, ip, minute) in [
+            ("/target", "198.51.100.2", 0),
+            ("/target", "198.51.100.1", 0),
+            ("/target", "198.51.100.1", 1),
+            ("/other", "198.51.100.9", 1),
+        ] {
+            concentration.observe(&event(Some(path), Some(ip), Some(minute)));
+        }
+        let focus = concentration.private_report().focus.unwrap();
+        assert_eq!(focus.uri_path, "/target");
+        assert_eq!(focus.total_requests, 3);
+        assert_eq!(focus.distinct_source_ips, 2);
+        assert_eq!(focus.peak_requests_per_minute, Some(2));
+        assert_eq!(focus.median_requests_per_minute, Some(1.5));
+        assert_eq!(
+            focus
+                .sources
+                .iter()
+                .map(|source| (source.source_ip.as_str(), source.requests))
+                .collect::<Vec<_>>(),
+            vec![("198.51.100.1", 2), ("198.51.100.2", 1)]
+        );
+        let serialized = serde_json::to_string(&concentration.summary()).unwrap();
+        assert!(!serialized.contains("/target"));
+        assert!(!serialized.contains("198.51.100.1"));
+    }
+
+    #[test]
+    fn discloses_focus_source_ip_cap_without_adding_new_sources() {
+        let mut concentration = RequestConcentration::with_limits(
+            true,
+            ConcentrationLimits {
+                max_paths: 10,
+                max_source_ips: 10,
+                max_focus_source_ips: 1,
+                max_source_path_pairs: 10,
+            },
+        );
+        concentration.focus_on_path("/target");
+        concentration.observe(&event(Some("/target"), Some("198.51.100.1"), Some(0)));
+        concentration.observe(&event(Some("/target"), Some("198.51.100.2"), Some(0)));
+        let focus = concentration.summary().focus.unwrap();
+        assert_eq!(focus.distinct_source_ips, 1);
+        assert_eq!(focus.source_ips_beyond_cap, 1);
     }
 }
