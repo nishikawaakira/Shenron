@@ -988,8 +988,11 @@ fn print_hunt(report: &SanitizedHuntReport, sanitized_path: &Path) {
     };
     println!("Read-only production hunt complete.\nPrivate findings:            written under the supplied output directory\nSanitized report:            {}\n\n{}\n\nRequests analyzed:           {}\nFiles analyzed:              {}\nParse errors:                {}\nCVE-related request matches: {}\n  Request-specific:          {}\n  Response-unverified:       {}\nUnique CVEs observed:        {}\nUnique CISA KEVs observed:   {}\nSource clusters:             {}\nJA4 fingerprints:            {}\nDetection-match confidence (template detectability; NOT attack/compromise confidence):\n  HIGH:                      {}\n  MEDIUM:                    {}\n  LOW:                       {}\n\n{}", sanitized_path.display(), time_range, metrics.total_requests_analyzed, metrics.files_analyzed, metrics.parse_errors, metrics.cve_related_request_matches, metrics.request_specific_matches, metrics.response_unverified_matches, metrics.unique_cves_observed, metrics.unique_cisa_kevs_observed, metrics.unique_source_clusters, metrics.unique_ja4_fingerprints, metrics.high_confidence_findings, metrics.medium_confidence_findings, metrics.low_confidence_findings, outcomes);
     println!(
-        "\nSigma (generic request-pattern pass; separate from the CVE metrics above):\n  Rules evaluated:           {}\n  Rule matches:              {}\n  Distinct rules matched:    {}",
-        metrics.sigma_rules_evaluated, metrics.sigma_rule_matches, metrics.distinct_sigma_rules,
+        "\nSigma (generic request-pattern pass; separate from the CVE metrics above):\n  Rules evaluated:           {}\n  Matched requests:          {}\n  Rule matches:              {} (one request can match several rules, so this can exceed matched requests)\n  Distinct rules matched:    {}",
+        metrics.sigma_rules_evaluated,
+        metrics.sigma_matched_requests,
+        metrics.sigma_rule_matches,
+        metrics.distinct_sigma_rules,
     );
 }
 

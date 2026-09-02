@@ -66,11 +66,15 @@ Two fields are deliberately **not** borrowed from the Nuclei model:
 ## The two sources stay distinguishable in every artefact
 
 - **`private-findings.jsonl`**: the `source` field on every record.
-- **`sanitized-research.json`**: separate aggregate counts — `sigma_rule_matches`,
-  `distinct_sigma_rules`, and `sigma_rules_evaluated` — kept apart from the CVE
-  metrics. Sigma matches never enter `cve_related_request_matches` or the CVE
-  findings list, even when a Sigma rule carries a CVE tag; the CVE track stays
-  Nuclei-only.
+- **`sanitized-research.json`**: separate aggregate counts kept apart from the
+  CVE metrics — `sigma_rules_evaluated`, `sigma_matched_requests`,
+  `sigma_rule_matches`, and `distinct_sigma_rules`. **`sigma_matched_requests`**
+  is the number of distinct requests that carried at least one Sigma detection;
+  **`sigma_rule_matches`** is the number of rule matches, and because one request
+  can match several rules it can exceed `sigma_matched_requests`. Report request
+  counts with `sigma_matched_requests`, not `sigma_rule_matches`. Sigma matches
+  never enter `cve_related_request_matches` or the CVE findings list, even when a
+  Sigma rule carries a CVE tag; the CVE track stays Nuclei-only.
 - **`run-manifest.json`**: records how many supported Sigma rules were evaluated
   (0 when the pass was disabled or no rules were found).
 - **`production explain`**: the source is shown per finding and in the JSON view;

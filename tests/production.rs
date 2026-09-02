@@ -1334,19 +1334,26 @@ fn hunt_runs_the_sigma_pass_and_keeps_it_distinct_from_cve_findings() {
     let directory = tempdir().unwrap();
     let rules_dir = directory.path().join("rules");
     fs::create_dir(&rules_dir).unwrap();
-    fs::write(
-        rules_dir.join("vuln-path.yml"),
-        concat!(
-            "title: Vulnerable Path Probe\n",
-            "id: test-vuln-path\n",
-            "logsource:\n  category: webserver\n  product: aws\n  service: waf\n",
-            "detection:\n  selection:\n    uri_path|contains: 'vulnerable'\n  condition: selection\n",
-            "level: medium\n",
-        ),
-    )
-    .unwrap();
+    // Two rules with the same selection: every matching request hits both, so
+    // rule matches are exactly twice the matched-request count.
+    for (name, id) in [("vuln-a.yml", "test-vuln-a"), ("vuln-b.yml", "test-vuln-b")] {
+        fs::write(
+            rules_dir.join(name),
+            format!(
+                concat!(
+                    "title: Vulnerable Path Probe {id}\n",
+                    "id: {id}\n",
+                    "logsource:\n  category: webserver\n  product: aws\n  service: waf\n",
+                    "detection:\n  selection:\n    uri_path|contains: 'vulnerable'\n  condition: selection\n",
+                    "level: medium\n",
+                ),
+                id = id
+            ),
+        )
+        .unwrap();
+    }
     let ruleset = shenron::sigma::load_rules(&rules_dir);
-    assert_eq!(ruleset.supported.len(), 1);
+    assert_eq!(ruleset.supported.len(), 2);
 
     let output = directory.path().join("out");
     let report = hunt_with_options(
@@ -1364,9 +1371,15 @@ fn hunt_runs_the_sigma_pass_and_keeps_it_distinct_from_cve_findings() {
     .unwrap();
 
     // The Sigma pass ran and is reported separately from the CVE metrics.
-    assert_eq!(report.metrics.sigma_rules_evaluated, 1);
-    assert!(report.metrics.sigma_rule_matches >= 1);
-    assert_eq!(report.metrics.distinct_sigma_rules, 1);
+    assert_eq!(report.metrics.sigma_rules_evaluated, 2);
+    assert_eq!(report.metrics.distinct_sigma_rules, 2);
+    // Matched requests are distinct events; rule matches count each rule hit, so
+    // with two rules over the same requests, matches are twice the requests.
+    assert!(report.metrics.sigma_matched_requests >= 1);
+    assert_eq!(
+        report.metrics.sigma_rule_matches,
+        2 * report.metrics.sigma_matched_requests
+    );
 
     // Both sources are present and distinguishable in the private findings.
     let private = fs::read_to_string(output.join("private-findings.jsonl")).unwrap();

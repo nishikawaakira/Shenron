@@ -100,7 +100,12 @@ pub struct HuntMetrics {
     /// no rules were found). The Sigma pass is a generic request-pattern layer,
     /// kept entirely separate from the CVE metrics above.
     pub sigma_rules_evaluated: usize,
-    /// Individual Sigma rule matches across all events.
+    /// Distinct requests (events) that matched at least one Sigma rule. Use this
+    /// when reporting how many requests carried a Sigma detection.
+    pub sigma_matched_requests: usize,
+    /// Individual Sigma rule matches across all events. One request can match
+    /// several rules, so this can exceed `sigma_matched_requests`; it is a count
+    /// of rule matches, not of requests.
     pub sigma_rule_matches: usize,
     /// Distinct Sigma rules that matched at least one event.
     pub distinct_sigma_rules: usize,
@@ -771,6 +776,9 @@ pub fn hunt_with_options(
             for detection in &matches {
                 serde_json::to_writer(&mut private, &private_finding(detection, &event))?;
                 private.write_all(b"\n")?;
+            }
+            if !sigma_matches.is_empty() {
+                metrics.sigma_matched_requests += 1;
             }
             for rule in &sigma_matches {
                 serde_json::to_writer(&mut private, &sigma_finding(rule, &event))?;

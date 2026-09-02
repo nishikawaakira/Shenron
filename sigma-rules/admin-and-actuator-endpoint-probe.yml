@@ -18,6 +18,5 @@ detection:
       - '/server-info'
       - '/phpinfo.php'
       - '/debug/pprof/'
-      - '/.well-known/security.txt'
   condition: selection
 level: low
