@@ -711,12 +711,20 @@ fn explain_hides_only_response_unverified_generic_paths_by_default() {
         .stdout(contains(
             "Hidden 1 low-confidence matches (response-unverified on generic paths such as /robots.txt), spanning 1 CVEs. Pass --include-generic to show them.",
         ))
+        // The generic match is hidden from the per-finding listing and the path
+        // summary: its CVE is not listed (its path only appears in the hidden
+        // disclosure line's own example text).
         .stdout(contains("CVE-2024-30001").not())
-        .stdout(contains("198.51.100.30").not())
         .stdout(contains("CVE-2024-30002"))
         .stdout(contains("CVE-2024-30003"))
         .stdout(contains("198.51.100.31"))
-        .stdout(contains("198.51.100.32"));
+        .stdout(contains("198.51.100.32"))
+        // ...but triage grouping still sees it, so its IP appears in the IP
+        // triage section, and the disclosure line explains the group counts.
+        .stdout(contains("198.51.100.30"))
+        .stdout(contains(
+            "Triage groups are computed from all matching findings, including the low-confidence generic matches hidden from the listing",
+        ));
 
     Command::cargo_bin("shenron")
         .unwrap()
@@ -1464,6 +1472,98 @@ fn explain_json_omits_private_evidence_without_show_flags() {
             "private value leaked into JSON: {secret}"
         );
     }
+}
+
+#[test]
+fn generic_filter_is_display_only_and_does_not_change_triage_grouping() {
+    let directory = tempdir().unwrap();
+    let findings_path = directory.path().join("private-findings.jsonl");
+    // One source: one distinctive + two generic response-unverified matches on
+    // three distinct templates. Two of the three are hidden from the listing by
+    // default, but all three must reach triage grouping.
+    let record = |template: &str, path: &str, second: u8| {
+        format!(
+            r#"{{"template_id":"{template}","cves":["CVE-2024-{template}"],"detectability":"HIGH","request_specificity":"response-unverified","timestamp":"2026-08-24T00:00:0{second}+00:00","source_ip":"203.0.113.50","client_ip":null,"host":"h.example","method":"GET","uri_path":"{path}","uri_query":null,"headers":[],"ja3":null,"ja4":null,"waf_action":null,"request_id":null,"log_source":"apache_vhost_combined"}}"#
+        )
+    };
+    let lines = [
+        record("aaa", "/.env", 1),
+        record("bbb", "/robots.txt", 2),
+        record("ccc", "/sitemap.xml", 3),
+    ];
+    fs::write(&findings_path, lines.join("\n")).unwrap();
+
+    let run = |include_generic: bool| -> serde_json::Value {
+        let mut args = vec![
+            "production",
+            "explain",
+            "--findings",
+            findings_path.to_str().unwrap(),
+            "--show-source-ips",
+            "--output-format",
+            "json",
+            "--limit",
+            "0",
+        ];
+        if include_generic {
+            args.push("--include-generic");
+        }
+        let stdout = Command::cargo_bin("shenron")
+            .unwrap()
+            .args(&args)
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        serde_json::from_slice(&stdout).unwrap()
+    };
+    let group = |report: &serde_json::Value| -> serde_json::Value {
+        report["connection_ip_groups"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|group| group["key"] == "203.0.113.50")
+            .expect("the source group is present")
+            .clone()
+    };
+
+    let default = run(false);
+    let with_generic = run(true);
+    let group_default = group(&default);
+    let group_generic = group(&with_generic);
+
+    // Grouping sees every finding regardless of the display filter, so breadth
+    // is met from all three distinct templates.
+    assert_eq!(group_default["distinct_observations"], 3);
+    assert_eq!(group_default["distinct_templates"], 3);
+    assert_eq!(group_default["triage_basis"], "breadth");
+    assert_eq!(group_default["requires_investigation"], true);
+
+    // The group's score, observation count, and triage basis are identical
+    // between the two modes; --include-generic changes only what is listed.
+    assert_eq!(
+        group_default["distinct_observations"],
+        group_generic["distinct_observations"]
+    );
+    assert_eq!(group_default["triage_basis"], group_generic["triage_basis"]);
+    assert_eq!(group_default["score"], group_generic["score"]);
+
+    // The listing differs: only the distinctive path by default, all three with
+    // --include-generic; total_mappings follows the listing.
+    assert_eq!(default["request_paths"].as_array().unwrap().len(), 1);
+    assert_eq!(with_generic["request_paths"].as_array().unwrap().len(), 3);
+    assert_eq!(default["total_mappings"], 1);
+    assert_eq!(with_generic["total_mappings"], 3);
+
+    // The low-confidence disclosure count is unchanged by this refactor: the two
+    // generic response-unverified matches by default, nothing with the flag.
+    assert_eq!(default["hidden_low_confidence"]["count"], 2);
+    assert!(with_generic.get("hidden_low_confidence").is_none());
+
+    // The triage-scope note is present exactly when grouping exceeds the listing.
+    assert!(default.get("triage_note").is_some());
+    assert!(with_generic.get("triage_note").is_none());
 }
 
 #[test]

@@ -494,7 +494,7 @@ struct PrivateFinding {
 
 /// A terminal-safe view of private hunt evidence. The CLI keeps private
 /// attributes hidden unless the analyst explicitly opts in.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct FindingExplanation {
     pub template_id: String,
     pub cves: Vec<String>,

@@ -606,20 +606,37 @@ fn main() -> Result<()> {
                     })
                     .reduce(TelemetryCapabilities::union)
                     .unwrap_or_default();
-                let findings = match waf_outcome {
+                // The --waf-outcome filter is an explicit analyst selection, so
+                // it bounds everything downstream. The full waf-filtered set is
+                // what triage grouping and scoring see.
+                let grouped: Vec<_> = match waf_outcome {
                     Some(filter) => findings
                         .into_iter()
                         .filter(|finding| filter.matches(finding))
                         .collect(),
                     None => findings,
                 };
-                let (findings, hidden) = if include_generic {
-                    (findings, Vec::new())
+                // The low-confidence generic filter is display-only: it changes
+                // what is listed, never what is grouped or scored. `hidden` is
+                // disclosed; `listed` drives the per-finding rows and the path
+                // summary; `grouped` drives entity grouping and scoring.
+                let hidden: Vec<_> = if include_generic {
+                    Vec::new()
                 } else {
-                    let (hidden, findings) = findings
-                        .into_iter()
-                        .partition::<Vec<_>, _>(is_low_confidence_generic_match);
-                    (findings, hidden)
+                    grouped
+                        .iter()
+                        .filter(|finding| is_low_confidence_generic_match(finding))
+                        .cloned()
+                        .collect()
+                };
+                let listed: Vec<_> = if include_generic {
+                    grouped.clone()
+                } else {
+                    grouped
+                        .iter()
+                        .filter(|finding| !is_low_confidence_generic_match(finding))
+                        .cloned()
+                        .collect()
                 };
                 let display = ExplainDisplay {
                     show_request: show_request || show_evidence,
@@ -640,7 +657,8 @@ fn main() -> Result<()> {
                 match output_format {
                     ExplainOutputFormat::Json => {
                         let report = build_explain_report(
-                            &findings,
+                            &listed,
+                            &grouped,
                             &hidden,
                             &display,
                             waf_outcome.map(WafOutcomeFilter::label),
@@ -678,7 +696,9 @@ fn main() -> Result<()> {
                             );
                         }
                         print_explanations(
-                            &findings,
+                            &listed,
+                            &grouped,
+                            !hidden.is_empty(),
                             display,
                             waf_outcome.map(WafOutcomeFilter::label),
                             limit,
@@ -1152,6 +1172,11 @@ struct ExplainReport {
     total_mappings: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     hidden_low_confidence: Option<HiddenSummaryJson>,
+    /// Present when a triage section is shown and low-confidence generic matches
+    /// are hidden from the listing: the groups below are still computed from all
+    /// matching findings, so their counts can exceed the listed rows.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    triage_note: Option<&'static str>,
     request_paths: Vec<PathSummaryRow>,
     #[serde(skip_serializing_if = "Option::is_none")]
     connection_ip_groups: Option<Vec<GroupJson>>,
@@ -1379,9 +1404,15 @@ fn finding_json(
     }
 }
 
+/// Stated once whenever a triage section is shown while low-confidence generic
+/// matches are hidden from the listing, so the group counts (computed from all
+/// matching findings) do not look inconsistent with the shorter listing.
+const TRIAGE_INCLUDES_HIDDEN_NOTE: &str = "Triage groups are computed from all matching findings, including the low-confidence generic matches hidden from the listing; a group's observation and template counts can therefore exceed the rows shown.";
+
 #[allow(clippy::too_many_arguments)]
 fn build_explain_report(
-    findings: &[shenron::production::FindingExplanation],
+    listed: &[shenron::production::FindingExplanation],
+    grouped: &[shenron::production::FindingExplanation],
     hidden: &[shenron::production::FindingExplanation],
     display: &ExplainDisplay,
     waf_outcome_filter: Option<&str>,
@@ -1396,7 +1427,9 @@ fn build_explain_report(
         }
         rows
     };
-    let mut request_paths = explanation_summary(findings);
+    // The summary and per-finding rows follow the display filter (`listed`);
+    // entity grouping and scoring see every matching finding (`grouped`).
+    let mut request_paths = explanation_summary(listed);
     if limit != 0 {
         request_paths.truncate(limit);
     }
@@ -1413,7 +1446,7 @@ fn build_explain_report(
     let connection_ip_groups = display.show_source_ips.then(|| {
         truncate(
             entity_groups(
-                findings,
+                grouped,
                 EntityDimension::ConnectionIp,
                 triage.policy,
                 triage.capabilities,
@@ -1429,7 +1462,7 @@ fn build_explain_report(
         .then_some(asn_database)
         .flatten()
         .map(|database| {
-            let result = asn_entity_groups(findings, triage.policy, database, triage.capabilities);
+            let result = asn_entity_groups(grouped, triage.policy, database, triage.capabilities);
             AsnGroupsJson {
                 groups: truncate(
                     result
@@ -1445,7 +1478,7 @@ fn build_explain_report(
     let ja4_groups = display.show_fingerprints.then(|| {
         truncate(
             entity_groups(
-                findings,
+                grouped,
                 EntityDimension::Ja4,
                 triage.policy,
                 triage.capabilities,
@@ -1456,11 +1489,14 @@ fn build_explain_report(
         )
     });
 
+    let shows_triage = display.show_source_ips || display.show_asn || display.show_fingerprints;
+    let triage_note = (shows_triage && !hidden.is_empty()).then_some(TRIAGE_INCLUDES_HIDDEN_NOTE);
+
     let individual_findings = (display.show_request || display.show_evidence).then(|| {
         let shown = if limit == 0 {
-            findings
+            listed
         } else {
-            &findings[..findings.len().min(limit)]
+            &listed[..listed.len().min(limit)]
         };
         shown
             .iter()
@@ -1471,8 +1507,9 @@ fn build_explain_report(
     ExplainReport {
         report_kind: "EXPLAIN_PRIVATE_TRIAGE",
         waf_outcome_filter: waf_outcome_filter.map(str::to_owned),
-        total_mappings: findings.len(),
+        total_mappings: listed.len(),
         hidden_low_confidence,
+        triage_note,
         request_paths,
         connection_ip_groups,
         asn_groups,
@@ -1481,8 +1518,11 @@ fn build_explain_report(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn print_explanations(
-    findings: &[shenron::production::FindingExplanation],
+    listed: &[shenron::production::FindingExplanation],
+    grouped: &[shenron::production::FindingExplanation],
+    has_hidden: bool,
     display: ExplainDisplay,
     waf_outcome_filter: Option<&str>,
     limit: usize,
@@ -1490,22 +1530,28 @@ fn print_explanations(
     asn_database: Option<&AsnDatabase>,
     reputation_database: Option<&ReputationDatabase>,
 ) {
+    // The summary and per-finding rows follow the display filter (`listed`);
+    // entity grouping and scoring see every matching finding (`grouped`).
     let displayed = if limit == 0 {
-        findings
+        listed
     } else {
-        &findings[..findings.len().min(limit)]
+        &listed[..listed.len().min(limit)]
     };
     match waf_outcome_filter {
         Some(filter) => println!(
             "CVE / Nuclei template mappings: {} (WAF outcome filter: {})",
-            findings.len(),
+            listed.len(),
             filter
         ),
-        None => println!("CVE / Nuclei template mappings: {}", findings.len()),
+        None => println!("CVE / Nuclei template mappings: {}", listed.len()),
     }
-    print_explanation_summary(findings, limit);
+    print_explanation_summary(listed, limit);
+    let shows_triage = display.show_source_ips || display.show_asn || display.show_fingerprints;
+    if shows_triage && has_hidden {
+        println!("\n{TRIAGE_INCLUDES_HIDDEN_NOTE}");
+    }
     if display.show_source_ips {
-        print_source_ip_summary(findings, limit, triage, asn_database, reputation_database);
+        print_source_ip_summary(grouped, limit, triage, asn_database, reputation_database);
     } else if (asn_database.is_some() || reputation_database.is_some()) && !display.show_asn {
         println!(
             "Local reputation datasets were supplied, but --show-source-ips was not selected; no IP enrichment was displayed."
@@ -1514,7 +1560,7 @@ fn print_explanations(
     if display.show_asn {
         match asn_database {
             Some(database) => {
-                print_asn_summary(findings, limit, triage, database, reputation_database)
+                print_asn_summary(grouped, limit, triage, database, reputation_database)
             }
             None => println!(
                 "ASN grouping was requested, but --asn-dataset was not supplied; no ASN groups were displayed."
@@ -1522,17 +1568,17 @@ fn print_explanations(
         }
     }
     if display.show_fingerprints {
-        print_ja4_summary(findings, limit, triage);
+        print_ja4_summary(grouped, limit, triage);
     }
     if !display.show_request && !display.show_evidence {
         println!("Pass --show-request to display individual requests, or --show-evidence to include all locally stored evidence.");
         return;
     }
-    if displayed.len() < findings.len() {
+    if displayed.len() < listed.len() {
         println!(
             "\nShowing first {} individual findings; {} omitted. Pass --limit 0 to display all.",
             displayed.len(),
-            findings.len() - displayed.len()
+            listed.len() - displayed.len()
         );
     }
     for (index, finding) in displayed.iter().enumerate() {
