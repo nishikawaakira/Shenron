@@ -18,6 +18,9 @@ use walkdir::WalkDir;
 
 use crate::{
     access_log::{AccessLogFormat, AccessLogLines},
+    concentration::{
+        PrivateRequestConcentrationReport, RequestConcentration, RequestConcentrationSummary,
+    },
     event::{HttpHeader, LogSource, TelemetryProfile, TrustedProxySet, WebEvent},
     nuclei::{
         frozen_nuclei_selection, path_distinctiveness, validated_detections, Detectability,
@@ -109,6 +112,9 @@ pub struct HuntMetrics {
     pub sigma_rule_matches: usize,
     /// Distinct Sigma rules that matched at least one event.
     pub distinct_sigma_rules: usize,
+    /// Aggregate request-volume distribution only. This is separate from CVE
+    /// metrics and does not determine attack, abuse, or compromise.
+    pub request_concentration: Option<RequestConcentrationSummary>,
 }
 
 /// Inclusive UTC interval applied before matching. Events without a timestamp
@@ -207,6 +213,24 @@ pub struct SanitizedHuntReport {
     pub safety_note: String,
     pub metrics: HuntMetrics,
     pub cve_findings: Vec<SanitizedCveFinding>,
+}
+
+/// Aggregate-only request-volume distribution output for `production
+/// concentration`. It intentionally contains no raw paths, IPs, hosts,
+/// headers, or other request values.
+#[derive(Debug, Serialize)]
+pub struct SanitizedConcentrationReport {
+    pub report_kind: String,
+    pub safety_note: String,
+    pub telemetry_profile: TelemetryProfile,
+    pub filter_from: Option<String>,
+    pub filter_to: Option<String>,
+    pub files_analyzed: usize,
+    pub total_requests_analyzed: usize,
+    pub requests_outside_time_range: usize,
+    pub requests_without_timestamp_excluded: usize,
+    pub parse_errors: usize,
+    pub request_concentration: RequestConcentrationSummary,
 }
 
 /// Aggregate-only comparison of match volume for predicates derived from one
@@ -737,6 +761,8 @@ pub fn hunt_with_options(
     let mut all_sources = BTreeSet::new();
     let mut all_ja4s = BTreeSet::new();
     let mut matched_sigma_rules = BTreeSet::new();
+    let mut concentration =
+        RequestConcentration::new(telemetry_profile.capabilities().response_bytes);
     let mut progress = ProgressReporter::new("hunt");
     for path in files {
         stream_events_with_trusted_proxies(&path, telemetry_profile, &trusted_proxies, |result| {
@@ -757,6 +783,7 @@ pub fn hunt_with_options(
                 return Ok(());
             }
             metrics.total_requests_analyzed += 1;
+            concentration.observe(&event);
             update_time_range(
                 &mut metrics.earliest_timestamp,
                 &mut metrics.latest_timestamp,
@@ -853,11 +880,13 @@ pub fn hunt_with_options(
         })?;
     }
     private.flush()?;
+    write_private_concentration(output, &concentration.private_report())?;
     metrics.distinct_sigma_rules = matched_sigma_rules.len();
     metrics.unique_cves_observed = cves.len();
     metrics.unique_cisa_kevs_observed = cves.values().filter(|item| item.kev).count();
     metrics.unique_source_clusters = all_sources.len();
     metrics.unique_ja4_fingerprints = all_ja4s.len();
+    metrics.request_concentration = Some(concentration.summary());
     for item in cves.values() {
         metrics.blocked += item.outcomes.blocked;
         metrics.allowed_or_not_blocked += item.outcomes.allowed_or_not_blocked;
@@ -908,6 +937,99 @@ pub fn hunt_with_options(
         &report.metrics,
     )?;
     Ok(report)
+}
+
+/// Measure request-volume distribution without CTI inputs or detector matching.
+/// It streams local logs once, writes a private detailed artifact plus a
+/// sanitized aggregate artifact, and makes no network request.
+pub fn concentration(
+    input: &Path,
+    output: &Path,
+    telemetry_profile: TelemetryProfile,
+    time_range: HuntTimeRange,
+) -> anyhow::Result<SanitizedConcentrationReport> {
+    time_range.validate()?;
+    ensure_separate_output(input, output)?;
+    let files = input_files(input, telemetry_profile)?;
+    fs::create_dir_all(output)
+        .with_context(|| format!("creating private output directory {}", output.display()))?;
+    let mut report = SanitizedConcentrationReport {
+        report_kind: "SANITIZED_REQUEST_CONCENTRATION".to_owned(),
+        safety_note: concentration_safety_note().to_owned(),
+        telemetry_profile,
+        filter_from: time_range.from.map(|time| time.to_rfc3339()),
+        filter_to: time_range.to.map(|time| time.to_rfc3339()),
+        files_analyzed: files.len(),
+        total_requests_analyzed: 0,
+        requests_outside_time_range: 0,
+        requests_without_timestamp_excluded: 0,
+        parse_errors: 0,
+        request_concentration: RequestConcentration::new(
+            telemetry_profile.capabilities().response_bytes,
+        )
+        .summary(),
+    };
+    let mut accumulator =
+        RequestConcentration::new(telemetry_profile.capabilities().response_bytes);
+    let mut progress = ProgressReporter::new("concentration");
+    for path in files {
+        stream_events(&path, telemetry_profile, |result| {
+            progress.tick();
+            let event = match result {
+                Ok(event) => event,
+                Err(_) => {
+                    report.parse_errors += 1;
+                    return Ok(());
+                }
+            };
+            if !time_range.includes(event.timestamp) {
+                if event.timestamp.is_some() {
+                    report.requests_outside_time_range += 1;
+                } else {
+                    report.requests_without_timestamp_excluded += 1;
+                }
+                return Ok(());
+            }
+            report.total_requests_analyzed += 1;
+            accumulator.observe(&event);
+            Ok(())
+        })?;
+    }
+    report.request_concentration = accumulator.summary();
+    write_private_concentration(output, &accumulator.private_report())?;
+    let sanitized_path = output.join("sanitized-research.json");
+    serde_json::to_writer_pretty(
+        File::create(&sanitized_path)
+            .with_context(|| format!("creating {}", sanitized_path.display()))?,
+        &report,
+    )?;
+    Ok(report)
+}
+
+/// Read the private concentration detail written by `hunt` or `concentration`.
+/// Callers must treat the contained paths and connection-peer IPs as sensitive.
+pub fn load_private_concentration(
+    path: &Path,
+) -> anyhow::Result<PrivateRequestConcentrationReport> {
+    let file = File::open(path).with_context(|| format!("opening {}", path.display()))?;
+    serde_json::from_reader(BufReader::new(file))
+        .with_context(|| format!("reading private concentration artifact {}", path.display()))
+}
+
+fn write_private_concentration(
+    output: &Path,
+    report: &PrivateRequestConcentrationReport,
+) -> anyhow::Result<()> {
+    let path = output.join("request-concentration.json");
+    serde_json::to_writer_pretty(
+        File::create(&path).with_context(|| format!("creating {}", path.display()))?,
+        report,
+    )?;
+    Ok(())
+}
+
+fn concentration_safety_note() -> &'static str {
+    "This is a request-volume distribution only. It is not a determination of a denial-of-service attempt, an attack, abuse, or an attacker identity. High concentration on one path can equally result from a popular or embedded resource, a misconfigured client, a crawler, a load test, or a denial-of-service attempt; distinguishing them requires human review. No raw request values, source IPs, hostnames, JA3, JA4, or headers are included here."
 }
 
 /// Compare aggregate match volume among predicates derived from the same

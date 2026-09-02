@@ -9,7 +9,7 @@ use predicates::prelude::PredicateBooleanExt;
 use predicates::str::contains;
 use shenron::event::{TelemetryProfile, TrustedProxy, TrustedProxySet};
 use shenron::production::{
-    ablation, count_hypotheses, explain_private_findings, historical_replay, hunt,
+    ablation, concentration, count_hypotheses, explain_private_findings, historical_replay, hunt,
     hunt_with_options, inspect, inspect_with_trusted_proxies, HuntOptions, HuntTimeRange,
 };
 use tempfile::tempdir;
@@ -73,6 +73,83 @@ fn ablation_cli_writes_an_aggregate_only_report() {
     assert!(!written.contains("secret-token"));
     assert!(!written.contains("internal.example.test"));
     assert!(!written.contains("198.51.100.1"));
+}
+
+#[test]
+fn concentration_writes_private_detail_without_leaking_it_to_sanitized_or_default_stdout() {
+    let directory = tempdir().unwrap();
+    let input = directory.path().join("access.log");
+    fs::write(
+        &input,
+        concat!(
+            "198.51.100.1 - - [01/Jan/2026:00:00:00 +0000] \"GET /private-hot-path HTTP/1.1\" 403 10 \"-\" \"fixture-agent\"\n",
+            "198.51.100.2 - - [01/Jan/2026:00:00:00 +0000] \"GET /private-hot-path HTTP/1.1\" 403 10 \"-\" \"fixture-agent\"\n",
+            "198.51.100.3 - - [01/Jan/2026:00:01:00 +0000] \"GET /private-hot-path HTTP/1.1\" 404 10 \"-\" \"fixture-agent\"\n",
+            "203.0.113.4 - - [01/Jan/2026:00:01:00 +0000] \"GET /other HTTP/1.1\" 200 5 \"-\" \"fixture-agent\"\n",
+        ),
+    )
+    .unwrap();
+    let output = directory.path().join("concentration-output");
+    let report = concentration(
+        &input,
+        &output,
+        TelemetryProfile::ApacheCombined,
+        HuntTimeRange::default(),
+    )
+    .unwrap();
+    assert_eq!(report.report_kind, "SANITIZED_REQUEST_CONCENTRATION");
+    assert_eq!(report.total_requests_analyzed, 4);
+    let top = report.request_concentration.top_path.as_ref().unwrap();
+    assert_eq!(top.requests, 3);
+    assert_eq!(top.distinct_source_ips, 3);
+    assert_eq!(top.request_share, 0.75);
+    assert_eq!(top.response_status_classes.client_error, 3);
+    assert_eq!(top.response_bytes, Some(30));
+    assert!(output.join("request-concentration.json").is_file());
+    assert!(output.join("sanitized-research.json").is_file());
+    let sanitized = fs::read_to_string(output.join("sanitized-research.json")).unwrap();
+    assert!(!sanitized.contains("/private-hot-path"));
+    assert!(!sanitized.contains("198.51.100.1"));
+    let private = fs::read_to_string(output.join("request-concentration.json")).unwrap();
+    assert!(private.contains("/private-hot-path"));
+    assert!(private.contains("198.51.100.1"));
+
+    let cli_output = directory.path().join("cli-concentration-output");
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "production",
+            "concentration",
+            "--input",
+            input.to_str().unwrap(),
+            "--format",
+            "apache",
+            "--output",
+            cli_output.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(contains("Request concentration (volume distribution only"))
+        .stdout(contains("/private-hot-path").not())
+        .stdout(contains("198.51.100.1").not());
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "production",
+            "concentration",
+            "--input",
+            input.to_str().unwrap(),
+            "--format",
+            "apache",
+            "--output",
+            directory.path().join("cli-show-output").to_str().unwrap(),
+            "--show-paths",
+            "--show-source-ips",
+        ])
+        .assert()
+        .success()
+        .stdout(contains("/private-hot-path"))
+        .stdout(contains("198.51.100.1"));
 }
 
 #[test]
@@ -349,6 +426,13 @@ fn hunt_uses_validated_matchers_and_separates_sensitive_output() {
         report.metrics.cve_related_request_matches
     );
     assert_eq!(report.metrics.unique_cves_observed, 1);
+    let concentration = report.metrics.request_concentration.as_ref().unwrap();
+    assert_eq!(concentration.total_requests, 2);
+    assert_eq!(
+        concentration.top_path.as_ref().unwrap().response_bytes,
+        None
+    );
+    assert!(output.path().join("request-concentration.json").is_file());
     assert_eq!(report.metrics.unique_cisa_kevs_observed, 1);
     assert_eq!(report.metrics.blocked, 1);
     assert_eq!(report.metrics.allowed_or_not_blocked, 1);

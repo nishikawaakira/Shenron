@@ -20,6 +20,7 @@ use shenron::{
         export as export_candidate, load as load_candidate, replay as replay_candidate,
         save as save_candidate, save_batch, Backend,
     },
+    concentration::PrivateRequestConcentrationReport,
     event::{TelemetryCapabilities, TelemetryProfile, TrustedProxy, TrustedProxySet},
     nuclei::{path_distinctiveness, PathDistinctiveness},
     output::{Finding, FindingWriter},
@@ -29,12 +30,14 @@ use shenron::{
     },
     production::{
         ablation_with_optional_kev as production_ablation,
+        concentration as production_concentration,
         count_hypotheses_with_optional_kev as production_count_hypotheses,
         explain_private_findings,
         historical_replay_with_optional_kev as production_historical_replay,
         hunt_with_options as production_hunt, inspect_with_trusted_proxies as production_inspect,
-        terminal_safe, AblationReport, CountHypothesisReport, HistoricalReplayReport, HuntOptions,
-        HuntTimeRange, HuntTriagePolicy, InspectionReport, SanitizedHuntReport,
+        load_private_concentration, terminal_safe, AblationReport, CountHypothesisReport,
+        HistoricalReplayReport, HuntOptions, HuntTimeRange, HuntTriagePolicy, InspectionReport,
+        SanitizedConcentrationReport, SanitizedHuntReport,
     },
     reputation::{load_asn_database, load_reputation_database, AsnDatabase, ReputationDatabase},
     sigma::load_rules,
@@ -192,6 +195,31 @@ enum ProductionCommand {
         /// Disable the Sigma pass entirely (Nuclei CVE hunting is unaffected).
         #[arg(long)]
         no_sigma: bool,
+    },
+    /// Measure bounded request-volume distribution without CTI inputs or detector matching.
+    Concentration {
+        #[arg(long)]
+        input: PathBuf,
+        #[arg(long, value_enum, default_value_t = InputFormat::AwsWaf)]
+        format: InputFormat,
+        /// Directory for the private detail and sanitized aggregate artifacts.
+        #[arg(long)]
+        output: PathBuf,
+        /// Inclusive UTC start time in RFC 3339 format.
+        #[arg(long, value_parser = parse_rfc3339_utc)]
+        from: Option<DateTime<Utc>>,
+        /// Inclusive UTC end time in RFC 3339 format.
+        #[arg(long, value_parser = parse_rfc3339_utc)]
+        to: Option<DateTime<Utc>>,
+        /// Display raw URI paths from the private artifact.
+        #[arg(long)]
+        show_paths: bool,
+        /// Display observed connection-peer IPs from the private artifact.
+        #[arg(long)]
+        show_source_ips: bool,
+        /// Maximum private path/IP entries to display. Use 0 to display all.
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
     },
     /// Compare aggregate match volume across predicates derived from one validated Nuclei IR. Never writes private findings.
     Ablation {
@@ -474,6 +502,36 @@ fn main() -> Result<()> {
                 let sanitized_path = output.join("sanitized-research.json");
                 serde_json::to_writer_pretty(File::create(&sanitized_path)?, &report)?;
                 print_hunt(&report, &sanitized_path);
+                Ok(())
+            }
+            ProductionCommand::Concentration {
+                input,
+                format,
+                output,
+                from,
+                to,
+                show_paths,
+                show_source_ips,
+                limit,
+            } => {
+                let report = production_concentration(
+                    &input,
+                    &output,
+                    format.telemetry_profile(),
+                    HuntTimeRange { from, to },
+                )?;
+                let private_path = output.join("request-concentration.json");
+                let private = (show_paths || show_source_ips)
+                    .then(|| load_private_concentration(&private_path))
+                    .transpose()?;
+                print_concentration(
+                    &report,
+                    &output.join("sanitized-research.json"),
+                    private.as_ref(),
+                    show_paths,
+                    show_source_ips,
+                    limit,
+                );
                 Ok(())
             }
             ProductionCommand::Ablation {
@@ -994,6 +1052,152 @@ fn print_hunt(report: &SanitizedHuntReport, sanitized_path: &Path) {
         metrics.sigma_rule_matches,
         metrics.distinct_sigma_rules,
     );
+    if let Some(concentration) = &metrics.request_concentration {
+        print_request_concentration_summary(concentration, "request-concentration.json");
+    }
+}
+
+fn print_concentration(
+    report: &SanitizedConcentrationReport,
+    sanitized_path: &Path,
+    private: Option<&PrivateRequestConcentrationReport>,
+    show_paths: bool,
+    show_source_ips: bool,
+    limit: usize,
+) {
+    let time_range = match (&report.filter_from, &report.filter_to) {
+        (None, None) => "Time filter:                all timestamps".to_owned(),
+        (from, to) => format!(
+            "Time filter:                {} to {}\nOutside range ignored:      {}\nTimestamp missing ignored:  {}",
+            from.as_deref().unwrap_or("beginning"),
+            to.as_deref().unwrap_or("end"),
+            report.requests_outside_time_range,
+            report.requests_without_timestamp_excluded,
+        ),
+    };
+    println!(
+        "Read-only request concentration complete.\nSanitized report:            {}\nPrivate detail:              {}\n\n{}\n\nTelemetry profile:          {:?}\nRequests analyzed:          {}\nFiles analyzed:             {}\nParse errors:               {}",
+        sanitized_path.display(),
+        sanitized_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join("request-concentration.json")
+            .display(),
+        time_range,
+        report.telemetry_profile,
+        report.total_requests_analyzed,
+        report.files_analyzed,
+        report.parse_errors,
+    );
+    print_request_concentration_summary(
+        &report.request_concentration,
+        "request-concentration.json",
+    );
+    if let Some(private) = private {
+        if show_paths {
+            println!("\nPrivate top request paths:");
+            for item in private.paths.iter().take(display_limit(limit)) {
+                println!(
+                    "  {}\n    Requests: {} ({:.1}%)\n    Distinct source IPs: {}\n    Response status classes: {}\n    Response bytes: {}",
+                    terminal_safe(&item.uri_path),
+                    item.summary.requests,
+                    item.summary.request_share * 100.0,
+                    item.summary.distinct_source_ips,
+                    format_status_classes(&item.summary.response_status_classes),
+                    item.summary
+                        .response_bytes
+                        .map(|value| value.to_string())
+                        .unwrap_or_else(|| "unavailable for this telemetry profile".to_owned()),
+                );
+            }
+        }
+        if show_source_ips {
+            println!("\nPrivate top observed connection-peer IPs:");
+            for item in private.source_ips.iter().take(display_limit(limit)) {
+                println!(
+                    "  {}\n    Requests: {}\n    Most-requested retained path: {}",
+                    terminal_safe(&item.source_ip),
+                    item.requests,
+                    item.most_requested_uri_path
+                        .as_deref()
+                        .map(terminal_safe)
+                        .unwrap_or_else(
+                            || "unavailable (not retained before tracking cap)".to_owned()
+                        ),
+                );
+            }
+        }
+    }
+}
+
+fn format_status_classes(counts: &shenron::concentration::StatusClassCounts) -> String {
+    [
+        ("1xx", counts.informational),
+        ("2xx", counts.success),
+        ("3xx", counts.redirection),
+        ("4xx", counts.client_error),
+        ("5xx", counts.server_error),
+        ("other", counts.other),
+        ("unavailable", counts.unavailable),
+    ]
+    .into_iter()
+    .filter(|(_, count)| *count != 0)
+    .map(|(label, count)| format!("{label}: {count}"))
+    .collect::<Vec<_>>()
+    .join(", ")
+}
+
+fn print_request_concentration_summary(
+    concentration: &shenron::concentration::RequestConcentrationSummary,
+    private_artifact_name: &str,
+) {
+    let top_path = concentration
+        .top_path
+        .as_ref()
+        .map(|top| {
+            format!(
+                "{:.1}% of {} requests, from {} distinct source IPs",
+                top.request_share * 100.0,
+                top.requests,
+                top.distinct_source_ips,
+            )
+        })
+        .unwrap_or_else(|| "unavailable (no URI paths retained)".to_owned());
+    let rate = &concentration.requests_per_minute;
+    let rate = match (
+        rate.peak_requests_per_minute,
+        rate.median_requests_per_minute,
+        rate.peak_to_median_ratio,
+    ) {
+        (Some(peak), Some(median), Some(ratio)) => {
+            format!("peak {peak} / median {median:.1} ({ratio:.1}x)")
+        }
+        _ => "unavailable (no timestamped events)".to_owned(),
+    };
+    println!(
+        "\nRequest concentration (volume distribution only; separate from the CVE metrics above):\n  This is not a determination of a denial-of-service attempt, attack, abuse, or attacker identity.\n  Distinct URI paths:        {}\n  Distinct source IPs:       {}\n  Top path share:            {}\n  Top 10 paths share:        {:.1}%\n  Top 10 source IPs share:   {:.1}%\n  Requests per minute:       {}\n  Requests without path:     {}\n  Requests without source IP:{}\n  Paths beyond tracking cap: {}\n  Source IPs beyond cap:     {}\n  Source/path pairs beyond cap: {}\n  Undated observations:      {}\n  Detail (paths and source IPs) written to the private artifact: {}",
+        concentration.distinct_uri_paths,
+        concentration.distinct_source_ips,
+        top_path,
+        concentration.top_ten_paths_request_share * 100.0,
+        concentration.top_ten_source_ips_request_share * 100.0,
+        rate,
+        concentration.requests_without_uri_path,
+        concentration.requests_without_source_ip,
+        concentration.paths_beyond_tracking_cap,
+        concentration.source_ips_beyond_tracking_cap,
+        concentration.source_path_pairs_beyond_tracking_cap,
+        concentration.requests_per_minute.observations_without_timestamp,
+        private_artifact_name,
+    );
+}
+
+fn display_limit(limit: usize) -> usize {
+    if limit == 0 {
+        usize::MAX
+    } else {
+        limit
+    }
 }
 
 fn print_ablation(report: &AblationReport, output_path: Option<&Path>) {

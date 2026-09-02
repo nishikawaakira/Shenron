@@ -80,6 +80,14 @@ cargo run --bin shenron -- production hunt \
 
 Alongside the CVE-anchored Nuclei pass, `hunt` runs a generic **Sigma** detection pass **on by default**, in the same single stream over the corpus. It loads supported Sigma rules from `--rules <DIR>`, or from the prepared `<data-dir>/sigma-rules` when present; a missing rules directory is not an error (the hunt continues with Nuclei only), and `--no-sigma` disables the pass. Sigma covers generic request-pattern TTPs — for example secret-file path enumeration (`.env`, `/.aws/credentials`, `/.git/config`) — that map to no CVE template and are otherwise invisible to a CVE-only hunt. Sigma findings are kept fully distinct from the CVE track: every finding carries a `source` (`nuclei` or `sigma`), the sanitized report counts `sigma_matched_requests` (distinct requests with a Sigma detection), `sigma_rule_matches` (rule matches, which can exceed the request count because one request can match several rules), `distinct_sigma_rules`, and `sigma_rules_evaluated` separately from the CVE metrics, and Sigma findings never feed `candidate build` (candidates stay CVE- and Nuclei-IR-anchored). See [Sigma detection inside hunt](sigma-in-hunt.md).
 
+Every hunt also measures [request concentration](request-concentration.md) in the
+same stream, independently of Nuclei and Sigma. The sanitized report receives
+counts and ratios only, while `request-concentration.json` is a private artifact
+that contains paths and observed connection-peer IPs. Use the CTI-independent
+`production concentration` command when this volume context is needed without a
+hunt. Neither command classifies concentration as a denial-of-service attempt,
+attack, abuse, compromise, or attacker identity.
+
 Long streaming commands (`hunt`, `ablation`, `replay`, `count-hypotheses`) emit a periodic progress heartbeat to stderr during a large scan. It reports only a running record count and a fixed command label — never a request value, IP address, or hostname — and stdout continues to carry findings and reports.
 
 `--output` must be outside the raw-input tree. When omitted, hunt writes to `./private-results/hunt-<UTC timestamp>/`. The command writes `private-findings.jsonl` locally with investigation evidence, including fields that may be sensitive. `sanitized-research.json` has aggregate CVE/KEV counts, time ranges, WAF outcomes, and cardinalities only; it never includes raw request values, IPs, hostnames, JA3/JA4 values, queries, or headers. The default `private-results/` location is ignored by Git, but that is only an additional safeguard and not a data-security boundary.
