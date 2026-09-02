@@ -10,6 +10,7 @@ use std::{
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use clap::{Parser, Subcommand, ValueEnum};
+use serde::Serialize;
 use walkdir::WalkDir;
 
 use shenron::{
@@ -307,7 +308,21 @@ enum ProductionCommand {
         /// Maximum individual findings to display. Use 0 to display all findings.
         #[arg(long, default_value_t = 20)]
         limit: usize,
+        /// Write the report to a file instead of stdout. Private analyst output.
+        #[arg(long)]
+        output: Option<PathBuf>,
+        /// Output format. `json` emits the same content the text mode was asked
+        /// to show, honoring the same --show-* gates.
+        #[arg(long, value_enum, default_value_t = ExplainOutputFormat::Text)]
+        output_format: ExplainOutputFormat,
     },
+}
+
+/// The rendering format for `production explain`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum ExplainOutputFormat {
+    Text,
+    Json,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -555,6 +570,8 @@ fn main() -> Result<()> {
                 triage_depth_observations,
                 triage_window,
                 limit,
+                output,
+                output_format,
             } => {
                 let asn_dataset = resolve_optional_local_dataset(asn_dataset, default_asn_dataset);
                 let reputation_dataset =
@@ -593,40 +610,73 @@ fn main() -> Result<()> {
                         .partition::<Vec<_>, _>(is_low_confidence_generic_match);
                     (findings, hidden)
                 };
-                if !hidden.is_empty() {
-                    let hidden_cves = hidden
-                        .iter()
-                        .flat_map(|finding| finding.cves.iter())
-                        .collect::<BTreeSet<_>>();
-                    println!(
-                        "Hidden {} low-confidence matches (response-unverified on generic paths such as /robots.txt), spanning {} CVEs. Pass --include-generic to show them.",
-                        hidden.len(),
-                        hidden_cves.len()
-                    );
+                let display = ExplainDisplay {
+                    show_request: show_request || show_evidence,
+                    show_evidence,
+                    show_source_ips,
+                    show_asn,
+                    show_fingerprints,
+                };
+                let triage = TriageContext {
+                    policy: TriagePolicy::new(
+                        triage_breadth_observations,
+                        triage_breadth_templates,
+                        triage_depth_observations,
+                        triage_window,
+                    ),
+                    capabilities,
+                };
+                match output_format {
+                    ExplainOutputFormat::Json => {
+                        let report = build_explain_report(
+                            &findings,
+                            &hidden,
+                            &display,
+                            waf_outcome.map(WafOutcomeFilter::label),
+                            limit,
+                            triage,
+                            asn_database.as_ref(),
+                            reputation_database.as_ref(),
+                        );
+                        let json = serde_json::to_string_pretty(&report)?;
+                        match output {
+                            Some(path) => {
+                                std::fs::write(&path, json).with_context(|| {
+                                    format!("writing explain report {}", path.display())
+                                })?;
+                                eprintln!("Explain report (JSON) written to: {}", path.display());
+                            }
+                            None => println!("{json}"),
+                        }
+                    }
+                    ExplainOutputFormat::Text => {
+                        if output.is_some() {
+                            anyhow::bail!(
+                                "--output writes a file only for --output-format json; the human-readable text report is written to stdout. Redirect it with `>`, or pass --output-format json to write --output."
+                            );
+                        }
+                        if !hidden.is_empty() {
+                            let hidden_cves = hidden
+                                .iter()
+                                .flat_map(|finding| finding.cves.iter())
+                                .collect::<BTreeSet<_>>();
+                            println!(
+                                "Hidden {} low-confidence matches (response-unverified on generic paths such as /robots.txt), spanning {} CVEs. Pass --include-generic to show them.",
+                                hidden.len(),
+                                hidden_cves.len()
+                            );
+                        }
+                        print_explanations(
+                            &findings,
+                            display,
+                            waf_outcome.map(WafOutcomeFilter::label),
+                            limit,
+                            triage,
+                            asn_database.as_ref(),
+                            reputation_database.as_ref(),
+                        );
+                    }
                 }
-                print_explanations(
-                    &findings,
-                    ExplainDisplay {
-                        show_request: show_request || show_evidence,
-                        show_evidence,
-                        show_source_ips,
-                        show_asn,
-                        show_fingerprints,
-                    },
-                    waf_outcome.map(WafOutcomeFilter::label),
-                    limit,
-                    TriageContext {
-                        policy: TriagePolicy::new(
-                            triage_breadth_observations,
-                            triage_breadth_templates,
-                            triage_depth_observations,
-                            triage_window,
-                        ),
-                        capabilities,
-                    },
-                    asn_database.as_ref(),
-                    reputation_database.as_ref(),
-                );
                 Ok(())
             }
         },
@@ -1034,6 +1084,339 @@ struct TriageContext {
     capabilities: TelemetryCapabilities,
 }
 
+/// The machine-readable `production explain` report. It mirrors the text output
+/// section for section and honors the identical `--show-*` privacy gates: a
+/// section that the text mode would not print is omitted here too, so no private
+/// value is ever emitted that the analyst did not explicitly request.
+#[derive(Serialize)]
+struct ExplainReport {
+    report_kind: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    waf_outcome_filter: Option<String>,
+    total_mappings: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    hidden_low_confidence: Option<HiddenSummaryJson>,
+    request_paths: Vec<PathSummaryRow>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    connection_ip_groups: Option<Vec<GroupJson>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    asn_groups: Option<AsnGroupsJson>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ja4_groups: Option<Vec<GroupJson>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    individual_findings: Option<Vec<FindingJson>>,
+}
+
+#[derive(Serialize)]
+struct HiddenSummaryJson {
+    count: usize,
+    cve_count: usize,
+}
+
+#[derive(Serialize)]
+struct AsnGroupsJson {
+    groups: Vec<GroupJson>,
+    unresolved_findings: usize,
+}
+
+#[derive(Serialize)]
+struct GroupJson {
+    key: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    identity: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    asn_org: Option<String>,
+    triage_basis: Option<&'static str>,
+    requires_investigation: bool,
+    distinct_templates: usize,
+    distinct_cves: usize,
+    distinct_observations: usize,
+    matching_records: usize,
+    spread: usize,
+    request_specific_observations: usize,
+    response_unverified_observations: usize,
+    score: shenron::triage::BehaviorScore,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reputation: Option<ReputationJson>,
+}
+
+#[derive(Serialize)]
+struct ReputationJson {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    resolved_asn: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    resolved_asn_org: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    score: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tier: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    scope: Option<&'static str>,
+    hits: Vec<shenron::reputation::ReputationHit>,
+}
+
+/// A single finding view. Request values appear only under `--show-request`; the
+/// full private evidence appears only under `--show-evidence`.
+#[derive(Serialize)]
+struct FindingJson {
+    cves: Vec<String>,
+    template_id: String,
+    detectability: shenron::nuclei::Detectability,
+    request_specificity: shenron::nuclei::RequestSpecificity,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    timestamp: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    waf_action: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    request: Option<FindingRequestJson>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    evidence: Option<FindingEvidenceJson>,
+}
+
+/// Request targets, gated behind `--show-request`.
+#[derive(Serialize)]
+struct FindingRequestJson {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    method: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    uri_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    uri_query: Option<String>,
+}
+
+/// Full private evidence, gated behind `--show-evidence`.
+#[derive(Serialize)]
+struct FindingEvidenceJson {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_ip: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    client_ip: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    host: Option<String>,
+    headers: Vec<shenron::event::HttpHeader>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ja3: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ja4: Option<String>,
+    waf_labels: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    waf_rule_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    waf_rule_type: Option<String>,
+    waf_non_terminating_rule_ids: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    request_id: Option<String>,
+}
+
+fn reputation_json(
+    reputation: shenron::reputation::EntityReputation,
+    asn: Option<(u32, String)>,
+) -> ReputationJson {
+    ReputationJson {
+        resolved_asn: asn.as_ref().map(|(number, _)| *number),
+        resolved_asn_org: asn.map(|(_, org)| org),
+        score: reputation.score,
+        tier: reputation.tier.map(|tier| tier.label()),
+        scope: reputation.score_scope,
+        hits: reputation.hits,
+    }
+}
+
+fn base_group_json(group: &shenron::triage::EntityGroup) -> GroupJson {
+    GroupJson {
+        key: group.key.clone(),
+        identity: group.identity.map(|identity| identity.label()),
+        asn_org: group.asn_org.clone(),
+        triage_basis: group.triage_basis,
+        requires_investigation: group.requires_investigation(),
+        distinct_templates: group.distinct_templates,
+        distinct_cves: group.distinct_cves,
+        distinct_observations: group.distinct_observations,
+        matching_records: group.matching_records,
+        spread: group.spread,
+        request_specific_observations: group.request_specific_observations,
+        response_unverified_observations: group.response_unverified_observations,
+        score: group.score.clone(),
+        reputation: None,
+    }
+}
+
+fn connection_ip_group_json(
+    group: &shenron::triage::EntityGroup,
+    asn_database: Option<&AsnDatabase>,
+    reputation_database: Option<&ReputationDatabase>,
+) -> GroupJson {
+    let mut json = base_group_json(group);
+    if let Ok(ip) = group.key.parse::<IpAddr>() {
+        let asn = asn_database
+            .and_then(|database| database.lookup(ip))
+            .map(|info| (info.asn, info.org.clone()));
+        if let Some(database) = reputation_database {
+            let reputation = database.lookup(ip, asn.as_ref().map(|(number, _)| *number));
+            json.reputation = Some(reputation_json(reputation, asn));
+        } else if let Some((number, org)) = asn {
+            json.reputation = Some(ReputationJson {
+                resolved_asn: Some(number),
+                resolved_asn_org: Some(org),
+                score: None,
+                tier: None,
+                scope: None,
+                hits: Vec::new(),
+            });
+        }
+    }
+    json
+}
+
+fn asn_group_json(
+    group: &shenron::triage::EntityGroup,
+    reputation_database: Option<&ReputationDatabase>,
+) -> GroupJson {
+    let mut json = base_group_json(group);
+    if let Some(database) = reputation_database {
+        if let Ok(asn) = group.key.parse::<u32>() {
+            json.reputation = Some(reputation_json(database.lookup_asn(asn), None));
+        }
+    }
+    json
+}
+
+fn finding_json(
+    finding: &shenron::production::FindingExplanation,
+    display: &ExplainDisplay,
+) -> FindingJson {
+    let request = display.show_request.then(|| FindingRequestJson {
+        method: finding.method.clone(),
+        uri_path: finding.uri_path.clone(),
+        uri_query: finding.uri_query.clone(),
+    });
+    let evidence = display.show_evidence.then(|| FindingEvidenceJson {
+        source_ip: finding.source_ip.clone(),
+        client_ip: finding.client_ip.clone(),
+        host: finding.host.clone(),
+        headers: finding.headers.clone(),
+        ja3: finding.ja3.clone(),
+        ja4: finding.ja4.clone(),
+        waf_labels: finding.waf_labels.clone(),
+        waf_rule_id: finding.waf_rule_id.clone(),
+        waf_rule_type: finding.waf_rule_type.clone(),
+        waf_non_terminating_rule_ids: finding.waf_non_terminating_rule_ids.clone(),
+        request_id: finding.request_id.clone(),
+    });
+    FindingJson {
+        cves: finding.cves.clone(),
+        template_id: finding.template_id.clone(),
+        detectability: finding.detectability,
+        request_specificity: finding.request_specificity,
+        timestamp: finding.timestamp.clone(),
+        waf_action: finding.waf_action.clone(),
+        request,
+        evidence,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_explain_report(
+    findings: &[shenron::production::FindingExplanation],
+    hidden: &[shenron::production::FindingExplanation],
+    display: &ExplainDisplay,
+    waf_outcome_filter: Option<&str>,
+    limit: usize,
+    triage: TriageContext,
+    asn_database: Option<&AsnDatabase>,
+    reputation_database: Option<&ReputationDatabase>,
+) -> ExplainReport {
+    let truncate = |mut rows: Vec<GroupJson>| {
+        if limit != 0 {
+            rows.truncate(limit);
+        }
+        rows
+    };
+    let mut request_paths = explanation_summary(findings);
+    if limit != 0 {
+        request_paths.truncate(limit);
+    }
+
+    let hidden_low_confidence = (!hidden.is_empty()).then(|| HiddenSummaryJson {
+        count: hidden.len(),
+        cve_count: hidden
+            .iter()
+            .flat_map(|finding| finding.cves.iter())
+            .collect::<BTreeSet<_>>()
+            .len(),
+    });
+
+    let connection_ip_groups = display.show_source_ips.then(|| {
+        truncate(
+            entity_groups(
+                findings,
+                EntityDimension::ConnectionIp,
+                triage.policy,
+                triage.capabilities,
+            )
+            .iter()
+            .map(|group| connection_ip_group_json(group, asn_database, reputation_database))
+            .collect(),
+        )
+    });
+
+    let asn_groups = display
+        .show_asn
+        .then_some(asn_database)
+        .flatten()
+        .map(|database| {
+            let result = asn_entity_groups(findings, triage.policy, database, triage.capabilities);
+            AsnGroupsJson {
+                groups: truncate(
+                    result
+                        .groups
+                        .iter()
+                        .map(|group| asn_group_json(group, reputation_database))
+                        .collect(),
+                ),
+                unresolved_findings: result.unresolved_findings,
+            }
+        });
+
+    let ja4_groups = display.show_fingerprints.then(|| {
+        truncate(
+            entity_groups(
+                findings,
+                EntityDimension::Ja4,
+                triage.policy,
+                triage.capabilities,
+            )
+            .iter()
+            .map(base_group_json)
+            .collect(),
+        )
+    });
+
+    let individual_findings = (display.show_request || display.show_evidence).then(|| {
+        let shown = if limit == 0 {
+            findings
+        } else {
+            &findings[..findings.len().min(limit)]
+        };
+        shown
+            .iter()
+            .map(|finding| finding_json(finding, display))
+            .collect()
+    });
+
+    ExplainReport {
+        report_kind: "EXPLAIN_PRIVATE_TRIAGE",
+        waf_outcome_filter: waf_outcome_filter.map(str::to_owned),
+        total_mappings: findings.len(),
+        hidden_low_confidence,
+        request_paths,
+        connection_ip_groups,
+        asn_groups,
+        ja4_groups,
+        individual_findings,
+    }
+}
+
 fn print_explanations(
     findings: &[shenron::production::FindingExplanation],
     display: ExplainDisplay,
@@ -1216,7 +1599,23 @@ fn print_explanations(
     }
 }
 
-fn print_explanation_summary(findings: &[shenron::production::FindingExplanation], limit: usize) {
+/// One request-path row of the explain summary, as data so both the text and
+/// JSON renderers share the identical bundling and ordering.
+#[derive(Serialize)]
+struct PathSummaryRow {
+    method: Option<String>,
+    path: Option<String>,
+    matches: usize,
+    cves: Vec<String>,
+    template_count: usize,
+    distinctiveness: &'static str,
+}
+
+/// Bundle findings by (method, path) with distinct CVEs and templates, sorted
+/// by match count. Returns the full set; callers apply `limit` for display.
+fn explanation_summary(
+    findings: &[shenron::production::FindingExplanation],
+) -> Vec<PathSummaryRow> {
     let mut counts = BTreeMap::<
         (Option<String>, Option<String>),
         (usize, BTreeSet<String>, BTreeSet<String>),
@@ -1238,30 +1637,45 @@ fn print_explanation_summary(findings: &[shenron::production::FindingExplanation
             .then_with(|| left.0 .1.cmp(&right.0 .1))
             .then_with(|| left.0 .0.cmp(&right.0 .0))
     });
+    summary
+        .into_iter()
+        .map(|((method, path), (matches, cves, templates))| {
+            let distinctiveness = match path_distinctiveness(path.as_deref().unwrap_or_default()) {
+                PathDistinctiveness::Generic => "generic",
+                PathDistinctiveness::Distinctive => "distinctive",
+            };
+            PathSummaryRow {
+                method,
+                path,
+                matches,
+                cves: cves.into_iter().collect(),
+                template_count: templates.len(),
+                distinctiveness,
+            }
+        })
+        .collect()
+}
+
+fn print_explanation_summary(findings: &[shenron::production::FindingExplanation], limit: usize) {
+    let summary = explanation_summary(findings);
     let displayed = if limit == 0 {
         summary.as_slice()
     } else {
         &summary[..summary.len().min(limit)]
     };
     println!("\nTop request paths (CVEs bundled per path):");
-    for ((method, path), (count, cves, templates)) in displayed {
-        let method = method.as_deref().unwrap_or("<unavailable>");
-        let path = path.as_deref().unwrap_or("<unavailable>");
-        let distinctiveness = path_distinctiveness(path);
-        let cve_count = cves.len();
-        let cves = cves.iter().cloned().collect::<Vec<_>>().join(", ");
+    for row in displayed {
+        let method = row.method.as_deref().unwrap_or("<unavailable>");
+        let path = row.path.as_deref().unwrap_or("<unavailable>");
         println!(
             "{} {}\n  Matches: {}  |  CVEs ({}): {}\n  Templates: {}  |  Path: {}",
             terminal_safe(method),
             terminal_safe(path),
-            count,
-            cve_count,
-            terminal_safe(&cves),
-            templates.len(),
-            match distinctiveness {
-                PathDistinctiveness::Generic => "generic",
-                PathDistinctiveness::Distinctive => "distinctive",
-            },
+            row.matches,
+            row.cves.len(),
+            terminal_safe(&row.cves.join(", ")),
+            row.template_count,
+            row.distinctiveness,
         );
     }
     if displayed.len() < summary.len() {

@@ -1321,6 +1321,123 @@ fn explain_scores_behavior_and_groups_shared_ja4_fingerprints() {
         ));
 }
 
+#[test]
+fn explain_json_omits_private_evidence_without_show_flags() {
+    let directory = tempdir().unwrap();
+    let findings_path = directory.path().join("private-findings.jsonl");
+    let line = r#"{"template_id":"tpl-a","cves":["CVE-2024-0001"],"detectability":"HIGH","request_specificity":"request-specific","timestamp":"2026-08-24T00:00:01+00:00","source_ip":"203.0.113.7","client_ip":null,"host":"secret.example","method":"GET","uri_path":"/.env","uri_query":"token=abc","headers":[{"name":"User-Agent","value":"scanner-secret/1"}],"ja3":null,"ja4":"t13d1516h2_secret","waf_action":"ALLOW","request_id":"req-secret-1","log_source":"aws_waf"}"#;
+    fs::write(&findings_path, line).unwrap();
+
+    let stdout = Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "production",
+            "explain",
+            "--findings",
+            findings_path.to_str().unwrap(),
+            "--output-format",
+            "json",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: serde_json::Value = serde_json::from_slice(&stdout).unwrap();
+    assert_eq!(json["report_kind"], "EXPLAIN_PRIVATE_TRIAGE");
+    // Sections gated behind --show-* flags are absent without them.
+    assert!(json.get("individual_findings").is_none());
+    assert!(json.get("connection_ip_groups").is_none());
+    assert!(json.get("asn_groups").is_none());
+    assert!(json.get("ja4_groups").is_none());
+    // No private request value, IP, host, header, JA3/JA4, or request ID leaks
+    // into the default JSON. (Aggregate request paths are the intended summary.)
+    let text = String::from_utf8(stdout).unwrap();
+    for secret in [
+        "203.0.113.7",
+        "secret.example",
+        "t13d1516h2_secret",
+        "req-secret-1",
+        "token=abc",
+        "scanner-secret",
+    ] {
+        assert!(
+            !text.contains(secret),
+            "private value leaked into JSON: {secret}"
+        );
+    }
+}
+
+#[test]
+fn explain_json_round_trips_score_components() {
+    let directory = tempdir().unwrap();
+    let findings_path = directory.path().join("private-findings.jsonl");
+    let record = |template: &str, cve: &str, path: &str| {
+        format!(
+            r#"{{"template_id":"{template}","cves":["{cve}"],"detectability":"HIGH","request_specificity":"request-specific","timestamp":"2026-08-24T00:00:01+00:00","source_ip":"203.0.113.7","client_ip":null,"host":"h.example","method":"GET","uri_path":"{path}","uri_query":null,"headers":[],"ja3":null,"ja4":null,"waf_action":"ALLOW","request_id":"{template}-1","log_source":"aws_waf"}}"#
+        )
+    };
+    let lines = [
+        record("tpl-a", "CVE-2024-0001", "/.env"),
+        record("tpl-b", "CVE-2024-0002", "/.git/config"),
+        record("tpl-c", "CVE-2024-0003", "/admin-console.php"),
+    ];
+    fs::write(&findings_path, lines.join("\n")).unwrap();
+
+    let stdout = Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "production",
+            "explain",
+            "--findings",
+            findings_path.to_str().unwrap(),
+            "--show-source-ips",
+            "--output-format",
+            "json",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: serde_json::Value = serde_json::from_slice(&stdout).unwrap();
+    let group = json["connection_ip_groups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|group| group["key"] == "203.0.113.7")
+        .expect("the scored IP group is present");
+    let components = group["score"]["components"].as_array().unwrap();
+    // Every component survives with its name, points, and detail.
+    let names = components
+        .iter()
+        .map(|component| {
+            assert!(
+                component["points"].is_number(),
+                "missing points: {component}"
+            );
+            assert!(
+                component["detail"].as_str().is_some_and(|d| !d.is_empty()),
+                "missing detail: {component}"
+            );
+            component["name"].as_str().unwrap().to_owned()
+        })
+        .collect::<Vec<_>>();
+    assert!(names.contains(&"template-breadth".to_owned()));
+    assert!(names.contains(&"path-distinctiveness".to_owned()));
+    assert!(group["score"]["total"].is_number());
+    assert!(group["score"]["reachable_max"].is_number());
+
+    // Round-trip: re-serialize the parsed group and confirm the components are
+    // stable across a serialize/parse cycle.
+    let reparsed: serde_json::Value =
+        serde_json::from_str(&serde_json::to_string(group).unwrap()).unwrap();
+    assert_eq!(
+        reparsed["score"]["components"],
+        group["score"]["components"]
+    );
+}
+
 fn parse_utc(value: &str) -> DateTime<Utc> {
     DateTime::parse_from_rfc3339(value)
         .unwrap()

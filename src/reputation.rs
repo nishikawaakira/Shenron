@@ -14,7 +14,7 @@ use std::{
 
 use anyhow::{anyhow, bail, Context, Result};
 use ipnet::IpNet;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::triage::{AsnResolver, ResolvedAsn, ScoreTier};
@@ -246,7 +246,7 @@ fn required_header(headers: &csv::StringRecord, aliases: &[&str], path: &Path) -
 }
 
 /// One third-party reputation opinion from an analyst-supplied JSONL file.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ReputationHit {
     pub scope: &'static str,
     pub value: String,
