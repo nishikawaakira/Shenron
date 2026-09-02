@@ -162,3 +162,13 @@ cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test
 ```
+
+## License
+
+Shenron is licensed under the GNU Affero General Public License v3.0
+(`AGPL-3.0-only`), aligning with [Hayabusa](https://github.com/Yamato-Security/hayabusa).
+See [LICENSE](LICENSE) for the full text. Because this is the AGPL, offering
+the software's functionality to users over a network obliges you to make the
+corresponding source available to those users (AGPL section 13).
+
+Copyright (C) 2026 the Shenron authors.

@@ -165,3 +165,13 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 make validate
 ```
+
+## ライセンス
+
+Shenron は GNU Affero General Public License v3.0（`AGPL-3.0-only`）で提供されます。
+これは [Hayabusa](https://github.com/Yamato-Security/hayabusa) に合わせたものです。
+全文は [LICENSE](LICENSE) を参照してください。AGPL のため、ネットワーク越しに本ソフトウェアの
+機能を利用者へ提供する場合は、その利用者に対応するソースコードを提供する義務が生じます
+（AGPL 第13条）。
+
+Copyright (C) 2026 the Shenron authors.
