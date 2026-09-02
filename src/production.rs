@@ -208,6 +208,13 @@ pub struct AblationReport {
     pub requests_without_timestamp_excluded: usize,
     pub parse_errors: usize,
     pub strategies: Vec<AblationStrategyVolume>,
+    /// Total validated detections compared across the rungs.
+    pub validated_detections: usize,
+    /// Detections with no query condition. The `path_and_query` rung cannot
+    /// narrow these: they pass it exactly as they pass `path_only`. This is the
+    /// honest reason the rung often adds almost nothing over `path_only`, rather
+    /// than an independent narrowing step.
+    pub path_and_query_detections_without_query_condition: usize,
     /// Behavior-triage volume is intentionally deferred because its current
     /// implementation is CLI-local rather than shared Detection IR logic.
     pub deferred_strategy: String,
@@ -674,8 +681,10 @@ pub fn hunt_with_options(
     let mut cves = BTreeMap::<String, CveAccumulator>::new();
     let mut all_sources = BTreeSet::new();
     let mut all_ja4s = BTreeSet::new();
+    let mut progress = ProgressReporter::new("hunt");
     for path in files {
         stream_events_with_trusted_proxies(&path, telemetry_profile, &trusted_proxies, |result| {
+            progress.tick();
             let event = match result {
                 Ok(event) => event,
                 Err(_) => {
@@ -873,8 +882,10 @@ pub fn ablation_with_optional_kev(
     let mut requests_without_timestamp_excluded = 0;
     let mut parse_errors = 0;
     let mut accumulators = std::array::from_fn::<_, 5, _>(|_| AblationAccumulator::default());
+    let mut progress = ProgressReporter::new("ablation");
     for path in &files {
         stream_events(path, telemetry_profile, |result| {
+            progress.tick();
             let event = match result {
                 Ok(event) => event,
                 Err(_) => {
@@ -946,6 +957,11 @@ pub fn ablation_with_optional_kev(
         requests_without_timestamp_excluded,
         parse_errors,
         strategies,
+        validated_detections: detections.len(),
+        path_and_query_detections_without_query_condition: detections
+            .iter()
+            .filter(|detection| !detection.has_query_condition())
+            .count(),
         deferred_strategy: "nuclei_ir_behavior_triaged (TODO: behavior-triage volume requires shared library logic)".to_owned(),
     })
 }
@@ -1021,8 +1037,10 @@ pub fn historical_replay_with_optional_kev(
     let mut aggregate_outcomes = ReplayOutcomeCounts::default();
     let mut aggregate_known_matched_request_ids = BTreeSet::new();
 
+    let mut progress = ProgressReporter::new("replay");
     for path in &files {
         stream_events(path, telemetry_profile, |result| {
+            progress.tick();
             let event = match result {
                 Ok(event) => event,
                 Err(_) => {
@@ -1206,8 +1224,10 @@ pub fn count_hypotheses_with_optional_kev(
     let mut requests_outside_time_range = 0;
     let mut requests_without_timestamp_excluded = 0;
     let mut parse_errors = 0;
+    let mut progress = ProgressReporter::new("count-hypotheses");
     for path in &files {
         stream_events(path, telemetry_profile, |result| {
+            progress.tick();
             let event = match result {
                 Ok(event) => event,
                 Err(_) => {
@@ -1642,6 +1662,35 @@ fn is_gzip(path: &Path) -> bool {
 fn event_reader(path: &Path) -> anyhow::Result<Box<dyn Read>> {
     let file = File::open(path).with_context(|| format!("opening {}", path.display()))?;
     Ok(maybe_gzip_reader(file, is_gzip(path)))
+}
+
+/// Emit a periodic progress heartbeat to stderr during a long corpus scan. It
+/// reports only a running record count and a fixed command label; it never
+/// includes request values, IP addresses, hostnames, or any other telemetry.
+pub(crate) struct ProgressReporter {
+    label: &'static str,
+    processed: u64,
+    interval: u64,
+}
+
+impl ProgressReporter {
+    pub(crate) fn new(label: &'static str) -> Self {
+        Self {
+            label,
+            processed: 0,
+            interval: 500_000,
+        }
+    }
+
+    pub(crate) fn tick(&mut self) {
+        self.processed += 1;
+        if self.processed.is_multiple_of(self.interval) {
+            eprintln!(
+                "progress: {} scanned {} records so far...",
+                self.label, self.processed
+            );
+        }
+    }
 }
 
 pub(crate) fn stream_events<F>(

@@ -25,7 +25,12 @@ more detections. The report also shows distinct event × CVE matches.
 
 1. `path_only`: the normalized URI path equals a detection path.
 2. `path_and_query`: path equality, plus a required query substring where the
-   Detection IR has one.
+   Detection IR has one. A detection with no query condition passes this rung
+   exactly as it passes `path_only`, so the rung cannot narrow it. The report
+   therefore states how many of the validated detections have no query condition
+   (`path_and_query_detections_without_query_condition` of `validated_detections`);
+   this is the honest reason `path_and_query` often adds almost nothing over
+   `path_only`, rather than it being an independent narrowing step.
 3. `path_query_headers`: path/query conditions, plus every explicit Detection
    IR header condition.
 4. `nuclei_ir`: the full request-side IR, including method and fragment

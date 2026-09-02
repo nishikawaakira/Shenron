@@ -430,6 +430,13 @@ impl ValidatedNucleiDetection {
         self.detection.matches_path_query_headers(event)
     }
 
+    /// Whether this detection carries a query condition. Detections without one
+    /// pass the ablation `path_and_query` rung unchanged from `path_only`, so
+    /// the rung does not narrow them.
+    pub fn has_query_condition(&self) -> bool {
+        self.detection.query.is_some()
+    }
+
     /// Request-side specificity only. It intentionally does not claim that an
     /// attack occurred, a product is vulnerable, or a response was verified.
     pub fn request_specificity(&self) -> RequestSpecificity {

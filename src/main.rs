@@ -948,6 +948,10 @@ fn print_ablation(report: &AblationReport, output_path: Option<&Path>) {
             strategy.distinct_event_cve_matches,
         );
     }
+    println!(
+        "\nThe path_and_query rung does not narrow detections that have no query condition: {} of {} validated detections have none and pass it unchanged from path_only.",
+        report.path_and_query_detections_without_query_condition, report.validated_detections,
+    );
     println!("\nDeferred strategy:          {}", report.deferred_strategy);
     if let Some(path) = output_path {
         println!("Aggregate-only JSON report:  {}", path.display());

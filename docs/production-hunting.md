@@ -70,6 +70,8 @@ cargo run --bin shenron -- production hunt \
   --to 2026-04-30T23:59:59Z
 ```
 
+Long streaming commands (`hunt`, `ablation`, `replay`, `count-hypotheses`) emit a periodic progress heartbeat to stderr during a large scan. It reports only a running record count and a fixed command label — never a request value, IP address, or hostname — and stdout continues to carry findings and reports.
+
 `--output` must be outside the raw-input tree. When omitted, hunt writes to `./private-results/hunt-<UTC timestamp>/`. The command writes `private-findings.jsonl` locally with investigation evidence, including fields that may be sensitive. `sanitized-research.json` has aggregate CVE/KEV counts, time ranges, WAF outcomes, and cardinalities only; it never includes raw request values, IPs, hostnames, JA3/JA4 values, queries, or headers. The default `private-results/` location is ignored by Git, but that is only an additional safeguard and not a data-security boundary.
 
 Every hunt also writes `run-manifest.json` beside the sanitized report. It records the Shenron version, generated time, telemetry profile, Nuclei report revision and provenance, optional KEV/Nuclei report byte lengths, trusted-proxy configuration, fixed triage baseline, time filters, and aggregate exclusion counts. The Nuclei report and, when supplied, the KEV report receive streaming SHA-256 values so reviewers can verify that frozen research inputs are identical; the templates directory remains identified by its pinned Nuclei revision rather than a directory-wide hash. This makes a run reviewable and reproducible without placing raw telemetry in the artifact: the manifest never contains raw request values, client or peer IP addresses, hosts, URI/query values, headers, or JA3/JA4 values.

@@ -197,7 +197,7 @@ enum NucleiCommand {
         report: Option<PathBuf>,
         /// Evaluate one source profile; omit to preserve existing AWS WAF coverage output.
         #[arg(long, value_enum)]
-        telemetry: Option<TelemetryFormatArg>,
+        telemetry: Option<AnalysisProfileArg>,
     },
     /// Compare passive CVE detectability across documented telemetry profiles.
     CompareTelemetry {
@@ -306,12 +306,24 @@ impl From<TelemetryFormatArg> for SyntheticFormat {
         }
     }
 }
-impl From<TelemetryFormatArg> for TelemetryProfile {
-    fn from(value: TelemetryFormatArg) -> Self {
+/// The telemetry profile a lab-side analysis (`nuclei coverage --telemetry`)
+/// evaluates. Unlike synthetic generation, analysis can target the vhost profile
+/// a hunt uses, so this mirrors the full set `shenron production` exposes.
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum AnalysisProfileArg {
+    AwsWaf,
+    Nginx,
+    Apache,
+    ApacheVhost,
+}
+
+impl From<AnalysisProfileArg> for TelemetryProfile {
+    fn from(value: AnalysisProfileArg) -> Self {
         match value {
-            TelemetryFormatArg::AwsWaf => Self::AwsWaf,
-            TelemetryFormatArg::Nginx => Self::NginxCombined,
-            TelemetryFormatArg::Apache => Self::ApacheCombined,
+            AnalysisProfileArg::AwsWaf => Self::AwsWaf,
+            AnalysisProfileArg::Nginx => Self::NginxCombined,
+            AnalysisProfileArg::Apache => Self::ApacheCombined,
+            AnalysisProfileArg::ApacheVhost => Self::ApacheVhostCombined,
         }
     }
 }
