@@ -17,9 +17,9 @@ shenron-lab setup
 
 The default data directory is `$SHENRON_DATA_DIR` when set, otherwise
 `$XDG_DATA_HOME/shenron` and then `~/.local/share/shenron`. Update writes
-`nuclei-templates/`, `nuclei-report.json`, `reputation.jsonl`, and
-`asn-ranges.tsv` there. A full hunt then needs only the local input and its
-explicit format:
+`nuclei-templates/`, `nuclei-report.json`, `reputation.jsonl`,
+`asn-ranges.tsv`, and the bundled Sigma pack under `sigma-rules/shenron-pack/`
+there. A full hunt then needs only the local input and its explicit format:
 
 ```bash
 cargo run --bin shenron -- production hunt \
@@ -37,9 +37,17 @@ to `production ablation`, `production replay`, and `production count-hypotheses`
 refreshes public Nuclei templates and their frozen report together with public
 reputation and ASN inputs in one local data directory; it never uploads logs,
 findings, observed IPs, request values, or other customer data. Use
-`--skip-nuclei`, `--skip-reputation`, or `--skip-asn` to omit a family. The
-existing `nuclei update` and `reputation update` commands remain available for
-individual refreshes. The main `shenron` analysis binary remains offline.
+`--skip-nuclei`, `--skip-reputation`, `--skip-asn`, or `--skip-sigma` to omit a
+family. `setup` installs the bundled, Shenron-supported Sigma pack into
+`<data-dir>/sigma-rules/shenron-pack/` (no network needed for it), which the
+default-on hunt Sigma pass then picks up automatically. Pass
+`--sigma-source <git-url>` (repeatable; suggested public source
+`https://github.com/SigmaHQ/sigma.git`) to also fetch that repository's
+`rules/web` subtree — download-only, into a sibling `sigma-rules/external/`
+directory, with only the supported subset loaded and each source's license the
+user's responsibility. The existing `nuclei update` and `reputation update`
+commands remain available for individual refreshes. The main `shenron` analysis
+binary remains offline.
 
 By default `setup` writes to the standard data directory that `hunt`, `explain`,
 and the other analysis commands read automatically. If you pass `--data-dir` to

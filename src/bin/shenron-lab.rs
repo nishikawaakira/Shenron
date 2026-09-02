@@ -114,6 +114,15 @@ enum Command {
         /// Skip the public IPv4 ASN range dataset.
         #[arg(long)]
         skip_asn: bool,
+        /// Skip installing the bundled Sigma rule pack (and fetching any --sigma-source).
+        #[arg(long)]
+        skip_sigma: bool,
+        /// Also fetch external Sigma rules from this git repository's `rules/web`
+        /// subtree (download-only, public rules). Repeat for several sources. The
+        /// suggested public source is https://github.com/SigmaHQ/sigma.git; review
+        /// each source's license before relying on its rules.
+        #[arg(long)]
+        sigma_source: Vec<String>,
         /// Local directory for every prepared input.
         #[arg(long)]
         data_dir: Option<PathBuf>,
@@ -531,6 +540,8 @@ fn main() -> Result<()> {
             skip_nuclei,
             skip_reputation,
             skip_asn,
+            skip_sigma,
+            sigma_source,
             data_dir,
             nuclei_repo,
             nuclei_revision,
@@ -541,7 +552,7 @@ fn main() -> Result<()> {
             iptoasn_source,
         } => run_setup(
             &data_dir.unwrap_or_else(default_data_dir),
-            setup_plan(skip_nuclei, skip_reputation, skip_asn),
+            setup_plan(skip_nuclei, skip_reputation, skip_asn, skip_sigma),
             &nuclei_repo,
             nuclei_revision,
             ReputationSources {
@@ -551,6 +562,7 @@ fn main() -> Result<()> {
                 blocklist_de: &blocklist_de_source,
                 iptoasn: &iptoasn_source,
             },
+            &sigma_source,
         )?,
         Command::MinimumTelemetry {
             templates,
@@ -678,13 +690,20 @@ struct SetupPlan {
     include_nuclei: bool,
     include_reputation: bool,
     include_asn: bool,
+    include_sigma: bool,
 }
 
-fn setup_plan(skip_nuclei: bool, skip_reputation: bool, skip_asn: bool) -> SetupPlan {
+fn setup_plan(
+    skip_nuclei: bool,
+    skip_reputation: bool,
+    skip_asn: bool,
+    skip_sigma: bool,
+) -> SetupPlan {
     SetupPlan {
         include_nuclei: !skip_nuclei,
         include_reputation: !skip_reputation,
         include_asn: !skip_asn,
+        include_sigma: !skip_sigma,
     }
 }
 
@@ -694,8 +713,10 @@ fn run_setup(
     nuclei_repo: &str,
     nuclei_revision: Option<String>,
     reputation_sources: ReputationSources<'_>,
+    sigma_sources: &[String],
 ) -> Result<()> {
-    if !plan.include_nuclei && !plan.include_reputation && !plan.include_asn {
+    if !plan.include_nuclei && !plan.include_reputation && !plan.include_asn && !plan.include_sigma
+    {
         println!("Setup summary: no preparation steps selected (all were skipped).");
         return Ok(());
     }
@@ -709,7 +730,7 @@ fn run_setup(
             nuclei_repo,
             Some(data_dir.join("nuclei-report.json")),
         ) {
-            Ok(()) => completed.push("Nuclei templates and frozen report"),
+            Ok(()) => completed.push("Nuclei templates and frozen report".to_owned()),
             Err(error) => failures.push(("Nuclei templates and frozen report", error)),
         }
     }
@@ -721,8 +742,14 @@ fn run_setup(
             reputation_sources,
             false,
         ) {
-            Ok(()) => completed.push("reputation/ASN inputs"),
+            Ok(()) => completed.push("reputation/ASN inputs".to_owned()),
             Err(error) => failures.push(("reputation/ASN inputs", error)),
+        }
+    }
+    if plan.include_sigma {
+        match install_sigma_rules(data_dir, sigma_sources) {
+            Ok(summary) => completed.push(summary),
+            Err(error) => failures.push(("Sigma rules", error)),
         }
     }
 
@@ -743,6 +770,108 @@ fn run_setup(
     }
     println!("Next: shenron production hunt --input <logs> --format <fmt>");
     Ok(())
+}
+
+/// Install the bundled Sigma pack into `<data-dir>/sigma-rules/shenron-pack`, and
+/// optionally fetch each external source's `rules/web` subtree into a sibling
+/// directory so the sources stay distinguishable. Only public rules are
+/// downloaded; no customer data is transmitted.
+fn install_sigma_rules(data_dir: &Path, sources: &[String]) -> Result<String> {
+    let sigma_dir = data_dir.join("sigma-rules");
+    let bundled = shenron::sigma_pack::install_bundled_pack(&sigma_dir)?;
+    let mut external_rules = 0;
+    for url in sources {
+        let name = sigma_source_dir_name(url);
+        let staging = sigma_dir.join(format!(".fetch-{name}"));
+        let dest = sigma_dir.join("external").join(&name);
+        external_rules += fetch_sigma_source(url, &staging, &dest)?;
+    }
+    let supported = shenron::sigma::load_rules(&sigma_dir).supported.len();
+    println!(
+        "Sigma rules installed to {} (bundled pack: {}, external web rules fetched: {}, supported rules loadable: {}).",
+        sigma_dir.display(),
+        bundled,
+        external_rules,
+        supported
+    );
+    if !sources.is_empty() {
+        println!("Review and comply with each Sigma source's license before relying on its rules.");
+    }
+    Ok(format!(
+        "Sigma rules (bundled {bundled}, external {external_rules}, supported {supported})"
+    ))
+}
+
+/// A filesystem-safe directory name derived from a git URL's final segment.
+fn sigma_source_dir_name(url: &str) -> String {
+    let base = url
+        .trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .unwrap_or("source")
+        .trim_end_matches(".git");
+    let name = base
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || character == '-' || character == '_' {
+                character
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+    if name.is_empty() {
+        "source".to_owned()
+    } else {
+        name
+    }
+}
+
+/// Fetch one external Sigma source's `rules/web` subtree with a blobless sparse
+/// checkout, then copy its YAML rule files into `dest` and remove the checkout.
+/// Copying keeps the loaded Sigma directory free of a `.git` tree so `hunt` does
+/// not walk it on every run. Returns the number of rule files copied.
+fn fetch_sigma_source(url: &str, staging: &Path, dest: &Path) -> Result<usize> {
+    let _ = fs::remove_dir_all(staging);
+    if let Some(parent) = staging.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    git_clone(url, staging)?;
+    git_in(staging, &["sparse-checkout", "set", "rules/web"])?;
+    let target = default_branch_target(staging)?;
+    git_in(staging, &["checkout", &target])?;
+
+    let web = staging.join("rules").join("web");
+    let _ = fs::remove_dir_all(dest);
+    fs::create_dir_all(dest)
+        .with_context(|| format!("creating Sigma source directory {}", dest.display()))?;
+    let mut copied = 0;
+    for entry in walkdir::WalkDir::new(&web)
+        .into_iter()
+        .filter_map(Result::ok)
+    {
+        if !entry.file_type().is_file()
+            || !matches!(
+                entry.path().extension().and_then(|ext| ext.to_str()),
+                Some("yml" | "yaml")
+            )
+        {
+            continue;
+        }
+        let relative = entry
+            .path()
+            .strip_prefix(&web)
+            .unwrap_or_else(|_| entry.path());
+        let target_path = dest.join(relative);
+        if let Some(parent) = target_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::copy(entry.path(), &target_path)
+            .with_context(|| format!("copying Sigma rule to {}", target_path.display()))?;
+        copied += 1;
+    }
+    let _ = fs::remove_dir_all(staging);
+    Ok(copied)
 }
 
 /// The only network-capable path in Shenron. It invokes system git solely to
@@ -1150,27 +1279,30 @@ mod setup_tests {
     #[test]
     fn setup_skip_flags_select_the_expected_preparation_inputs() {
         assert_eq!(
-            setup_plan(false, false, false),
+            setup_plan(false, false, false, false),
             SetupPlan {
                 include_nuclei: true,
                 include_reputation: true,
                 include_asn: true,
+                include_sigma: true,
             }
         );
         assert_eq!(
-            setup_plan(true, false, true),
+            setup_plan(true, false, true, false),
             SetupPlan {
                 include_nuclei: false,
                 include_reputation: true,
                 include_asn: false,
+                include_sigma: true,
             }
         );
         assert_eq!(
-            setup_plan(true, true, true),
+            setup_plan(true, true, true, true),
             SetupPlan {
                 include_nuclei: false,
                 include_reputation: false,
                 include_asn: false,
+                include_sigma: false,
             }
         );
     }

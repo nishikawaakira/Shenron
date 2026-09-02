@@ -1,0 +1,23 @@
+title: Management and Actuator Endpoint Probe
+id: shenron-management-endpoint-probe
+status: experimental
+description: >-
+  Requests targeting common unauthenticated management, status, or debug
+  endpoints. This is a generic reconnaissance TTP and never asserts an attack,
+  exploitation, compromise, or a vulnerable product.
+references:
+  - https://owasp.org/www-community/attacks/Forced_browsing
+tags: []
+logsource:
+  category: webserver
+detection:
+  selection:
+    uri_path|contains:
+      - '/actuator/'
+      - '/server-status'
+      - '/server-info'
+      - '/phpinfo.php'
+      - '/debug/pprof/'
+      - '/.well-known/security.txt'
+  condition: selection
+level: low

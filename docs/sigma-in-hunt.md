@@ -22,7 +22,20 @@ Sigma evaluation is **on by default**. `hunt` loads its rules from the default
 rules directory (`<data-dir>/sigma-rules`) when present, or from an explicit
 `--rules <PATH>`. If neither exists, Sigma is skipped with a one-line note (not an
 error), so a hunt with no Sigma rules behaves exactly as before. `--no-sigma`
-disables the pass explicitly. Only the intentionally small supported Sigma subset
+disables the pass explicitly.
+
+`shenron-lab setup` populates that default directory. It installs the **bundled
+Shenron pack** — a small set of curated, Shenron-supported generic-TTP rules
+embedded in the binary (secret/config-file probes, version-control exposure
+probes, management/actuator endpoint probes) — into
+`<data-dir>/sigma-rules/shenron-pack/`, so the default-on pass works out of the
+box with no network fetch. `setup --sigma-source <git-url>` additionally fetches
+an external source's `rules/web` subtree (download-only, e.g.
+`https://github.com/SigmaHQ/sigma.git`) into a sibling
+`<data-dir>/sigma-rules/external/<name>/` directory; only the supported subset
+loads, and each source's license is the user's responsibility. The two origins
+stay in separate directories so they remain distinguishable. `--skip-sigma`
+omits the whole Sigma step. Only the intentionally small supported Sigma subset
 runs; unsupported rules are reported and skipped, never matched with weakened
 logic. Templates are never executed and no network is accessed.
 

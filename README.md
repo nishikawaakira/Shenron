@@ -102,9 +102,11 @@ Alongside the CVE-anchored Nuclei pass, `hunt` runs a generic **Sigma** detectio
 pass **on by default** in the same stream, catching generic request-pattern TTPs
 (such as secret-file path enumeration) that map to no CVE template. It loads rules
 from `--rules <DIR>` or the prepared `<data-dir>/sigma-rules`; `--no-sigma`
-disables it. Sigma findings carry a `source` field, are counted separately from
-the CVE metrics, and never feed `candidate build`. See
-[Sigma detection inside hunt](docs/sigma-in-hunt.md).
+disables it. `shenron-lab setup` installs a bundled, Shenron-supported Sigma pack
+there so the pass works out of the box, and `setup --sigma-source <git-url>` can
+additionally fetch an external source's `rules/web` (e.g. SigmaHQ). Sigma findings
+carry a `source` field, are counted separately from the CVE metrics, and never
+feed `candidate build`. See [Sigma detection inside hunt](docs/sigma-in-hunt.md).
 
 ## Sigma and log limits
 

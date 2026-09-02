@@ -88,7 +88,7 @@ shenron production hunt --input ./logs --format apache
 
 片方の公開入力だけを更新したい場合は、従来どおり `shenron-lab nuclei update` と `shenron-lab reputation update` も使えます。`setup` が取得するのは公開インテリジェンスだけで、顧客データを送信しません。
 
-`hunt` は CVE 主体の Nuclei パスに加えて、汎用的な **Sigma** 検出パスを**既定で ON**にして同一ストリームで実行します。CVE テンプレートに対応しない汎用 TTP（例：`.env` などの機密ファイル探索）を拾えます。ルールは `--rules <DIR>` か準備済みの `<data-dir>/sigma-rules` から読み込み、`--no-sigma` で無効化できます。Sigma の finding は `source` フィールドを持ち、CVE 指標とは別に集計され、`candidate build` には入りません（候補は CVE / Nuclei-IR 主体のまま）。詳細は [Sigma detection inside hunt](docs/sigma-in-hunt.md) を参照。
+`hunt` は CVE 主体の Nuclei パスに加えて、汎用的な **Sigma** 検出パスを**既定で ON**にして同一ストリームで実行します。CVE テンプレートに対応しない汎用 TTP（例：`.env` などの機密ファイル探索）を拾えます。ルールは `--rules <DIR>` か準備済みの `<data-dir>/sigma-rules` から読み込み、`--no-sigma` で無効化できます。`shenron-lab setup` が Shenron 対応の同梱パックをそこへ配置するので、追加設定なしで動きます。さらに `setup --sigma-source <git-url>` で外部ソース（例：SigmaHQ）の `rules/web` も取得できます。Sigma の finding は `source` フィールドを持ち、CVE 指標とは別に集計され、`candidate build` には入りません（候補は CVE / Nuclei-IR 主体のまま）。詳細は [Sigma detection inside hunt](docs/sigma-in-hunt.md) を参照。
 
 `hunt` は、機微なリクエスト値を含む **private findings** と、それを含まない **sanitized（無害化済み）レポート**を分離して出力します。AWS WAF の検出結果は `explain` で `BLOCK` / `not-blocked` を絞り込めます。
 

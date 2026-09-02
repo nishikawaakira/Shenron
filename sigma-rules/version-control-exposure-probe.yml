@@ -1,0 +1,21 @@
+title: Version Control Directory Exposure Probe
+id: shenron-version-control-exposure-probe
+status: experimental
+description: >-
+  Requests targeting exposed version-control metadata directories, a generic
+  source-disclosure reconnaissance TTP. This never asserts an attack,
+  exploitation, compromise, or a vulnerable product.
+references:
+  - https://owasp.org/www-community/attacks/Forced_browsing
+tags: []
+logsource:
+  category: webserver
+detection:
+  selection:
+    uri_path|contains:
+      - '/.git/'
+      - '/.svn/'
+      - '/.hg/'
+      - '/.bzr/'
+  condition: selection
+level: medium
