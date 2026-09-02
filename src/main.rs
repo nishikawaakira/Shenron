@@ -1158,7 +1158,7 @@ fn print_request_concentration_summary(
             format!(
                 "{:.1}% of {} requests, from {} distinct source IPs",
                 top.request_share * 100.0,
-                top.requests,
+                concentration.total_requests,
                 top.distinct_source_ips,
             )
         })

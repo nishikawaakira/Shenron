@@ -130,6 +130,7 @@ fn concentration_writes_private_detail_without_leaking_it_to_sanitized_or_defaul
         .assert()
         .success()
         .stdout(contains("Request concentration (volume distribution only"))
+        .stdout(contains("75.0% of 4 requests, from 3 distinct source IPs"))
         .stdout(contains("/private-hot-path").not())
         .stdout(contains("198.51.100.1").not());
     Command::cargo_bin("shenron")
