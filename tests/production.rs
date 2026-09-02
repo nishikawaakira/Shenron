@@ -1322,6 +1322,50 @@ fn explain_scores_behavior_and_groups_shared_ja4_fingerprints() {
 }
 
 #[test]
+fn replay_warns_up_front_when_findings_carry_no_request_id() {
+    let directory = tempdir().unwrap();
+    let findings = directory.path().join("no-id-private-findings.jsonl");
+    // A finding with no request ID, as every nginx/Apache combined-log finding
+    // is: conservative coverage is unreachable before the scan even starts.
+    fs::write(
+        &findings,
+        concat!(
+            r#"{"template_id":"synthetic-cve-2024-10001","cves":["CVE-2024-10001"],"detectability":"HIGH","timestamp":"2025-01-01T00:00:00Z","source_ip":"198.51.100.1","host":"internal.example.test","method":"GET","uri_path":"/vulnerable/execute","uri_query":"cmd=probe","headers":[],"ja3":null,"ja4":null,"waf_action":"ALLOW","request_id":null}"#,
+            "\n"
+        ),
+    )
+    .unwrap();
+    let output = directory.path().join("replay.json");
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "production",
+            "replay",
+            "--input",
+            "tests/fixtures/production/waf.jsonl",
+            "--format",
+            "aws-waf",
+            "--nuclei-templates",
+            "tests/fixtures/nuclei",
+            "--nuclei-report",
+            "tests/fixtures/production/nuclei-report.json",
+            "--kev-report",
+            "tests/fixtures/production/kev-report.json",
+            "--findings",
+            findings.to_str().unwrap(),
+            "--output",
+            output.to_str().unwrap(),
+        ])
+        .assert()
+        // The run still completes and produces the aggregate report.
+        .success()
+        .stderr(contains("none of the").and(contains("request ID")));
+    // Aggregate volumes are still written.
+    let written = fs::read_to_string(output).unwrap();
+    assert!(written.contains("HISTORICAL_REPLAY_COVERAGE"));
+}
+
+#[test]
 fn explain_json_omits_private_evidence_without_show_flags() {
     let directory = tempdir().unwrap();
     let findings_path = directory.path().join("private-findings.jsonl");

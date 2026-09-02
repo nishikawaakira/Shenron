@@ -998,6 +998,18 @@ pub fn historical_replay_with_optional_kev(
         known_source_request_ids,
     } = known_sources;
 
+    // Fail fast on the outcome the findings alone already determine: with no
+    // source request ID, conservative coverage is unreachable no matter what
+    // the corpus contains. Warn before the (potentially very long) scan rather
+    // than after it. nginx/Apache combined logs never carry a request ID.
+    // Aggregate match volumes remain meaningful, so this is a warning, not an
+    // error.
+    if known_findings_total > 0 && known_source_request_ids.is_empty() {
+        eprintln!(
+            "warning: none of the {known_findings_total} loaded findings carries a request ID, so conservative replay coverage will be unavailable regardless of this scan (nginx/Apache combined logs do not record a request ID). Aggregate match volumes are still computed."
+        );
+    }
+
     let files = input_files(input, telemetry_profile)?;
     let mut total_events_evaluated = 0;
     let mut requests_outside_time_range = 0;
