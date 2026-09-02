@@ -8,17 +8,18 @@ Inspect structure before a hunt. This command reports only counts, timestamps, a
 cargo run --bin shenron -- production inspect --input ./production-waf-logs --format aws-waf --sample 10000
 ```
 
-Prepare the public Nuclei checkout and its frozen validation report once. This
-downloads public templates only and never sends customer data:
+Prepare public Nuclei templates, reputation, and ASN inputs once. This
+downloads public intelligence only and never sends customer data:
 
 ```bash
-shenron-lab nuclei update
+shenron-lab setup
 ```
 
 The default data directory is `$SHENRON_DATA_DIR` when set, otherwise
 `$XDG_DATA_HOME/shenron` and then `~/.local/share/shenron`. Update writes
-`nuclei-templates/` and `nuclei-report.json` there. A full hunt then needs only
-the local input and its explicit format:
+`nuclei-templates/`, `nuclei-report.json`, `reputation.jsonl`, and
+`asn-ranges.tsv` there. A full hunt then needs only the local input and its
+explicit format:
 
 ```bash
 cargo run --bin shenron -- production hunt \
@@ -28,9 +29,26 @@ cargo run --bin shenron -- production hunt \
 
 `--nuclei-templates` and `--nuclei-report` remain available to select an
 explicit frozen checkout/report pair. If neither default input exists, Shenron
-asks you to run `shenron-lab nuclei update` first. `--kev-report` is optional;
+asks you to run `shenron-lab nuclei update` or `shenron-lab setup` first. `--kev-report` is optional;
 when omitted, KEV membership is empty. The same prepared-input defaults apply
 to `production ablation`, `production replay`, and `production count-hypotheses`.
+
+`shenron-lab setup` is an explicit download-only preparation command. It
+refreshes public Nuclei templates and their frozen report together with public
+reputation and ASN inputs in one local data directory; it never uploads logs,
+findings, observed IPs, request values, or other customer data. Use
+`--skip-nuclei`, `--skip-reputation`, or `--skip-asn` to omit a family. The
+existing `nuclei update` and `reputation update` commands remain available for
+individual refreshes. The main `shenron` analysis binary remains offline.
+
+By default `setup` writes to the standard data directory that `hunt`, `explain`,
+and the other analysis commands read automatically. If you pass `--data-dir` to
+write somewhere else, those commands do not look there by default, so pass the
+matching `--nuclei-templates`, `--nuclei-report`, `--reputation-dataset`, and
+`--asn-dataset` paths at analysis time. A partial failure (for example, one
+temporarily unreachable list) still completes the other steps, prints a summary,
+and exits non-zero; the privacy guarantee that no customer data is transmitted
+holds on every outcome.
 
 If the direct peer is a known CDN, load balancer, or reverse proxy, supply every trusted proxy IP or CIDR explicitly to verify a forwarded end-client address. Shenron ignores `X-Forwarded-For` unless the observed direct peer is in this configured set: an untrusted peer can forge that header. Shenron evaluates a verified chain from right to left, removes only trusted proxy hops, and uses the first non-trusted address as `client_ip`. A missing, malformed, or all-trusted chain remains unavailable. Standard nginx/Apache Combined Log Format does not retain `X-Forwarded-For`, so it normally cannot provide `client_ip` even when `--trusted-proxy` is supplied.
 
@@ -84,12 +102,13 @@ Each IP group (`--show-source-ips`) and JA4 fingerprint (`--show-fingerprints`) 
 
 - **template-breadth** (up to 24): distinct Nuclei template patterns matched.
 - **cve-breadth** (up to 16): distinct CVEs matched.
-- **observation-depth** (up to 20): distinct matching request observations.
+- **observation-depth** (up to 16): distinct matching request observations, with repeated generic paths intentionally contributing only a small capped amount while distinctive-path observations contribute directly.
+- **path-distinctiveness** (up to 4): distinct matching request observations on paths classified as `distinctive` by the documented transparent heuristic.
 - **spread** (up to 20): for an IP group, distinct hosts targeted; for a JA4 fingerprint, the larger of separately counted validated-client and observed-peer identity populations. These identity types are never merged.
 - **waf-unblocked** (up to 15): the fraction of deduplicated matched requests that the WAF recorded as `ALLOW` or `COUNT`, among requests with a known `BLOCK` / `ALLOW` / `COUNT` outcome. Unknown actions contribute neither numerator nor denominator.
 - **windowed-burst** (5): added when `--triage-window` is set and the group met the breadth or depth condition within a single sliding window.
 
-The weights total 100 at saturation and each contribution is monotonic in its signal, so the number is auditable rather than an opaque model output. The output separately reports `request-specific` and `response-unverified` request observations. A group with only response-unverified (URI-only) evidence is capped at 74/100 (`medium`): Nuclei response confirmation cannot be reproduced from request telemetry. It ranks entities for human triage from observed request behavior only. It is **not** a probability of malice, a precision or true-/false-positive estimate, an exploitation, compromise, or vulnerable-product determination, or attacker attribution.
+The weights total 100 at saturation and each contribution is monotonic in its signal, so the number is auditable rather than an opaque model output. Repeated generic paths remain visible but cannot dominate the observation-depth contribution; distinctive-path observations receive an explicit, small triage contribution. These labels are request-side heuristics, not ground truth. The output separately reports `request-specific` and `response-unverified` request observations. A group with only response-unverified (URI-only) evidence is capped at 74/100 (`medium`): Nuclei response confirmation cannot be reproduced from request telemetry. It ranks entities for human triage from observed request behavior only. It is **not** a probability of malice, a precision or true-/false-positive estimate, an exploitation, compromise, or vulnerable-product determination, or attacker attribution.
 
 This behavioral score is intentionally computed offline and involves no network lookup. IP and ASN reputation enrichment is a separate local layer; it does not change behavior-score inputs, weights, or tiers.
 

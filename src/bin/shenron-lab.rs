@@ -103,6 +103,45 @@ enum Command {
         #[command(subcommand)]
         command: ReputationCommand,
     },
+    /// Prepare public Nuclei, reputation, and ASN inputs in one download-only step.
+    Setup {
+        /// Skip the public Nuclei template checkout and frozen coverage report.
+        #[arg(long)]
+        skip_nuclei: bool,
+        /// Skip the public IP reputation dataset.
+        #[arg(long)]
+        skip_reputation: bool,
+        /// Skip the public IPv4 ASN range dataset.
+        #[arg(long)]
+        skip_asn: bool,
+        /// Local directory for every prepared input.
+        #[arg(long)]
+        data_dir: Option<PathBuf>,
+        /// Nuclei templates git repository URL.
+        #[arg(
+            long,
+            default_value = "https://github.com/projectdiscovery/nuclei-templates.git"
+        )]
+        nuclei_repo: String,
+        /// Optional pinned Nuclei revision.
+        #[arg(long)]
+        nuclei_revision: Option<String>,
+        /// Public Spamhaus DROP source URL.
+        #[arg(long, default_value = SPAMHAUS_DROP_URL)]
+        spamhaus_drop_source: String,
+        /// Public FireHOL level 1 source URL.
+        #[arg(long, default_value = FIREHOL_LEVEL1_URL)]
+        firehol_source: String,
+        /// Public CINS Army source URL.
+        #[arg(long, default_value = CINS_URL)]
+        cins_source: String,
+        /// Public blocklist.de source URL.
+        #[arg(long, default_value = BLOCKLIST_DE_URL)]
+        blocklist_de_source: String,
+        /// Public iptoasn IPv4 source URL.
+        #[arg(long, default_value = IPTOASN_V4_URL)]
+        iptoasn_source: String,
+    },
     /// Measure minimum additional, non-sensitive web telemetry from frozen local artifacts.
     MinimumTelemetry {
         #[arg(long)]
@@ -357,19 +396,9 @@ fn main() -> Result<()> {
                 repo,
                 report,
             } => {
-                let templates = templates.unwrap_or_else(default_templates_dir);
-                let report = report.unwrap_or_else(default_nuclei_report);
-                let resolved_revision =
-                    update_nuclei_templates(&templates, revision.as_deref(), &repo)?;
-                let coverage = nuclei_coverage(&templates, &resolved_revision);
-                if let Some(parent) = report
-                    .parent()
-                    .filter(|parent| !parent.as_os_str().is_empty())
-                {
-                    std::fs::create_dir_all(parent)?;
-                }
-                serde_json::to_writer_pretty(std::fs::File::create(&report)?, &coverage)?;
-                println!("Frozen Nuclei report: {}", report.display());
+                run_nuclei_update(templates, revision, &repo, report)?;
+                println!("Public templates only were downloaded; no customer data was transmitted. The shenron analysis binary remains offline.");
+                println!("Pin this revision with --revision for later reproducibility.");
                 println!("Next: shenron production hunt --input <logs> --format <fmt>");
             }
             NucleiCommand::Inventory {
@@ -483,8 +512,34 @@ fn main() -> Result<()> {
                     blocklist_de: &blocklist_de_source,
                     iptoasn: &iptoasn_source,
                 },
+                true,
             )?,
         },
+        Command::Setup {
+            skip_nuclei,
+            skip_reputation,
+            skip_asn,
+            data_dir,
+            nuclei_repo,
+            nuclei_revision,
+            spamhaus_drop_source,
+            firehol_source,
+            cins_source,
+            blocklist_de_source,
+            iptoasn_source,
+        } => run_setup(
+            &data_dir.unwrap_or_else(default_data_dir),
+            setup_plan(skip_nuclei, skip_reputation, skip_asn),
+            &nuclei_repo,
+            nuclei_revision,
+            ReputationSources {
+                spamhaus_drop: &spamhaus_drop_source,
+                firehol: &firehol_source,
+                cins: &cins_source,
+                blocklist_de: &blocklist_de_source,
+                iptoasn: &iptoasn_source,
+            },
+        )?,
         Command::MinimumTelemetry {
             templates,
             comparison,
@@ -582,6 +637,102 @@ fn ensure_template_directory(path: &std::path::Path) -> Result<()> {
     }
 }
 
+/// Run the existing Nuclei preparation workflow with either explicit or
+/// standard local paths. The caller owns next-step and privacy messaging so
+/// `setup` can present them once for all preparation sources.
+fn run_nuclei_update(
+    templates: Option<PathBuf>,
+    revision: Option<String>,
+    repo: &str,
+    report: Option<PathBuf>,
+) -> Result<()> {
+    let templates = templates.unwrap_or_else(default_templates_dir);
+    let report = report.unwrap_or_else(default_nuclei_report);
+    let resolved_revision = update_nuclei_templates(&templates, revision.as_deref(), repo)?;
+    let coverage = nuclei_coverage(&templates, &resolved_revision);
+    if let Some(parent) = report
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        fs::create_dir_all(parent)?;
+    }
+    serde_json::to_writer_pretty(File::create(&report)?, &coverage)?;
+    println!("Frozen Nuclei report: {}", report.display());
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SetupPlan {
+    include_nuclei: bool,
+    include_reputation: bool,
+    include_asn: bool,
+}
+
+fn setup_plan(skip_nuclei: bool, skip_reputation: bool, skip_asn: bool) -> SetupPlan {
+    SetupPlan {
+        include_nuclei: !skip_nuclei,
+        include_reputation: !skip_reputation,
+        include_asn: !skip_asn,
+    }
+}
+
+fn run_setup(
+    data_dir: &Path,
+    plan: SetupPlan,
+    nuclei_repo: &str,
+    nuclei_revision: Option<String>,
+    reputation_sources: ReputationSources<'_>,
+) -> Result<()> {
+    if !plan.include_nuclei && !plan.include_reputation && !plan.include_asn {
+        println!("Setup summary: no preparation steps selected (all were skipped).");
+        return Ok(());
+    }
+
+    let mut completed = Vec::new();
+    let mut failures = Vec::new();
+    if plan.include_nuclei {
+        match run_nuclei_update(
+            Some(data_dir.join("nuclei-templates")),
+            nuclei_revision,
+            nuclei_repo,
+            Some(data_dir.join("nuclei-report.json")),
+        ) {
+            Ok(()) => completed.push("Nuclei templates and frozen report"),
+            Err(error) => failures.push(("Nuclei templates and frozen report", error)),
+        }
+    }
+    if plan.include_reputation || plan.include_asn {
+        match update_reputation_inputs(
+            data_dir,
+            plan.include_reputation,
+            plan.include_asn,
+            reputation_sources,
+            false,
+        ) {
+            Ok(()) => completed.push("reputation/ASN inputs"),
+            Err(error) => failures.push(("reputation/ASN inputs", error)),
+        }
+    }
+
+    println!("Setup summary:");
+    for step in completed {
+        println!("  completed: {step}");
+    }
+    for (step, error) in &failures {
+        println!("  failed: {step}: {error}");
+    }
+    // The privacy guarantee holds regardless of outcome: only public URLs are
+    // ever passed to git/curl. Print the reassurance before any failure return
+    // so a partial failure still surfaces it.
+    println!("Public intelligence only was downloaded; no customer data was transmitted. The shenron analysis binary remains offline.");
+    println!("Review and comply with each source's terms of use before relying on these lists.");
+    if let Some((_, error)) = failures.into_iter().next() {
+        bail!("setup completed with failures: {error}");
+    }
+    println!("Next: shenron production hunt --input <logs> --format <fmt>");
+    Ok(())
+}
+
 /// The only network-capable path in Shenron. It invokes system git solely to
 /// download public Nuclei templates; analysis inputs and results are never
 /// passed to git or any other external process.
@@ -603,8 +754,6 @@ fn update_nuclei_templates(templates: &Path, revision: Option<&str>, repo: &str)
     let resolved_revision = git_in(templates, &["rev-parse", "HEAD"])?;
 
     println!("Resolved Nuclei templates revision: {resolved_revision}");
-    println!("Public templates only were downloaded; no customer data was transmitted. The shenron analysis binary remains offline.");
-    println!("Pin this revision with --revision for later reproducibility.");
     Ok(resolved_revision)
 }
 
@@ -697,6 +846,7 @@ fn update_reputation_inputs(
     include_reputation: bool,
     include_asn: bool,
     sources: ReputationSources<'_>,
+    announce: bool,
 ) -> Result<()> {
     if !include_reputation && !include_asn {
         bail!("at least one of --reputation or --asn must be true");
@@ -803,16 +953,18 @@ fn update_reputation_inputs(
         let manifest_path = out_dir.join("reputation-manifest.json");
         serde_json::to_writer_pretty(File::create(&manifest_path)?, &manifest)?;
 
-        println!(
-            "Public reputation/ASN inputs written to: {}",
-            out_dir.display()
-        );
-        println!("Manifest: {}", manifest_path.display());
-        println!("Public lists only were downloaded; no customer data was transmitted. The shenron analysis binary remains offline.");
-        println!("production explain automatically uses these local files when no --reputation-dataset or --asn-dataset override is supplied.");
-        println!(
-            "Review and comply with each source's terms of use before relying on these lists."
-        );
+        if announce {
+            println!(
+                "Public reputation/ASN inputs written to: {}",
+                out_dir.display()
+            );
+            println!("Manifest: {}", manifest_path.display());
+            println!("Public lists only were downloaded; no customer data was transmitted. The shenron analysis binary remains offline.");
+            println!("production explain automatically uses these local files when no --reputation-dataset or --asn-dataset override is supplied.");
+            println!(
+                "Review and comply with each source's terms of use before relying on these lists."
+            );
+        }
         Ok(())
     })();
     let _ = fs::remove_dir_all(&download_dir);
@@ -975,6 +1127,39 @@ fn print_minimum_telemetry(report: &MinimumTelemetryReport) {
             step.gain.additional_templates,
             step.coverage.observable_templates,
             step.coverage.aws_waf_observable_recovered_percent,
+        );
+    }
+}
+
+#[cfg(test)]
+mod setup_tests {
+    use super::{setup_plan, SetupPlan};
+
+    #[test]
+    fn setup_skip_flags_select_the_expected_preparation_inputs() {
+        assert_eq!(
+            setup_plan(false, false, false),
+            SetupPlan {
+                include_nuclei: true,
+                include_reputation: true,
+                include_asn: true,
+            }
+        );
+        assert_eq!(
+            setup_plan(true, false, true),
+            SetupPlan {
+                include_nuclei: false,
+                include_reputation: true,
+                include_asn: false,
+            }
+        );
+        assert_eq!(
+            setup_plan(true, true, true),
+            SetupPlan {
+                include_nuclei: false,
+                include_reputation: false,
+                include_asn: false,
+            }
         );
     }
 }

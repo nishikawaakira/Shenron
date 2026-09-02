@@ -56,7 +56,7 @@ Shenron の解析本体 `shenron` は、ターゲットへのスキャン、エ�
 - `production ablation`：URI-only から Nuclei IR・request-specific IR まで、条件の広さ別に一致件数（ボリューム）を比較
 - `production replay`：ローカルの履歴コーパス全体に対し、既知検出の再観測カバレッジとその他の一致を、機微情報を含まない集計として算出
 - `production count-hypotheses`：CVE ごとに「広い→狭い」WAF 条件を、ローカルの COUNT シミュレーションとして比較（推奨する条件を自動で選んだり、デプロイしたりはしません）
-- `production explain`：CVE / テンプレート / リクエスト証拠の表示。既定では `response-unverified` かつ generic path の低確度ノイズを隠し、`--include-generic` で保存済みの全 finding を表示します。接続元・クライアント IP（`--show-source-ips`）、ローカル ASN データで解決した ASN（`--show-asn`）、JA4 フィンガープリント（`--show-fingerprints`）ごとの breadth/depth/時間窓トリアージと、観測挙動のみから算出する挙動優先度スコアを表示（悪性確率・攻撃成立・攻撃者特定の判定ではありません）。`shenron-lab reputation update` で準備されたローカル IP/ASN データは既定で自動参照し、明示指定のデータセットは引き続き優先します。レピュテーションは外部照会をせず、第三者の意見として示します
+- `production explain`：CVE / テンプレート / リクエスト証拠の表示。既定では `response-unverified` かつ generic path の低確度ノイズを隠し、`--include-generic` で保存済みの全 finding を表示します。接続元・クライアント IP（`--show-source-ips`）、ローカル ASN データで解決した ASN（`--show-asn`）、JA4 フィンガープリント（`--show-fingerprints`）ごとの breadth/depth/時間窓トリアージと、観測挙動のみから算出する挙動優先度スコアを表示します。スコアは generic path の反復による深さを意図的に抑え、distinctive path の一致へ小さな寄与を与えますが、悪性確率・攻撃成立・攻撃者特定の判定ではありません。`shenron-lab reputation update` で準備されたローカル IP/ASN データは既定で自動参照し、明示指定のデータセットは引き続き優先します。レピュテーションは外部照会をせず、第三者の意見として示します
 - 防御候補（candidate）の作成、履歴での replay、バックエンド互換性の確認
 - COUNT 固定の AWS WAF JSON / Terraform ルール断片、または OSSEC 検知 XML の出力
 
@@ -77,14 +77,16 @@ cargo run --bin shenron -- validate-rules --rules ./rules/
 
 ## Production hunt（本番ログのハンティング）
 
-公開 Nuclei テンプレートを一度準備すれば、以後はログと形式だけで hunt を実行できます。
+公開 Nuclei テンプレート、IP レピュテーション、ASN データを一度準備すれば、以後はログと形式だけで hunt を実行できます。
 
 ```bash
-shenron-lab nuclei update
+shenron-lab setup
 shenron production hunt --input ./logs --format apache
 ```
 
-`nuclei update` は `SHENRON_DATA_DIR` があればその配下、なければ `$XDG_DATA_HOME/shenron`、さらに無ければ `~/.local/share/shenron` に `nuclei-templates/` と凍結済みの `nuclei-report.json` を保存します。`hunt`、`ablation`、`replay`、`count-hypotheses` は既定でこの場所を参照します。`hunt` の `--output` を省略した場合、`./private-results/hunt-<UTC日時>/` に private artifacts を出力します。従来どおり `--nuclei-templates`、`--nuclei-report`、`--kev-report`、`--output` で明示指定もできます。KEV は任意で、省略時は空集合として扱います。
+`setup` は `SHENRON_DATA_DIR` があればその配下、なければ `$XDG_DATA_HOME/shenron`、さらに無ければ `~/.local/share/shenron` に `nuclei-templates/`、凍結済みの `nuclei-report.json`、任意の `reputation.jsonl` と `asn-ranges.tsv` を保存します。`hunt`、`ablation`、`replay`、`count-hypotheses` は既定でこの場所を参照します。`hunt` の `--output` を省略した場合、`./private-results/hunt-<UTC日時>/` に private artifacts を出力します。従来どおり `--nuclei-templates`、`--nuclei-report`、`--kev-report`、`--output` で明示指定もできます。KEV は任意で、省略時は空集合として扱います。
+
+片方の公開入力だけを更新したい場合は、従来どおり `shenron-lab nuclei update` と `shenron-lab reputation update` も使えます。`setup` が取得するのは公開インテリジェンスだけで、顧客データを送信しません。
 
 `hunt` は、機微なリクエスト値を含む **private findings** と、それを含まない **sanitized（無害化済み）レポート**を分離して出力します。AWS WAF の検出結果は `explain` で `BLOCK` / `not-blocked` を絞り込めます。
 

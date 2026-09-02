@@ -1304,20 +1304,20 @@ fn explain_scores_behavior_and_groups_shared_ja4_fingerprints() {
         .assert()
         .success();
 
-    // 203.0.113.7: 3 templates (9) + 3 CVEs (6) + 3 observations (3) + 3 hosts (6)
-    // + 2/3 unblocked (10) = 34.
+    // 203.0.113.7: 3 templates (9) + 3 CVEs (6) + 3 distinctive observations (3)
+    // + 3 distinctive-path points + 3 hosts (6) + 2/3 unblocked (10) = 37.
     assertion
         .stdout(contains(
-            "203.0.113.7\n  Grouping identity: observed-peer\n  Triage basis: breadth\n  Matching request observations: 3\n  Distinct Nuclei template patterns: 3\n  Unique CVEs: 3\n  Matched template records: 3\n  Behavior priority score: 34/100 (low)",
+            "203.0.113.7\n  Grouping identity: observed-peer\n  Triage basis: breadth\n  Matching request observations: 3\n  Distinct Nuclei template patterns: 3\n  Unique CVEs: 3\n  Matched template records: 3\n  Behavior priority score: 37/100 (low)",
         ))
         // The single-observation peer is retained as evidence but not triaged.
         .stdout(contains(
-            "198.51.100.20\n  Grouping identity: observed-peer\n  Triage basis: none\n  Matching request observations: 1\n  Distinct Nuclei template patterns: 1\n  Unique CVEs: 1\n  Matched template records: 1\n  Behavior priority score: 23/100 (info)",
+            "198.51.100.20\n  Grouping identity: observed-peer\n  Triage basis: none\n  Matching request observations: 1\n  Distinct Nuclei template patterns: 1\n  Unique CVEs: 1\n  Matched template records: 1\n  Behavior priority score: 24/100 (info)",
         ))
         // One JA4 fingerprint spans both peers: a shared-tooling signal.
         .stdout(contains("JA4 fingerprint triage (private findings only):"))
         .stdout(contains(
-            "t13d1516h2_shared\n  Triage basis: breadth\n  Distinct validated clients sharing this fingerprint: 0\n  Distinct observed peers sharing this fingerprint: 2\n  Identity spread used for behavior score: 2\n  Matching request observations: 4\n  Distinct Nuclei template patterns: 3\n  Unique CVEs: 3\n  Matched template records: 4\n  Behavior priority score: 34/100 (low)",
+            "t13d1516h2_shared\n  Triage basis: breadth\n  Distinct validated clients sharing this fingerprint: 0\n  Distinct observed peers sharing this fingerprint: 2\n  Identity spread used for behavior score: 2\n  Matching request observations: 4\n  Distinct Nuclei template patterns: 3\n  Unique CVEs: 3\n  Matched template records: 4\n  Behavior priority score: 38/100 (low)",
         ));
 }
 

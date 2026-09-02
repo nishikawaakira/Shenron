@@ -21,7 +21,10 @@ use std::{
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 
-use crate::{nuclei::RequestSpecificity, production::FindingExplanation};
+use crate::{
+    nuclei::{path_distinctiveness, PathDistinctiveness, RequestSpecificity},
+    production::FindingExplanation,
+};
 
 /// Default breadth threshold: matching request observations for the fixed
 /// research baseline.
@@ -167,7 +170,8 @@ pub struct BehaviorScore {
 // 74, so they cannot reach the high tier without request-specific evidence.
 const MAX_TEMPLATE_POINTS: u32 = 24;
 const MAX_CVE_POINTS: u32 = 16;
-const MAX_OBSERVATION_POINTS: u32 = 20;
+const MAX_OBSERVATION_POINTS: u32 = 16;
+const MAX_DISTINCTIVE_PATH_POINTS: u32 = 4;
 const MAX_SPREAD_POINTS: u32 = 20;
 const MAX_UNBLOCKED_POINTS: u32 = 15;
 const WINDOWED_BURST_POINTS: u32 = 5;
@@ -182,6 +186,9 @@ pub struct EntitySignals {
     pub distinct_cves: usize,
     /// Distinct matching request observations (deduplicated per request).
     pub distinct_observations: usize,
+    /// Distinct matching request observations whose paths are classified as
+    /// distinctive. This transparent path heuristic is a triage signal only.
+    pub distinctive_observations: usize,
     /// Observations whose matching Detection IR includes a query, fragment, or
     /// explicit header requirement. If one request matched both categories,
     /// request-specific takes precedence.
@@ -220,13 +227,33 @@ pub fn score(signals: &EntitySignals) -> BehaviorScore {
         detail: format!("{} distinct CVEs", signals.distinct_cves),
     });
 
-    let observation_points = (signals.distinct_observations as u32).min(MAX_OBSERVATION_POINTS);
+    let generic_observations = signals
+        .distinct_observations
+        .saturating_sub(signals.distinctive_observations);
+    // Repetition of generic paths such as /robots.txt remains visible, but it
+    // cannot consume the whole depth budget. Distinctive paths receive the
+    // direct depth contribution because they are less resistant to accidental
+    // request-side matches; this is still not a conclusion about a request.
+    let observation_points = (signals.distinctive_observations as u32)
+        .saturating_add((generic_observations as u32 / 10).min(2))
+        .min(MAX_OBSERVATION_POINTS);
     components.push(ScoreComponent {
         name: "observation-depth",
         points: observation_points,
         detail: format!(
-            "{} distinct matching request observations",
-            signals.distinct_observations
+            "{} distinctive and {} generic-path distinct matching request observations",
+            signals.distinctive_observations, generic_observations
+        ),
+    });
+
+    let distinctive_path_points =
+        (signals.distinctive_observations as u32).min(MAX_DISTINCTIVE_PATH_POINTS);
+    components.push(ScoreComponent {
+        name: "path-distinctiveness",
+        points: distinctive_path_points,
+        detail: format!(
+            "{} distinct matching request observations on distinctive paths",
+            signals.distinctive_observations
         ),
     });
 
@@ -279,6 +306,7 @@ pub fn score(signals: &EntitySignals) -> BehaviorScore {
     let total = template_points
         + cve_points
         + observation_points
+        + distinctive_path_points
         + spread_points
         + unblocked_points
         + burst_points;
@@ -358,6 +386,7 @@ struct EntitySummary {
     hosts: BTreeSet<String>,
     request_specific_observations: BTreeSet<String>,
     response_unverified_observations: BTreeSet<String>,
+    distinctive_observations: BTreeSet<String>,
     validated_clients: BTreeSet<String>,
     observed_peers: BTreeSet<String>,
     blocked_observations: BTreeSet<String>,
@@ -460,6 +489,7 @@ impl EntitySummary {
             distinct_templates: self.templates.len(),
             distinct_cves: self.cves.len(),
             distinct_observations: self.request_patterns.len(),
+            distinctive_observations: self.distinctive_observations.len(),
             request_specific_observations,
             spread,
             unblocked_fraction,
@@ -663,6 +693,13 @@ fn add_finding_to_summary(summary: &mut EntitySummary, finding: &FindingExplanat
                 .insert(request_pattern.clone());
         }
     }
+    if path_distinctiveness(finding.uri_path.as_deref().unwrap_or_default())
+        == PathDistinctiveness::Distinctive
+    {
+        summary
+            .distinctive_observations
+            .insert(request_pattern.clone());
+    }
     summary.record_waf_outcome(&request_pattern, finding.waf_action.as_deref());
     summary.observations.push(Observation {
         timestamp: parse_finding_timestamp(finding.timestamp.as_deref()),
@@ -749,6 +786,7 @@ mod tests {
             distinct_templates: 0,
             distinct_cves: 0,
             distinct_observations: 0,
+            distinctive_observations: 0,
             request_specific_observations: 0,
             spread: 0,
             unblocked_fraction: None,
@@ -769,6 +807,7 @@ mod tests {
             distinct_templates: 100,
             distinct_cves: 100,
             distinct_observations: 100,
+            distinctive_observations: 100,
             request_specific_observations: 1,
             spread: 100,
             unblocked_fraction: Some(1.0),
@@ -815,6 +854,7 @@ mod tests {
             distinct_templates: 100,
             distinct_cves: 100,
             distinct_observations: 100,
+            distinctive_observations: 100,
             request_specific_observations: 0,
             spread: 100,
             unblocked_fraction: Some(1.0),
@@ -829,6 +869,7 @@ mod tests {
                 distinct_templates: 100,
                 distinct_cves: 100,
                 distinct_observations: 100,
+                distinctive_observations: 100,
                 request_specific_observations: 0,
                 spread: 100,
                 unblocked_fraction: Some(1.0),
@@ -836,6 +877,95 @@ mod tests {
             }
         });
         assert_eq!(request_specific.tier, ScoreTier::High);
+    }
+
+    #[test]
+    fn distinctive_path_evidence_outranks_repeated_generic_path_evidence() {
+        let repeated_generic = score(&EntitySignals {
+            distinct_templates: 1,
+            distinct_cves: 1,
+            distinct_observations: 135,
+            distinctive_observations: 0,
+            request_specific_observations: 1,
+            ..signals()
+        });
+        let several_distinctive = score(&EntitySignals {
+            distinct_templates: 3,
+            distinct_cves: 3,
+            distinct_observations: 3,
+            distinctive_observations: 3,
+            request_specific_observations: 1,
+            ..signals()
+        });
+        assert!(several_distinctive.total > repeated_generic.total);
+        assert_eq!(
+            repeated_generic
+                .components
+                .iter()
+                .find(|component| component.name == "path-distinctiveness")
+                .unwrap()
+                .points,
+            0
+        );
+        assert_eq!(
+            several_distinctive
+                .components
+                .iter()
+                .find(|component| component.name == "path-distinctiveness")
+                .unwrap()
+                .points,
+            3
+        );
+    }
+
+    #[test]
+    fn entity_groups_classify_generic_and_distinctive_paths_for_scoring() {
+        let mut generic = finding(
+            "generic",
+            "generic-template",
+            None,
+            RequestSpecificity::RequestSpecific,
+            None,
+            Some("203.0.113.30"),
+            None,
+        );
+        generic.uri_path = Some("/robots.txt".to_owned());
+        let mut distinctive = finding(
+            "distinctive",
+            "distinctive-template",
+            None,
+            RequestSpecificity::RequestSpecific,
+            None,
+            Some("203.0.113.31"),
+            None,
+        );
+        distinctive.uri_path = Some("/.env".to_owned());
+
+        let groups = entity_groups(
+            &[generic, distinctive],
+            EntityDimension::ConnectionIp,
+            TriagePolicy::default(),
+        );
+        let generic_component = groups
+            .iter()
+            .find(|group| group.key == "203.0.113.30")
+            .unwrap()
+            .score
+            .components
+            .iter()
+            .find(|component| component.name == "path-distinctiveness")
+            .unwrap();
+        let distinctive_component = groups
+            .iter()
+            .find(|group| group.key == "203.0.113.31")
+            .unwrap()
+            .score
+            .components
+            .iter()
+            .find(|component| component.name == "path-distinctiveness")
+            .unwrap();
+        assert_eq!(generic_component.points, 0);
+        assert_eq!(distinctive_component.points, 1);
     }
 
     fn finding(

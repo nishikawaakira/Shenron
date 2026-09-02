@@ -42,7 +42,7 @@ Static Nuclei CVE analysis is available through `shenron-lab nuclei inventory` a
 
 Read-only local AWS WAF production inspection and validated Nuclei hunting are available through `shenron production inspect` and `shenron production hunt`. They separate private investigation evidence from sanitized aggregate output and make no AWS changes. See [production hunting](docs/production-hunting.md).
 
-`shenron production explain` reviews private findings locally: its summary groups CVEs and templates by request method/path, alongside per-request evidence and breadth/depth/windowed triage of connection/client IP groups (`--show-source-ips`), locally resolved ASN groups (`--show-asn`), or JA4 client fingerprints (`--show-fingerprints`). By default it hides only response-unverified matches on generic paths; pass `--include-generic` to review every stored finding. `shenron-lab reputation update` prepares public reputation/ASN inputs that explain automatically reads from the local data directory when present; explicit dataset paths remain available. Each group carries an offline [behavior priority score](docs/production-hunting.md#behavior-priority-score) computed only from observed request behavior; it ranks entities for triage and is never a probability of malice, an exploitation or compromise determination, or attacker attribution. Optional local [IP/ASN reputation enrichment](docs/production-hunting.md#ipasn-reputation-enrichment-offline) uses frozen datasets only, never an inline external lookup, and remains a third-party opinion rather than a conclusion.
+`shenron production explain` reviews private findings locally: its summary groups CVEs and templates by request method/path, alongside per-request evidence and breadth/depth/windowed triage of connection/client IP groups (`--show-source-ips`), locally resolved ASN groups (`--show-asn`), or JA4 client fingerprints (`--show-fingerprints`). By default it hides only response-unverified matches on generic paths; pass `--include-generic` to review every stored finding. `shenron-lab reputation update` prepares public reputation/ASN inputs that explain automatically reads from the local data directory when present; explicit dataset paths remain available. Each group carries an offline [behavior priority score](docs/production-hunting.md#behavior-priority-score) computed only from observed request behavior; it transparently limits repeated generic-path depth and gives a small distinctiveness component, ranks entities for triage, and is never a probability of malice, an exploitation or compromise determination, or attacker attribution. Optional local [IP/ASN reputation enrichment](docs/production-hunting.md#ipasn-reputation-enrichment-offline) uses frozen datasets only, never an inline external lookup, and remains a third-party opinion rather than a conclusion.
 
 `shenron production ablation` compares aggregate match volume from URI-only through validated Nuclei IR and request-specific IR. It is a volume comparison, not precision, ground truth, or an attack/compromise determination; see [detection-strategy ablation](docs/ablation.md).
 
@@ -73,24 +73,30 @@ cargo run --bin shenron -- validate-rules --rules ./rules/
 
 ## Quick production hunt
 
-Prepare public Nuclei intelligence once, then hunt local logs with only an
-input and its format:
+Prepare public Nuclei, reputation, and ASN intelligence once, then hunt local
+logs with only an input and its format:
 
 ```bash
-shenron-lab nuclei update
+shenron-lab setup
 shenron production hunt --input ./logs --format apache
 ```
 
-`nuclei update` stores its checkout in `$SHENRON_DATA_DIR/nuclei-templates`
-when `SHENRON_DATA_DIR` is set; otherwise it uses
+`setup` stores its Nuclei checkout in `$SHENRON_DATA_DIR/nuclei-templates`
+and its reputation/ASN inputs in the same data directory when
+`SHENRON_DATA_DIR` is set; otherwise it uses
 `$XDG_DATA_HOME/shenron/nuclei-templates` or
 `~/.local/share/shenron/nuclei-templates`. It writes the matching frozen report
-alongside it as `nuclei-report.json`. Hunt, ablation, replay, and
+alongside it as `nuclei-report.json`, plus optional `reputation.jsonl` and
+`asn-ranges.tsv`. Hunt, ablation, replay, and
 count-hypotheses use those locations by default. A hunt without `--output`
 writes private artifacts to `./private-results/hunt-<UTC timestamp>/`.
 `--nuclei-templates`, `--nuclei-report`, `--kev-report`, and `--output` remain
 available for an explicit, reproducible workflow. KEV is optional; omitting it
 uses an empty KEV set.
+
+`shenron-lab nuclei update` and `shenron-lab reputation update` remain available
+when only one public input family should be refreshed. `setup` downloads public
+intelligence only and never transmits customer data.
 
 ## Sigma and log limits
 
