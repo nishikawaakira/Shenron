@@ -117,13 +117,27 @@ pub struct HttpHeader {
     pub value: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LogSource {
     AwsWaf,
     NginxCombined,
     ApacheCombined,
     ApacheVhostCombined,
+}
+
+impl LogSource {
+    /// The telemetry profile whose capabilities describe this source. Used to
+    /// bound the reachable behavior-score maximum for the source that actually
+    /// produced a finding, so absent capabilities do not depress the score.
+    pub fn telemetry_profile(self) -> TelemetryProfile {
+        match self {
+            Self::AwsWaf => TelemetryProfile::AwsWaf,
+            Self::NginxCombined => TelemetryProfile::NginxCombined,
+            Self::ApacheCombined => TelemetryProfile::ApacheCombined,
+            Self::ApacheVhostCombined => TelemetryProfile::ApacheVhostCombined,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
@@ -177,6 +191,40 @@ pub struct TelemetryCapabilities {
 impl Default for TelemetryCapabilities {
     fn default() -> Self {
         TelemetryProfile::AwsWaf.capabilities()
+    }
+}
+
+impl TelemetryCapabilities {
+    /// Combine two capability sets by keeping any capability either source can
+    /// express. A hunt over one format yields a single profile; Apache's
+    /// per-line auto-detection can mix standard and vhost lines, so the union
+    /// reflects what the corpus as a whole could record.
+    pub fn union(self, other: Self) -> Self {
+        let headers = match (self.headers, other.headers) {
+            (HeaderCapability::Arbitrary, _) | (_, HeaderCapability::Arbitrary) => {
+                HeaderCapability::Arbitrary
+            }
+            _ => HeaderCapability::RefererAndUserAgent,
+        };
+        Self {
+            timestamp: self.timestamp || other.timestamp,
+            source_ip: self.source_ip || other.source_ip,
+            client_ip: self.client_ip || other.client_ip,
+            host: self.host || other.host,
+            method: self.method || other.method,
+            uri_path: self.uri_path || other.uri_path,
+            uri_query: self.uri_query || other.uri_query,
+            headers,
+            user_agent: self.user_agent || other.user_agent,
+            referer: self.referer || other.referer,
+            status: self.status || other.status,
+            response_bytes: self.response_bytes || other.response_bytes,
+            ja3: self.ja3 || other.ja3,
+            ja4: self.ja4 || other.ja4,
+            waf_action: self.waf_action || other.waf_action,
+            waf_labels: self.waf_labels || other.waf_labels,
+            request_body: self.request_body || other.request_body,
+        }
     }
 }
 

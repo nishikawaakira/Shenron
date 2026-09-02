@@ -18,7 +18,7 @@ use walkdir::WalkDir;
 
 use crate::{
     access_log::{AccessLogFormat, AccessLogLines},
-    event::{HttpHeader, TelemetryProfile, TrustedProxySet, WebEvent},
+    event::{HttpHeader, LogSource, TelemetryProfile, TrustedProxySet, WebEvent},
     nuclei::{
         frozen_nuclei_selection, path_distinctiveness, validated_detections, Detectability,
         PathDistinctiveness, RequestSpecificity, ValidatedNucleiDetection,
@@ -444,6 +444,11 @@ struct PrivateFinding {
     #[serde(default)]
     waf_non_terminating_rule_ids: Vec<String>,
     request_id: Option<String>,
+    /// Telemetry source that produced this finding. Absent in older private
+    /// findings; the loader then falls back to a full-capability profile so a
+    /// legacy file is never penalized by an unknown reachable maximum.
+    #[serde(default)]
+    log_source: Option<LogSource>,
 }
 
 /// A terminal-safe view of private hunt evidence. The CLI keeps private
@@ -470,6 +475,9 @@ pub struct FindingExplanation {
     pub ja3: Option<String>,
     pub ja4: Option<String>,
     pub request_id: Option<String>,
+    /// Telemetry source that produced this finding, when recorded. Bounds the
+    /// reachable behavior-score maximum for this evidence.
+    pub log_source: Option<LogSource>,
 }
 
 pub fn explain_private_findings(path: &Path) -> anyhow::Result<Vec<FindingExplanation>> {
@@ -510,6 +518,7 @@ pub fn explain_private_findings(path: &Path) -> anyhow::Result<Vec<FindingExplan
             ja3: finding.ja3,
             ja4: finding.ja4,
             request_id: finding.request_id,
+            log_source: finding.log_source,
         });
     }
     Ok(findings)
@@ -1472,6 +1481,7 @@ fn private_finding(detection: &ValidatedNucleiDetection, event: &WebEvent) -> Pr
         waf_labels: event.waf_labels.clone(),
         waf_non_terminating_rule_ids: event.waf_non_terminating_rule_ids.clone(),
         request_id: event.request_id.clone(),
+        log_source: Some(event.log_source),
     }
 }
 

@@ -22,6 +22,7 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 
 use crate::{
+    event::TelemetryCapabilities,
     nuclei::{path_distinctiveness, PathDistinctiveness, RequestSpecificity},
     production::FindingExplanation,
 };
@@ -160,14 +161,57 @@ pub struct BehaviorScore {
     pub total: u32,
     pub tier: ScoreTier,
     pub components: Vec<ScoreComponent>,
+    /// The raw point ceiling the active telemetry profile and triage dimension
+    /// can actually reach. `total` is normalized against this so that a profile
+    /// missing a capability (for example no WAF outcome on combined logs) is
+    /// not systematically depressed. Equal to 100 when every component is
+    /// reachable.
+    pub reachable_max: u32,
+}
+
+/// Which telemetry-gated score components the active profile and triage
+/// dimension can actually reach. Always-reachable components (template-breadth,
+/// cve-breadth, observation-depth, path-distinctiveness, windowed-burst) are not
+/// listed here; they always count toward the reachable maximum.
+#[derive(Debug, Clone, Copy)]
+pub struct ReachableComponents {
+    /// The complementary-dimension spread can be expressed. An IP or ASN group
+    /// spreads over distinct hosts, which needs a host capability; a JA4 group
+    /// spreads over source IPs, which every profile records.
+    pub spread: bool,
+    /// The profile records a WAF enforcement outcome.
+    pub waf_unblocked: bool,
+}
+
+impl ReachableComponents {
+    /// Every component reachable — the full-capability baseline used for score
+    /// unit tests and for legacy findings with no recorded telemetry source.
+    pub const ALL: Self = Self {
+        spread: true,
+        waf_unblocked: true,
+    };
+
+    fn for_dimension(capabilities: TelemetryCapabilities, dimension: EntityDimension) -> Self {
+        Self {
+            spread: match dimension {
+                EntityDimension::Ja4 => true,
+                EntityDimension::ConnectionIp | EntityDimension::Asn => capabilities.host,
+            },
+            waf_unblocked: capabilities.waf_action,
+        }
+    }
 }
 
 // The score sums capped per-signal contributions. Weights are intentionally
-// transparent and total exactly 100 at saturation, so the number is auditable
-// rather than an opaque model output. Each contribution is monotonic in its
-// signal: adding observed matching behavior can only raise the score.
-// Response-unverified (URI-only) groups also have a non-additive total cap of
-// 74, so they cannot reach the high tier without request-specific evidence.
+// transparent and total exactly 100 when every reachable component saturates,
+// so the number is auditable rather than an opaque model output. Each
+// contribution is monotonic in its signal: adding observed matching behavior
+// can only raise the score. The total is then normalized against the reachable
+// maximum for the active telemetry profile, so a source that structurally
+// cannot express a component (for example no WAF outcome on combined logs) is
+// not depressed relative to a richer source. Response-unverified (URI-only)
+// groups also have a non-additive total cap of 74, so they cannot reach the
+// high tier without request-specific evidence.
 const MAX_TEMPLATE_POINTS: u32 = 24;
 const MAX_CVE_POINTS: u32 = 16;
 const MAX_OBSERVATION_POINTS: u32 = 16;
@@ -206,8 +250,9 @@ pub struct EntitySignals {
     pub windowed_burst: bool,
 }
 
-/// Compute the deterministic behavior-priority score for one entity.
-pub fn score(signals: &EntitySignals) -> BehaviorScore {
+/// Compute the deterministic behavior-priority score for one entity, normalized
+/// against the maximum the active telemetry profile and dimension can reach.
+pub fn score(signals: &EntitySignals, reachable: ReachableComponents) -> BehaviorScore {
     let mut components = Vec::new();
 
     let template_points = (signals.distinct_templates as u32 * 3).min(MAX_TEMPLATE_POINTS);
@@ -257,15 +302,25 @@ pub fn score(signals: &EntitySignals) -> BehaviorScore {
         ),
     });
 
-    let spread_points = (signals.spread as u32 * 2).min(MAX_SPREAD_POINTS);
-    components.push(ScoreComponent {
-        name: "spread",
-        points: spread_points,
-        detail: format!("{} distinct related endpoints or peers", signals.spread),
-    });
+    let spread_points = if reachable.spread {
+        let points = (signals.spread as u32 * 2).min(MAX_SPREAD_POINTS);
+        components.push(ScoreComponent {
+            name: "spread",
+            points,
+            detail: format!("{} distinct related endpoints or peers", signals.spread),
+        });
+        points
+    } else {
+        components.push(ScoreComponent {
+            name: "spread",
+            points: 0,
+            detail: "spread is unavailable for this telemetry profile (no host field), so it does not count toward the reachable maximum".to_owned(),
+        });
+        0
+    };
 
-    let unblocked_points = match signals.unblocked_fraction {
-        Some(fraction) => {
+    let unblocked_points = match (reachable.waf_unblocked, signals.unblocked_fraction) {
+        (true, Some(fraction)) => {
             let points = (fraction * MAX_UNBLOCKED_POINTS as f64).round() as u32;
             let points = points.min(MAX_UNBLOCKED_POINTS);
             components.push(ScoreComponent {
@@ -278,11 +333,19 @@ pub fn score(signals: &EntitySignals) -> BehaviorScore {
             });
             points
         }
-        None => {
+        (true, None) => {
             components.push(ScoreComponent {
                 name: "waf-unblocked",
                 points: 0,
                 detail: "no matched request had a known WAF enforcement outcome".to_owned(),
+            });
+            0
+        }
+        (false, _) => {
+            components.push(ScoreComponent {
+                name: "waf-unblocked",
+                points: 0,
+                detail: "WAF enforcement outcome is unavailable for this telemetry profile, so it does not count toward the reachable maximum".to_owned(),
             });
             0
         }
@@ -303,17 +366,43 @@ pub fn score(signals: &EntitySignals) -> BehaviorScore {
         },
     });
 
-    let total = template_points
+    let raw_total = template_points
         + cve_points
         + observation_points
         + distinctive_path_points
         + spread_points
         + unblocked_points
         + burst_points;
+
+    // The reachable maximum excludes telemetry-gated components this profile and
+    // dimension cannot express. Always-reachable components plus windowed-burst
+    // form the baseline; windowed-burst stays counted because it is an analyst
+    // choice, not a telemetry limitation.
+    let reachable_max = MAX_TEMPLATE_POINTS
+        + MAX_CVE_POINTS
+        + MAX_OBSERVATION_POINTS
+        + MAX_DISTINCTIVE_PATH_POINTS
+        + WINDOWED_BURST_POINTS
+        + if reachable.spread {
+            MAX_SPREAD_POINTS
+        } else {
+            0
+        }
+        + if reachable.waf_unblocked {
+            MAX_UNBLOCKED_POINTS
+        } else {
+            0
+        };
+
+    // Normalize the raw total to 0..=100 against what this profile can reach.
+    // reachable_max is always positive (the baseline alone is 65).
+    let total =
+        ((raw_total.min(reachable_max) as f64) * 100.0 / reachable_max as f64).round() as u32;
     let total = total.min(100);
 
     // URI-only evidence cannot by itself receive the highest priority tier:
-    // Nuclei response confirmation is unavailable in request telemetry.
+    // Nuclei response confirmation is unavailable in request telemetry. The cap
+    // is on the normalized total, so it holds regardless of profile.
     let total = if signals.request_specific_observations == 0 {
         total.min(74)
     } else {
@@ -333,6 +422,7 @@ pub fn score(signals: &EntitySignals) -> BehaviorScore {
         total,
         tier,
         components,
+        reachable_max,
     }
 }
 
@@ -579,6 +669,7 @@ pub fn entity_groups(
     findings: &[FindingExplanation],
     dimension: EntityDimension,
     policy: TriagePolicy,
+    capabilities: TelemetryCapabilities,
 ) -> Vec<EntityGroup> {
     let mut summaries = BTreeMap::<(Option<GroupingIdentity>, String), EntitySummary>::new();
     for finding in findings {
@@ -603,7 +694,7 @@ pub fn entity_groups(
         let entry = summaries.entry((identity, key)).or_default();
         add_finding_to_summary(entry, finding);
     }
-    finalize_entity_groups(summaries, dimension, BTreeMap::new(), policy)
+    finalize_entity_groups(summaries, dimension, BTreeMap::new(), policy, capabilities)
 }
 
 /// ASN groups together with the number of findings that had no local ASN
@@ -620,6 +711,7 @@ pub fn asn_entity_groups(
     findings: &[FindingExplanation],
     policy: TriagePolicy,
     resolver: &dyn AsnResolver,
+    capabilities: TelemetryCapabilities,
 ) -> AsnEntityGroups {
     let mut summaries = BTreeMap::<(Option<GroupingIdentity>, String), EntitySummary>::new();
     let mut organizations = BTreeMap::<(Option<GroupingIdentity>, String), BTreeSet<String>>::new();
@@ -646,7 +738,13 @@ pub fn asn_entity_groups(
         add_finding_to_summary(summaries.entry(summary_key).or_default(), finding);
     }
     AsnEntityGroups {
-        groups: finalize_entity_groups(summaries, EntityDimension::Asn, organizations, policy),
+        groups: finalize_entity_groups(
+            summaries,
+            EntityDimension::Asn,
+            organizations,
+            policy,
+            capabilities,
+        ),
         unresolved_findings,
     }
 }
@@ -713,13 +811,15 @@ fn finalize_entity_groups(
     dimension: EntityDimension,
     organizations: BTreeMap<(Option<GroupingIdentity>, String), BTreeSet<String>>,
     policy: TriagePolicy,
+    capabilities: TelemetryCapabilities,
 ) -> Vec<EntityGroup> {
+    let reachable = ReachableComponents::for_dimension(capabilities, dimension);
     let mut groups = summaries
         .into_iter()
         .map(|((identity, key), summary)| {
             let triage_basis = summary.triage_basis(policy);
             let windowed_burst = policy.window.is_some() && triage_basis.is_some();
-            let score = score(&summary.signals(dimension, windowed_burst));
+            let score = score(&summary.signals(dimension, windowed_burst), reachable);
             let (request_specific_observations, response_unverified_observations) =
                 summary.specificity_observations();
             EntityGroup {
@@ -766,6 +866,7 @@ mod tests {
     use std::net::IpAddr;
 
     use super::*;
+    use crate::event::TelemetryProfile;
 
     struct TestAsnResolver;
 
@@ -779,6 +880,14 @@ mod tests {
                 _ => None,
             }
         }
+    }
+
+    // Most score tests assess signal handling under a full-capability profile;
+    // this wrapper keeps them reading against the reachable-all baseline. Tests
+    // that exercise profile normalization call `super::score` with explicit
+    // `ReachableComponents`.
+    fn score(signals: &EntitySignals) -> BehaviorScore {
+        super::score(signals, ReachableComponents::ALL)
     }
 
     fn signals() -> EntitySignals {
@@ -880,6 +989,55 @@ mod tests {
     }
 
     #[test]
+    fn score_is_normalized_against_the_profile_reachable_maximum() {
+        // Identical behavioural evidence, minus the WAF outcome that combined
+        // logs cannot record. Without normalization the vhost profile would be
+        // depressed by the unreachable waf-unblocked points; with it, the same
+        // evidence lands in the same tier.
+        let evidence = EntitySignals {
+            distinct_templates: 8,
+            distinct_cves: 8,
+            distinct_observations: 10,
+            distinctive_observations: 10,
+            request_specific_observations: 5,
+            spread: 0,
+            unblocked_fraction: None,
+            windowed_burst: false,
+        };
+        let aws = super::score(
+            &evidence,
+            ReachableComponents::for_dimension(
+                TelemetryProfile::AwsWaf.capabilities(),
+                EntityDimension::ConnectionIp,
+            ),
+        );
+        let vhost = super::score(
+            &evidence,
+            ReachableComponents::for_dimension(
+                TelemetryProfile::ApacheVhostCombined.capabilities(),
+                EntityDimension::ConnectionIp,
+            ),
+        );
+        assert_eq!(aws.reachable_max, 100);
+        // Vhost cannot reach the 15 waf-unblocked points.
+        assert_eq!(vhost.reachable_max, 85);
+        assert_eq!(aws.tier, vhost.tier);
+        // The vhost total is scaled up toward its own ceiling rather than left
+        // structurally below the AWS WAF total.
+        assert!(vhost.total >= aws.total);
+        // A combined-log profile still lists the unreachable component at 0.
+        let waf = vhost
+            .components
+            .iter()
+            .find(|component| component.name == "waf-unblocked")
+            .unwrap();
+        assert_eq!(waf.points, 0);
+        assert!(waf
+            .detail
+            .contains("unavailable for this telemetry profile"));
+    }
+
+    #[test]
     fn distinctive_path_evidence_outranks_repeated_generic_path_evidence() {
         let repeated_generic = score(&EntitySignals {
             distinct_templates: 1,
@@ -945,6 +1103,7 @@ mod tests {
             &[generic, distinctive],
             EntityDimension::ConnectionIp,
             TriagePolicy::default(),
+            TelemetryProfile::AwsWaf.capabilities(),
         );
         let generic_component = groups
             .iter()
@@ -998,6 +1157,7 @@ mod tests {
             ja3: None,
             ja4: ja4.map(str::to_owned),
             request_id: Some(request_id.to_owned()),
+            log_source: Some(crate::event::LogSource::AwsWaf),
         }
     }
 
@@ -1045,6 +1205,7 @@ mod tests {
             &findings,
             EntityDimension::ConnectionIp,
             TriagePolicy::default(),
+            TelemetryProfile::AwsWaf.capabilities(),
         )
         .pop()
         .unwrap();
@@ -1080,9 +1241,14 @@ mod tests {
                 Some("t13d1516h2_shared"),
             ),
         ];
-        let group = entity_groups(&findings, EntityDimension::Ja4, TriagePolicy::default())
-            .pop()
-            .unwrap();
+        let group = entity_groups(
+            &findings,
+            EntityDimension::Ja4,
+            TriagePolicy::default(),
+            TelemetryProfile::AwsWaf.capabilities(),
+        )
+        .pop()
+        .unwrap();
         assert_eq!(group.distinct_validated_clients, 1);
         assert_eq!(group.distinct_observed_peers, 1);
         assert_eq!(group.spread, 1);
@@ -1110,7 +1276,12 @@ mod tests {
                 None,
             ),
         ];
-        let groups = asn_entity_groups(&findings, TriagePolicy::default(), &TestAsnResolver);
+        let groups = asn_entity_groups(
+            &findings,
+            TriagePolicy::default(),
+            &TestAsnResolver,
+            TelemetryProfile::AwsWaf.capabilities(),
+        );
         assert_eq!(groups.unresolved_findings, 0);
         assert_eq!(groups.groups.len(), 1);
         let group = &groups.groups[0];
@@ -1142,7 +1313,12 @@ mod tests {
                 None,
             ),
         ];
-        let groups = asn_entity_groups(&findings, TriagePolicy::default(), &TestAsnResolver);
+        let groups = asn_entity_groups(
+            &findings,
+            TriagePolicy::default(),
+            &TestAsnResolver,
+            TelemetryProfile::AwsWaf.capabilities(),
+        );
         assert_eq!(groups.groups.len(), 2);
         assert!(groups
             .groups
@@ -1165,7 +1341,12 @@ mod tests {
             Some("192.0.2.99"),
             None,
         )];
-        let groups = asn_entity_groups(&findings, TriagePolicy::default(), &TestAsnResolver);
+        let groups = asn_entity_groups(
+            &findings,
+            TriagePolicy::default(),
+            &TestAsnResolver,
+            TelemetryProfile::AwsWaf.capabilities(),
+        );
         assert!(groups.groups.is_empty());
         assert_eq!(groups.unresolved_findings, 1);
     }

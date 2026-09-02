@@ -386,6 +386,7 @@ fn batch_build_excludes_already_blocked_aws_waf_findings() {
         ja3: None,
         ja4: None,
         request_id: None,
+        log_source: None,
     };
     let (candidates, stats) = build_batch_from_findings(
         &[finding("ALLOW", "/unblocked"), finding("BLOCK", "/blocked")],
@@ -440,6 +441,7 @@ fn batch_candidate_ids_are_sequential_within_each_cve() {
         ja3: None,
         ja4: None,
         request_id: None,
+        log_source: None,
     };
     let (candidates, _) = build_batch_from_findings(
         &[
@@ -487,6 +489,7 @@ fn batch_build_excludes_response_unverified_unless_explicitly_included() {
         ja3: None,
         ja4: None,
         request_id: None,
+        log_source: None,
     };
     let findings = vec![finding];
     let (candidates, stats) =

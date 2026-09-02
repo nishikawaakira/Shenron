@@ -19,7 +19,7 @@ use shenron::{
         export as export_candidate, load as load_candidate, replay as replay_candidate,
         save as save_candidate, save_batch, Backend,
     },
-    event::{TelemetryProfile, TrustedProxy, TrustedProxySet},
+    event::{TelemetryCapabilities, TelemetryProfile, TrustedProxy, TrustedProxySet},
     nuclei::{path_distinctiveness, PathDistinctiveness},
     output::{Finding, FindingWriter},
     paths::{
@@ -565,6 +565,19 @@ fn main() -> Result<()> {
                     .map(load_reputation_database)
                     .transpose()?;
                 let findings = explain_private_findings(&findings)?;
+                // Bound the reachable behavior-score maximum by what the source
+                // profiles can express. Union across recorded sources; legacy
+                // findings without a source fall back to the full-capability
+                // default so they are never penalized.
+                let capabilities = findings
+                    .iter()
+                    .filter_map(|finding| {
+                        finding
+                            .log_source
+                            .map(|source| source.telemetry_profile().capabilities())
+                    })
+                    .reduce(TelemetryCapabilities::union)
+                    .unwrap_or_default();
                 let findings = match waf_outcome {
                     Some(filter) => findings
                         .into_iter()
@@ -602,12 +615,15 @@ fn main() -> Result<()> {
                     },
                     waf_outcome.map(WafOutcomeFilter::label),
                     limit,
-                    TriagePolicy::new(
-                        triage_breadth_observations,
-                        triage_breadth_templates,
-                        triage_depth_observations,
-                        triage_window,
-                    ),
+                    TriageContext {
+                        policy: TriagePolicy::new(
+                            triage_breadth_observations,
+                            triage_breadth_templates,
+                            triage_depth_observations,
+                            triage_window,
+                        ),
+                        capabilities,
+                    },
                     asn_database.as_ref(),
                     reputation_database.as_ref(),
                 );
@@ -1010,12 +1026,20 @@ struct ExplainDisplay {
     show_fingerprints: bool,
 }
 
+/// The triage thresholds and the telemetry capabilities that bound the reachable
+/// behavior-score maximum. They travel together through the explain summaries.
+#[derive(Clone, Copy)]
+struct TriageContext {
+    policy: TriagePolicy,
+    capabilities: TelemetryCapabilities,
+}
+
 fn print_explanations(
     findings: &[shenron::production::FindingExplanation],
     display: ExplainDisplay,
     waf_outcome_filter: Option<&str>,
     limit: usize,
-    triage_policy: TriagePolicy,
+    triage: TriageContext,
     asn_database: Option<&AsnDatabase>,
     reputation_database: Option<&ReputationDatabase>,
 ) {
@@ -1034,13 +1058,7 @@ fn print_explanations(
     }
     print_explanation_summary(findings, limit);
     if display.show_source_ips {
-        print_source_ip_summary(
-            findings,
-            limit,
-            triage_policy,
-            asn_database,
-            reputation_database,
-        );
+        print_source_ip_summary(findings, limit, triage, asn_database, reputation_database);
     } else if (asn_database.is_some() || reputation_database.is_some()) && !display.show_asn {
         println!(
             "Local reputation datasets were supplied, but --show-source-ips was not selected; no IP enrichment was displayed."
@@ -1048,20 +1066,16 @@ fn print_explanations(
     }
     if display.show_asn {
         match asn_database {
-            Some(database) => print_asn_summary(
-                findings,
-                limit,
-                triage_policy,
-                database,
-                reputation_database,
-            ),
+            Some(database) => {
+                print_asn_summary(findings, limit, triage, database, reputation_database)
+            }
             None => println!(
                 "ASN grouping was requested, but --asn-dataset was not supplied; no ASN groups were displayed."
             ),
         }
     }
     if display.show_fingerprints {
-        print_ja4_summary(findings, limit, triage_policy);
+        print_ja4_summary(findings, limit, triage);
     }
     if !display.show_request && !display.show_evidence {
         println!("Pass --show-request to display individual requests, or --show-evidence to include all locally stored evidence.");
@@ -1264,11 +1278,17 @@ const MAX_TRIAGE_WINDOW_SECONDS: u64 = MAX_TRIAGE_WINDOW_DAYS * 24 * 60 * 60;
 fn print_source_ip_summary(
     findings: &[shenron::production::FindingExplanation],
     limit: usize,
-    policy: TriagePolicy,
+    triage: TriageContext,
     asn_database: Option<&AsnDatabase>,
     reputation_database: Option<&ReputationDatabase>,
 ) {
-    let groups = entity_groups(findings, EntityDimension::ConnectionIp, policy);
+    let policy = triage.policy;
+    let groups = entity_groups(
+        findings,
+        EntityDimension::ConnectionIp,
+        policy,
+        triage.capabilities,
+    );
     println!("\nConnection/client IP triage (private findings only):");
     if let Some(database) = asn_database {
         print_dataset_provenance("ASN dataset", database.provenance());
@@ -1380,16 +1400,28 @@ fn print_ip_group(
             group.undated_observations
         );
     }
-    println!(
-        "  Behavior priority score: {}/100 ({})",
-        group.score.total,
-        group.score.tier.label()
-    );
+    println!("  Behavior priority score: {}", score_display(&group.score));
     println!(
         "  Request-specific observations: {}\n  Response-unverified observations: {}",
         group.request_specific_observations, group.response_unverified_observations
     );
     print_ip_reputation(group, asn_database, reputation_database);
+}
+
+/// Render the behavior score. When the active telemetry profile cannot reach
+/// every component, the total is normalized to 100 and the raw reachable ceiling
+/// is stated so the number stays auditable.
+fn score_display(score: &shenron::triage::BehaviorScore) -> String {
+    if score.reachable_max >= 100 {
+        format!("{}/100 ({})", score.total, score.tier.label())
+    } else {
+        format!(
+            "{}/100 ({}); normalized against this telemetry profile's reachable maximum of {}/100",
+            score.total,
+            score.tier.label(),
+            score.reachable_max
+        )
+    }
 }
 
 fn print_dataset_provenance(label: &str, provenance: &shenron::reputation::DatasetProvenance) {
@@ -1465,11 +1497,12 @@ fn print_reputation_hits(hits: Vec<shenron::reputation::ReputationHit>) {
 fn print_asn_summary(
     findings: &[shenron::production::FindingExplanation],
     limit: usize,
-    policy: TriagePolicy,
+    triage: TriageContext,
     asn_database: &AsnDatabase,
     reputation_database: Option<&ReputationDatabase>,
 ) {
-    let result = asn_entity_groups(findings, policy, asn_database);
+    let policy = triage.policy;
+    let result = asn_entity_groups(findings, policy, asn_database, triage.capabilities);
     println!("\nASN triage (private findings only):");
     print_dataset_provenance("ASN dataset", asn_database.provenance());
     if let Some(database) = reputation_database {
@@ -1549,11 +1582,7 @@ fn print_asn_group(
             group.undated_observations
         );
     }
-    println!(
-        "  Behavior priority score: {}/100 ({})",
-        group.score.total,
-        group.score.tier.label()
-    );
+    println!("  Behavior priority score: {}", score_display(&group.score));
     println!(
         "  Request-specific observations: {}\n  Response-unverified observations: {}",
         group.request_specific_observations, group.response_unverified_observations
@@ -1584,9 +1613,14 @@ fn print_asn_group(
 fn print_ja4_summary(
     findings: &[shenron::production::FindingExplanation],
     limit: usize,
-    policy: TriagePolicy,
+    triage: TriageContext,
 ) {
-    let groups = entity_groups(findings, EntityDimension::Ja4, policy);
+    let groups = entity_groups(
+        findings,
+        EntityDimension::Ja4,
+        triage.policy,
+        triage.capabilities,
+    );
     println!("\nJA4 fingerprint triage (private findings only):");
     println!(
         "A JA4 client fingerprint groups requests that share TLS client characteristics. Validated-client and observed-peer identities are intentionally reported separately because they must not be merged. One fingerprint observed across several identities can indicate shared tooling or automation; it is not attacker attribution and does not establish an attack, exploitation, or compromise. Behavior priority score (0-100) ranks a fingerprint for triage from observed request behavior only."
@@ -1602,7 +1636,7 @@ fn print_ja4_summary(
     }
     for group in displayed {
         println!(
-            "{}\n  Triage basis: {}\n  Distinct validated clients sharing this fingerprint: {}\n  Distinct observed peers sharing this fingerprint: {}\n  Identity spread used for behavior score: {}\n  Matching request observations: {}\n  Distinct Nuclei template patterns: {}\n  Unique CVEs: {}\n  Matched template records: {}\n  Behavior priority score: {}/100 ({})\n  Request-specific observations: {}\n  Response-unverified observations: {}",
+            "{}\n  Triage basis: {}\n  Distinct validated clients sharing this fingerprint: {}\n  Distinct observed peers sharing this fingerprint: {}\n  Identity spread used for behavior score: {}\n  Matching request observations: {}\n  Distinct Nuclei template patterns: {}\n  Unique CVEs: {}\n  Matched template records: {}\n  Behavior priority score: {}\n  Request-specific observations: {}\n  Response-unverified observations: {}",
             terminal_safe(&group.key),
             group.triage_basis.unwrap_or("none"),
             group.distinct_validated_clients,
@@ -1612,8 +1646,7 @@ fn print_ja4_summary(
             group.distinct_templates,
             group.distinct_cves,
             group.matching_records,
-            group.score.total,
-            group.score.tier.label(),
+            score_display(&group.score),
             group.request_specific_observations,
             group.response_unverified_observations,
         );
