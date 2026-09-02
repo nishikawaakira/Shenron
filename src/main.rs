@@ -45,6 +45,7 @@ use shenron::{
     reputation::{load_asn_database, load_reputation_database, AsnDatabase, ReputationDatabase},
     sigma::load_rules,
     triage::{asn_entity_groups, entity_groups, EntityDimension, TriagePolicy},
+    triage_view::{build_triage_view, PrivateTriageView, SanitizedTriageSummary},
     waf::{maybe_gzip_reader, WafLines},
 };
 
@@ -201,6 +202,12 @@ enum ProductionCommand {
         /// Prior local run-artifact directory to compare after this hunt completes.
         #[arg(long)]
         baseline: Option<PathBuf>,
+        /// Display ranked private connection/client-IP triage entries.
+        #[arg(long)]
+        show_triage: bool,
+        /// Maximum private triage entries to display. Use 0 to display all.
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
     },
     /// Compare two existing local run-artifact directories without re-streaming logs.
     Compare {
@@ -504,6 +511,8 @@ fn main() -> Result<()> {
                 rules,
                 no_sigma,
                 baseline,
+                show_triage,
+                limit,
             } => {
                 let (nuclei_templates, nuclei_report) =
                     resolve_nuclei_inputs(nuclei_templates, nuclei_report)?;
@@ -526,9 +535,18 @@ fn main() -> Result<()> {
                 let sanitized_path = output.join("sanitized-research.json");
                 serde_json::to_writer_pretty(File::create(&sanitized_path)?, &report)?;
                 print_hunt(&report, &sanitized_path);
+                let mut first_seen_source_ips = BTreeSet::new();
                 if let Some(baseline) = baseline {
                     let comparison = compare_runs(&baseline, &output)?;
                     write_comparison(&output, &comparison)?;
+                    first_seen_source_ips.extend(
+                        comparison
+                            .private
+                            .first_seen_entities
+                            .source_ips
+                            .iter()
+                            .cloned(),
+                    );
                     println!(
                         "Baseline comparison written: {}\n  Newly observed CVEs: {}\n  First-seen entities: {}\n  Elevated paths: {}",
                         output.join("comparison-summary.json").display(),
@@ -540,6 +558,7 @@ fn main() -> Result<()> {
                         comparison.sanitized.concentration_delta.elevated_paths,
                     );
                 }
+                write_hunt_triage_view(&output, &first_seen_source_ips, show_triage, limit)?;
                 Ok(())
             }
             ProductionCommand::Compare {
@@ -988,6 +1007,125 @@ fn resolve_optional_local_dataset(
         let path = default_path();
         path.is_file().then_some(path)
     })
+}
+
+/// Build the post-hunt consolidated triage artifacts from the private findings
+/// that hunt just wrote. Findings are deliberately re-read instead of retained
+/// during streaming, keeping the hunt path bounded by its normal output files.
+fn write_hunt_triage_view(
+    output: &Path,
+    first_seen_source_ips: &BTreeSet<String>,
+    show_triage: bool,
+    limit: usize,
+) -> Result<()> {
+    let asn_dataset = resolve_optional_local_dataset(None, default_asn_dataset);
+    let reputation_dataset = resolve_optional_local_dataset(None, default_reputation_dataset);
+    let asn_database = asn_dataset.as_deref().map(load_asn_database).transpose()?;
+    let reputation_database = reputation_dataset
+        .as_deref()
+        .map(load_reputation_database)
+        .transpose()?;
+    let findings_path = output.join("private-findings.jsonl");
+    let findings = explain_private_findings(&findings_path)?;
+    // Bound scores by the union of source capabilities, matching the existing
+    // `production explain` behavior. Legacy findings retain the full-capability
+    // default rather than being penalized by an absent source marker.
+    let capabilities = findings
+        .iter()
+        .filter_map(|finding| {
+            finding
+                .log_source
+                .map(|source| source.telemetry_profile().capabilities())
+        })
+        .reduce(TelemetryCapabilities::union)
+        .unwrap_or_default();
+    let (summary, view) = build_triage_view(
+        &findings,
+        capabilities,
+        TriagePolicy::default(),
+        asn_database.as_ref(),
+        reputation_database.as_ref(),
+        first_seen_source_ips,
+    );
+    let summary_path = output.join("triage-summary.json");
+    let view_path = output.join("triage-view.json");
+    serde_json::to_writer_pretty(File::create(&summary_path)?, &summary)?;
+    serde_json::to_writer_pretty(File::create(&view_path)?, &view)?;
+    print_hunt_triage_summary(&summary, &view_path);
+    if show_triage {
+        print_hunt_triage_entries(&view, limit);
+    }
+    Ok(())
+}
+
+/// The default hunt transcript contains aggregate triage context only. It
+/// deliberately omits IPs, ASN organizations, and reputation details; pass
+/// `--show-triage` to opt in to the private ranking.
+fn print_hunt_triage_summary(summary: &SanitizedTriageSummary, view_path: &Path) {
+    println!(
+        "Consolidated triage summary (priority order for human review; NOT threat severity or a probability of malice):\n  Entities: {}\n  Requiring investigation: {}\n  Behavior-priority tiers: info={} low={} medium={} high={}\n  First-seen entities (new = review, not malicious): {}\nTriage view written: {}",
+        summary.total_entities,
+        summary.entities_requiring_investigation,
+        summary.tier_histogram.info,
+        summary.tier_histogram.low,
+        summary.tier_histogram.medium,
+        summary.tier_histogram.high,
+        summary.first_seen_entities,
+        view_path.display(),
+    );
+}
+
+/// Print private ranked entries only after the analyst explicitly requests
+/// them. The order is an inspection ordinal, never an attacker attribution or
+/// a conclusion about abuse, exploitation, or compromise.
+fn print_hunt_triage_entries(view: &PrivateTriageView, limit: usize) {
+    println!(
+        "\nConsolidated triage view (private; review order only, not threat severity or malice):"
+    );
+    let displayed = &view.entities[..view.entities.len().min(display_limit(limit))];
+    if displayed.is_empty() {
+        println!("No connection/client-IP entities were available from the private findings.");
+        return;
+    }
+    for (index, entity) in displayed.iter().enumerate() {
+        println!(
+            "[{}] {}\n  Identity: {}\n  Behavior priority score: {}/100 ({}, reachable maximum {}/100)\n  Triage basis: {}\n  Requires investigation: {}\n  Distinct observations/templates/CVEs: {}/{}/{}\n  Matching records: {}\n  Request-specific / response-unverified observations: {}/{}\n  First seen: {}",
+            index + 1,
+            terminal_safe(&entity.key),
+            terminal_safe(entity.identity),
+            entity.behavior_score.total,
+            terminal_safe(&entity.behavior_score.tier),
+            entity.behavior_score.reachable_max,
+            entity.triage_basis.unwrap_or("none"),
+            entity.requires_investigation,
+            entity.distinct_observations,
+            entity.distinct_templates,
+            entity.distinct_cves,
+            entity.matching_records,
+            entity.request_specific_observations,
+            entity.response_unverified_observations,
+            entity.first_seen,
+        );
+        match &entity.resolved_asn {
+            Some(asn) => println!("  Resolved ASN: {} ({})", asn.asn, terminal_safe(&asn.org)),
+            None => println!("  Resolved ASN: unavailable"),
+        }
+        match &entity.reputation {
+            Some(reputation) => println!(
+                "  Reputation opinion: {}/100 ({}) via {}",
+                reputation.score,
+                terminal_safe(&reputation.tier),
+                terminal_safe(&reputation.scope),
+            ),
+            None => println!("  Reputation opinion: unavailable"),
+        }
+    }
+    if displayed.len() < view.entities.len() {
+        println!(
+            "{} additional private triage entities omitted. Pass --limit 0 to display all.",
+            view.entities.len() - displayed.len()
+        );
+    }
 }
 
 fn default_hunt_output() -> PathBuf {

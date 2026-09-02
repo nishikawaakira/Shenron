@@ -265,9 +265,105 @@ fn hunt_baseline_writes_temporal_comparison_artifacts() {
         .stdout(contains("Baseline comparison written:"));
     assert!(output.join("comparison-summary.json").is_file());
     assert!(output.join("comparison-detail.json").is_file());
+    assert!(output.join("triage-summary.json").is_file());
+    assert!(output.join("triage-view.json").is_file());
     let sanitized = fs::read_to_string(output.join("comparison-summary.json")).unwrap();
     assert!(!sanitized.contains("/vulnerable/execute"));
     assert!(!sanitized.contains("198.51.100.1"));
+    let triage_summary = fs::read_to_string(output.join("triage-summary.json")).unwrap();
+    assert!(triage_summary.contains("SANITIZED_HUNT_TRIAGE"));
+    assert!(!triage_summary.contains("/vulnerable/execute"));
+    assert!(!triage_summary.contains("198.51.100.1"));
+    let triage_view = fs::read_to_string(output.join("triage-view.json")).unwrap();
+    assert!(triage_view.contains("HUNT_TRIAGE_VIEW_PRIVATE"));
+    assert!(triage_view.contains("198.51.100.1"));
+}
+
+#[test]
+fn hunt_triage_keeps_private_entities_gated_and_marks_baseline_first_seen_entities() {
+    let directory = tempdir().unwrap();
+    let baseline_input = directory.path().join("baseline-waf.jsonl");
+    let fixture = fs::read_to_string("tests/fixtures/production/waf.jsonl").unwrap();
+    fs::write(
+        &baseline_input,
+        format!("{}\n", fixture.lines().next().unwrap()),
+    )
+    .unwrap();
+    let baseline = directory.path().join("baseline");
+    let baseline_report = hunt(
+        &baseline_input,
+        Path::new("tests/fixtures/nuclei"),
+        Path::new("tests/fixtures/production/nuclei-report.json"),
+        Path::new("tests/fixtures/production/kev-report.json"),
+        &baseline,
+        TelemetryProfile::AwsWaf,
+        HuntTimeRange::default(),
+    )
+    .unwrap();
+    serde_json::to_writer_pretty(
+        fs::File::create(baseline.join("sanitized-research.json")).unwrap(),
+        &baseline_report,
+    )
+    .unwrap();
+
+    let output = directory.path().join("current");
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "production",
+            "hunt",
+            "--input",
+            "tests/fixtures/production/waf.jsonl",
+            "--format",
+            "aws-waf",
+            "--nuclei-templates",
+            "tests/fixtures/nuclei",
+            "--nuclei-report",
+            "tests/fixtures/production/nuclei-report.json",
+            "--kev-report",
+            "tests/fixtures/production/kev-report.json",
+            "--output",
+            output.to_str().unwrap(),
+            "--baseline",
+            baseline.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(contains("Consolidated triage summary"))
+        .stdout(contains("198.51.100.2").not())
+        .stdout(contains("/vulnerable/execute").not());
+    let triage_view: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(output.join("triage-view.json")).unwrap())
+            .unwrap();
+    assert!(triage_view["entities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|entity| entity["key"] == "198.51.100.2" && entity["first_seen"] == true));
+
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "production",
+            "hunt",
+            "--input",
+            "tests/fixtures/production/waf.jsonl",
+            "--format",
+            "aws-waf",
+            "--nuclei-templates",
+            "tests/fixtures/nuclei",
+            "--nuclei-report",
+            "tests/fixtures/production/nuclei-report.json",
+            "--kev-report",
+            "tests/fixtures/production/kev-report.json",
+            "--output",
+            directory.path().join("shown").to_str().unwrap(),
+            "--show-triage",
+        ])
+        .assert()
+        .success()
+        .stdout(contains("Consolidated triage view (private"))
+        .stdout(contains("198.51.100.1"));
 }
 
 #[test]

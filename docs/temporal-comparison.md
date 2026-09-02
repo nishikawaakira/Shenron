@@ -1,6 +1,6 @@
 # Temporal comparison and retro-hunting (design proposal)
 
-Status: **implemented (Part A)**. This document records the design
+Status: **implemented (Parts A and B)**. This document records the design
 decisions before any code is written, so that the implementation stays inside
 Shenron's pillars. The formerly open decisions on the robust statistic and the
 retro-hunt scope are now settled (see "Settled decisions"); the delivery is a
@@ -10,8 +10,8 @@ family").
 Part A implements the artifact comparison engine, `production compare`, and
 `production hunt --baseline`. It writes `comparison-summary.json`
 (`SANITIZED_TEMPORAL_COMPARISON`) and `comparison-detail.json`
-(`TEMPORAL_COMPARISON_PRIVATE`). Part B, the consolidated behavior-score and
-reputation triage view, remains intentionally unimplemented.
+(`TEMPORAL_COMPARISON_PRIVATE`). Part B implements the consolidated
+behavior-score and reputation triage view emitted by every `production hunt`.
 
 ## Why
 
@@ -174,6 +174,32 @@ stdout exactly as `explain` and `concentration` do; `--limit` bounds displayed
 rows. No network access, no template execution, no AWS calls, COUNT-only
 downstream — unchanged. The comparison is pure aggregation over local files.
 
+### Consolidated triage view (Part B)
+
+Every `production hunt` also re-reads its local `private-findings.jsonl` after
+the streaming pass and writes two additional artifacts:
+
+- `triage-summary.json` (`SANITIZED_HUNT_TRIAGE`) contains only entity counts,
+  the behavior-priority tier histogram, the count requiring investigation, and
+  the count marked first-seen. It contains no IP addresses, paths, hosts,
+  request values, JA3/JA4 values, or reputation values.
+- `triage-view.json` (`HUNT_TRIAGE_VIEW_PRIVATE`) contains the ranked
+  connection/client-IP entries, their grouping identity, behavior score,
+  optional local ASN/reputation enrichment, and first-seen marker.
+
+Hunt's normal stdout prints only the aggregate summary. Pass `--show-triage`
+to print private ranked entries, and use hunt's `--limit` (default 20; `0` for
+all) to bound that listing. Entries sort deterministically by behavior score
+descending, then locally supplied reputation score descending (missing opinion
+last), then first-seen first, then key. ASN and reputation inputs use the same
+prepared local datasets as `production explain`; no external lookup occurs.
+
+This is a **triage priority order — which entity a person reviews first — not a
+threat severity or a probability of malice**. A first-seen marker means new and
+worth review, never malicious. Neither the view nor its first-seen/reputation
+context determines an attack, exploitation, compromise, abuse, or attacker
+identity.
+
 ## Report contents (sketch)
 
 Sanitized `comparison-summary.json`:
@@ -224,20 +250,21 @@ Private `comparison-detail.json` (paths + connection-peer IPs + JA4):
    the diff and a consolidated triage view into the single existing pass;
    `compare` handles two arbitrary prior runs. (See "One command, not a family".)
 
-## Open decisions to resolve during implementation
+## Settled implementation details
 
-1. **Entity identity across runs.** Source IP, ASN, JA4, host, and path are
-   stable keys; whether "first-seen" should also consider verified `client_ip`
-   when a trusted-proxy chain was configured (it is only available on some runs)
-   needs a rule for mixed availability — likely: only compare `client_ip` when
-   both runs recorded it, and disclose when it was unavailable on one side.
-2. **Where the first-seen counts live.** Confirm that per-class new-entity counts
-   are safe for the sanitized report (they are cardinalities, not values) and
-   that only the lists are private.
-3. **Consolidated view exact shape.** The ordering key (behavior score, then
-   reputation, then first-seen), how the first-seen flag and `elevated`/
-   `low-baseline` labels render, and the display cap — to be pinned when the view
-   is built, keeping it a triage ordinal and never a threat severity.
+1. **Entity identity across runs.** Verified `client_ip` is compared only when
+   both runs recorded it; otherwise that class is reported unavailable. The
+   consolidated hunt view uses the existing per-finding identity rule:
+   validated client when available, otherwise observed peer, without merging
+   the two identities.
+2. **First-seen privacy boundary.** Per-class first-seen cardinalities are in
+   the sanitized comparison report. Entity lists remain exclusively in the
+   private comparison detail and private triage view.
+3. **Consolidated view shape.** Hunt ranks connection/client-IP groups by
+   behavior score, then local reputation score, then first-seen marker, then
+   key, with `--limit 20` by default. The order is deliberately a triage
+   ordinal only; concentration's `elevated`/`low-baseline` labels remain in the
+   separate temporal comparison detail rather than being folded into this view.
 
 ## Fit with the pillars
 

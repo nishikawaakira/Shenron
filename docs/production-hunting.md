@@ -107,6 +107,27 @@ same pair into the new hunt directory after the current artifact is complete.
 First-seen and elevated-volume labels are triage context only; they are never a
 determination of DoS, attack, abuse, exploitation, compromise, or attribution.
 
+## Consolidated hunt triage view
+
+Every `production hunt` writes a consolidated connection/client-IP triage view
+after its local matching pass. `triage-summary.json`
+(`SANITIZED_HUNT_TRIAGE`) contains only aggregate cardinalities and a
+behavior-priority tier histogram; `triage-view.json`
+(`HUNT_TRIAGE_VIEW_PRIVATE`) contains the IP keys, identity labels, behavior
+score, optional local ASN/reputation enrichment, and first-seen marker. The
+normal hunt transcript prints only the sanitized counts. To intentionally view
+the private ranked entries, pass `--show-triage`; `--limit` defaults to 20 and
+accepts `0` to display all entries.
+
+The ranking is deterministic: behavior score descending, then local
+reputation score descending (no opinion last), then first-seen entities, then
+the entity key. It uses the same local prepared ASN/reputation datasets as
+`production explain` when present and never performs an external lookup.
+This is a **triage priority order for human review**, not threat severity or a
+probability of malice. `first-seen` means new and worth review, never malicious;
+neither it nor a score/reputation opinion determines attack, exploitation,
+compromise, abuse, or attacker identity.
+
 Long streaming commands (`hunt`, `ablation`, `replay`, `count-hypotheses`) emit a periodic progress heartbeat to stderr during a large scan. It reports only a running record count and a fixed command label — never a request value, IP address, or hostname — and stdout continues to carry findings and reports.
 
 `--output` must be outside the raw-input tree. When omitted, hunt writes to `./private-results/hunt-<UTC timestamp>/`. The command writes `private-findings.jsonl` locally with investigation evidence, including fields that may be sensitive. `sanitized-research.json` has aggregate CVE/KEV counts, time ranges, WAF outcomes, and cardinalities only; it never includes raw request values, IPs, hostnames, JA3/JA4 values, queries, or headers. The default `private-results/` location is ignored by Git, but that is only an additional safeguard and not a data-security boundary.

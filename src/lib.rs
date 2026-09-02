@@ -17,4 +17,5 @@ pub mod reputation_update;
 pub mod sigma;
 pub mod sigma_pack;
 pub mod triage;
+pub mod triage_view;
 pub mod waf;
