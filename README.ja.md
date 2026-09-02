@@ -40,7 +40,7 @@ Shenron の解析本体 `shenron` は、ターゲットへのスキャン、エ�
 
 - AWS WAF のログ（JSONL、`.gz` も可）
 - nginx の Combined ログ
-- Apache の Combined ログ、および vhost 付きログ（先頭の vhost はポート有無どちらも可）
+- Apache の Combined ログ（`--format apache` は標準 Combined と vhost 前置き Combined を行単位で自動判別。先頭の vhost はポート有無どちらも可。`--format apache-vhost` は vhost 前置きを厳格に要求）
 - Nuclei テンプレート一式と、その検証結果（凍結レポート）
 - CISA KEV スナップショット
 - （任意）ローカルの IP/ASN 評判データセット、IP→ASN 解決データセット

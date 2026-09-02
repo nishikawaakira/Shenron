@@ -54,7 +54,7 @@ Read-only local AWS WAF production inspection and validated Nuclei hunting are a
 
 Defensive candidates can be built from private hunt findings, replayed locally, reviewed for backend compatibility, and exported as COUNT-only AWS WAF JSON, Terraform rule fragments, or OSSEC detection XML. Export never deploys a control and refuses non-faithful translations. See the [candidate model](docs/waf-candidate-model.md).
 
-The same passive scanner supports explicit `--format nginx` and `--format apache` parsing for standard combined logs. Source capabilities remain explicit; see [telemetry capabilities](docs/telemetry-capabilities.md).
+The same passive scanner supports explicit `--format nginx` parsing for standard combined logs. `--format apache` automatically accepts both standard Combined and vhost-prefixed Combined logs per line; `--format apache-vhost` remains available when a vhost prefix must be required. Source capabilities remain explicit; see [telemetry capabilities](docs/telemetry-capabilities.md).
 
 ## Quick start
 

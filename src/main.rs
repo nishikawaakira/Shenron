@@ -312,9 +312,13 @@ enum ProductionCommand {
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum InputFormat {
+    /// AWS WAF JSON logs.
     AwsWaf,
+    /// Standard nginx Combined Log Format.
     Nginx,
+    /// Apache standard Combined or vhost-prefixed Combined, detected per line.
     Apache,
+    /// Apache vhost-prefixed Combined only; a leading vhost is required.
     ApacheVhost,
 }
 

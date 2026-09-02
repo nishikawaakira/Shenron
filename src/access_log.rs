@@ -1,10 +1,11 @@
 //! Streaming nginx and Apache Combined Log Format parsing.
 //!
-//! Standard nginx/Apache formats have the same field shape. Apache's
-//! `other_vhosts_access.log` vhost-prefixed Combined Log Format is an explicit
-//! additional source, because it supplies a server host that standard Combined
-//! logs do not contain. Its leading vhost accepts either `%v:%p` or `%v` and
-//! is normalized to `host`.
+//! Standard nginx/Apache formats have the same field shape. Apache parsing
+//! automatically also accepts the vhost-prefixed `other_vhosts_access.log`
+//! Combined Log Format, because it supplies a server host that standard
+//! Combined logs do not contain. The strict vhost format remains available for
+//! callers that require the prefix. Its leading vhost accepts either `%v:%p`
+//! or `%v` and is normalized to `host`.
 
 use std::{
     io::{BufRead, BufReader, Read},
@@ -42,12 +43,35 @@ pub fn parse_combined_line(
     raw: &str,
     format: AccessLogFormat,
 ) -> Result<WebEvent, AccessLogParseError> {
-    let captures = match format {
-        AccessLogFormat::NginxCombined | AccessLogFormat::ApacheCombined => combined_regex(),
-        AccessLogFormat::ApacheVhostCombined => apache_vhost_combined_regex(),
-    }
-    .captures(raw)
-    .ok_or(AccessLogParseError::Format)?;
+    let (captures, log_source, has_vhost_prefix) = match format {
+        AccessLogFormat::NginxCombined => (
+            combined_regex()
+                .captures(raw)
+                .ok_or(AccessLogParseError::Format)?,
+            LogSource::NginxCombined,
+            false,
+        ),
+        AccessLogFormat::ApacheCombined => {
+            if let Some(captures) = combined_regex().captures(raw) {
+                (captures, LogSource::ApacheCombined, false)
+            } else {
+                (
+                    apache_vhost_combined_regex()
+                        .captures(raw)
+                        .ok_or(AccessLogParseError::Format)?,
+                    LogSource::ApacheVhostCombined,
+                    true,
+                )
+            }
+        }
+        AccessLogFormat::ApacheVhostCombined => (
+            apache_vhost_combined_regex()
+                .captures(raw)
+                .ok_or(AccessLogParseError::Format)?,
+            LogSource::ApacheVhostCombined,
+            true,
+        ),
+    };
     let field = |name| {
         captures
             .name(name)
@@ -74,10 +98,10 @@ pub fn parse_combined_line(
     let response_bytes = parse_optional(field("response_bytes")?);
     let referer = value_or_none(field("referer")?).and_then(|value| decode_log_value(&value));
     let user_agent = value_or_none(field("user_agent")?).and_then(|value| decode_log_value(&value));
-    let host = match format {
-        AccessLogFormat::ApacheVhostCombined => parse_vhost(field("vhost")?)?,
-        AccessLogFormat::NginxCombined | AccessLogFormat::ApacheCombined => None,
-    };
+    let host = has_vhost_prefix
+        .then(|| parse_vhost(field("vhost")?))
+        .transpose()?
+        .flatten();
     // These are the only request headers represented by the standard combined
     // format. Keeping them as headers lets the shared Detection IR evaluate
     // User-Agent/Referer requirements without pretending arbitrary headers
@@ -121,11 +145,7 @@ pub fn parse_combined_line(
         waf_rule_type: None,
         waf_labels: Vec::new(),
         waf_non_terminating_rule_ids: Vec::new(),
-        log_source: match format {
-            AccessLogFormat::NginxCombined => LogSource::NginxCombined,
-            AccessLogFormat::ApacheCombined => LogSource::ApacheCombined,
-            AccessLogFormat::ApacheVhostCombined => LogSource::ApacheVhostCombined,
-        },
+        log_source,
         raw: raw.to_owned(),
     })
 }
@@ -311,6 +331,45 @@ mod tests {
         assert_eq!(event.uri_path.as_deref(), Some("/foo/bar"));
         assert_eq!(event.uri_query.as_deref(), Some("id=123"));
         assert_eq!(event.log_source, LogSource::ApacheVhostCombined);
+    }
+
+    #[test]
+    fn apache_auto_detects_standard_and_vhost_combined_lines() {
+        let standard = parse_combined_line(
+            r#"192.166.82.243 - - [17/Aug/2026:00:02:18 +0900] "GET / HTTP/1.1" 200 12 "-" "curl/8""#,
+            AccessLogFormat::ApacheCombined,
+        )
+        .unwrap();
+        assert_eq!(standard.host, None);
+        assert_eq!(standard.log_source, LogSource::ApacheCombined);
+        assert_eq!(standard.method.as_deref(), Some("GET"));
+        assert_eq!(standard.uri_path.as_deref(), Some("/"));
+
+        let vhost = parse_combined_line(
+            r#"kamusari.com:80 192.166.82.243 - - [17/Aug/2026:00:02:18 +0900] "GET /wp-config.php.save HTTP/1.1" 404 454 "-" "Python-urllib/2.7""#,
+            AccessLogFormat::ApacheCombined,
+        )
+        .unwrap();
+        assert_eq!(vhost.host.as_deref(), Some("kamusari.com"));
+        assert_eq!(vhost.log_source, LogSource::ApacheVhostCombined);
+        assert_eq!(vhost.method.as_deref(), Some("GET"));
+        assert_eq!(vhost.uri_path.as_deref(), Some("/wp-config.php.save"));
+    }
+
+    #[test]
+    fn strict_apache_vhost_format_rejects_standard_combined_lines() {
+        let standard = r#"192.166.82.243 - - [17/Aug/2026:00:02:18 +0900] "GET / HTTP/1.1" 200 12 "-" "curl/8""#;
+        assert!(matches!(
+            parse_combined_line(standard, AccessLogFormat::ApacheVhostCombined),
+            Err(AccessLogParseError::Format)
+        ));
+        assert!(matches!(
+            parse_combined_line(
+                r#"kamusari.com:80 192.166.82.243 - - [17/Aug/2026:00:02:18 +0900] "GET /wp-config.php.save HTTP/1.1" 404 454 "-" "Python-urllib/2.7""#,
+                AccessLogFormat::NginxCombined,
+            ),
+            Err(AccessLogParseError::Format)
+        ));
     }
 
     #[test]
