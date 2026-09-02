@@ -62,7 +62,7 @@ pub struct UnsupportedRule {
     pub reason: String,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct RuleSet {
     pub supported: Vec<CompiledRule>,
     pub unsupported: Vec<UnsupportedRule>,

@@ -96,6 +96,14 @@ pub struct HuntMetrics {
     pub allowed_or_not_blocked: usize,
     pub count_related_evidence: usize,
     pub unknown_outcome: usize,
+    /// Supported Sigma rules evaluated in this hunt (0 when Sigma was disabled or
+    /// no rules were found). The Sigma pass is a generic request-pattern layer,
+    /// kept entirely separate from the CVE metrics above.
+    pub sigma_rules_evaluated: usize,
+    /// Individual Sigma rule matches across all events.
+    pub sigma_rule_matches: usize,
+    /// Distinct Sigma rules that matched at least one event.
+    pub distinct_sigma_rules: usize,
 }
 
 /// Inclusive UTC interval applied before matching. Events without a timestamp
@@ -129,6 +137,10 @@ pub struct HuntOptions {
     pub time_range: HuntTimeRange,
     pub trusted_proxies: TrustedProxySet,
     pub triage_policy: HuntTriagePolicy,
+    /// Supported Sigma rules to evaluate in the same streaming pass. `None`
+    /// disables the generic Sigma detection layer; the CVE-anchored Nuclei pass
+    /// is unaffected either way.
+    pub sigma_ruleset: Option<crate::sigma::RuleSet>,
 }
 
 /// The fixed baseline triage policy recorded with a hunt. Triage itself runs
@@ -389,6 +401,9 @@ struct RunManifest {
     nuclei_revision: Option<String>,
     inputs: RunManifestInputs,
     hunt_parameters: RunManifestParameters,
+    /// Supported Sigma rules evaluated in the generic detection pass (0 when it
+    /// was disabled or no rules were found). Kept distinct from Nuclei inputs.
+    sigma_rules_evaluated: usize,
     exclusions: RunManifestExclusions,
 }
 
@@ -423,8 +438,21 @@ struct RunManifestExclusions {
     parse_errors: usize,
 }
 
+/// Which detection engine produced a finding. Nuclei is the CVE-anchored pass;
+/// Sigma is the generic request-pattern pass added to `hunt`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FindingSource {
+    #[default]
+    Nuclei,
+    Sigma,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 struct PrivateFinding {
+    /// Detection engine. Absent in older private findings, which are all Nuclei.
+    #[serde(default)]
+    source: FindingSource,
     template_id: String,
     cves: Vec<String>,
     detectability: Detectability,
@@ -456,6 +484,12 @@ struct PrivateFinding {
     /// legacy file is never penalized by an unknown reachable maximum.
     #[serde(default)]
     log_source: Option<LogSource>,
+    /// Sigma rule title, for `source = sigma` findings only.
+    #[serde(default)]
+    rule_title: Option<String>,
+    /// Sigma rule level, for `source = sigma` findings only.
+    #[serde(default)]
+    sigma_level: Option<String>,
 }
 
 /// A terminal-safe view of private hunt evidence. The CLI keeps private
@@ -485,6 +519,12 @@ pub struct FindingExplanation {
     /// Telemetry source that produced this finding, when recorded. Bounds the
     /// reachable behavior-score maximum for this evidence.
     pub log_source: Option<LogSource>,
+    /// Detection engine that produced this finding.
+    pub source: FindingSource,
+    /// Sigma rule title, for `source = sigma` findings only.
+    pub rule_title: Option<String>,
+    /// Sigma rule level, for `source = sigma` findings only.
+    pub sigma_level: Option<String>,
 }
 
 pub fn explain_private_findings(path: &Path) -> anyhow::Result<Vec<FindingExplanation>> {
@@ -526,6 +566,9 @@ pub fn explain_private_findings(path: &Path) -> anyhow::Result<Vec<FindingExplan
             ja4: finding.ja4,
             request_id: finding.request_id,
             log_source: finding.log_source,
+            source: finding.source,
+            rule_title: finding.rule_title,
+            sigma_level: finding.sigma_level,
         });
     }
     Ok(findings)
@@ -637,6 +680,7 @@ pub fn hunt(
             time_range,
             trusted_proxies: TrustedProxySet::default(),
             triage_policy: HuntTriagePolicy::default(),
+            sigma_ruleset: None,
         },
     )
 }
@@ -654,6 +698,7 @@ pub fn hunt_with_options(
         time_range,
         trusted_proxies,
         triage_policy,
+        sigma_ruleset,
     } = options;
     time_range.validate()?;
     ensure_separate_output(input, output)?;
@@ -678,9 +723,15 @@ pub fn hunt_with_options(
         filter_to: time_range.to.map(|time| time.to_rfc3339()),
         ..HuntMetrics::default()
     };
+    let sigma_rules = sigma_ruleset
+        .as_ref()
+        .map(|ruleset| ruleset.supported.as_slice())
+        .unwrap_or_default();
+    metrics.sigma_rules_evaluated = sigma_rules.len();
     let mut cves = BTreeMap::<String, CveAccumulator>::new();
     let mut all_sources = BTreeSet::new();
     let mut all_ja4s = BTreeSet::new();
+    let mut matched_sigma_rules = BTreeSet::new();
     let mut progress = ProgressReporter::new("hunt");
     for path in files {
         stream_events_with_trusted_proxies(&path, telemetry_profile, &trusted_proxies, |result| {
@@ -707,12 +758,25 @@ pub fn hunt_with_options(
                 event.timestamp,
             );
             let matches = matching_templates(&detections, &event);
-            if matches.is_empty() {
+            // The Sigma pass is independent of the CVE pass: it must run even
+            // when no Nuclei template matched, since its whole purpose is to
+            // surface generic TTPs that no CVE template covers.
+            let sigma_matches = sigma_rules
+                .iter()
+                .filter(|rule| rule.matches(&event))
+                .collect::<Vec<_>>();
+            if matches.is_empty() && sigma_matches.is_empty() {
                 return Ok(());
             }
             for detection in &matches {
                 serde_json::to_writer(&mut private, &private_finding(detection, &event))?;
                 private.write_all(b"\n")?;
+            }
+            for rule in &sigma_matches {
+                serde_json::to_writer(&mut private, &sigma_finding(rule, &event))?;
+                private.write_all(b"\n")?;
+                metrics.sigma_rule_matches += 1;
+                matched_sigma_rules.insert(rule.id.clone());
             }
             let mut observed_cves = BTreeMap::<String, (Detectability, RequestSpecificity)>::new();
             for detection in &matches {
@@ -781,6 +845,7 @@ pub fn hunt_with_options(
         })?;
     }
     private.flush()?;
+    metrics.distinct_sigma_rules = matched_sigma_rules.len();
     metrics.unique_cves_observed = cves.len();
     metrics.unique_cisa_kevs_observed = cves.values().filter(|item| item.kev).count();
     metrics.unique_source_clusters = all_sources.len();
@@ -1422,6 +1487,7 @@ fn write_run_manifest(
             trusted_proxy_networks: trusted_proxies.configured_proxy_networks(),
             triage_policy,
         },
+        sigma_rules_evaluated: metrics.sigma_rules_evaluated,
         exclusions: RunManifestExclusions {
             generic_root_probe_request_evidence:
                 "not converted into passive request evidence",
@@ -1493,6 +1559,7 @@ fn matching_templates<'a>(
 
 fn private_finding(detection: &ValidatedNucleiDetection, event: &WebEvent) -> PrivateFinding {
     PrivateFinding {
+        source: FindingSource::Nuclei,
         template_id: detection.template_id.clone(),
         cves: detection.cves.clone(),
         detectability: detection.detectability,
@@ -1514,6 +1581,41 @@ fn private_finding(detection: &ValidatedNucleiDetection, event: &WebEvent) -> Pr
         waf_non_terminating_rule_ids: event.waf_non_terminating_rule_ids.clone(),
         request_id: event.request_id.clone(),
         log_source: Some(event.log_source),
+        rule_title: None,
+        sigma_level: None,
+    }
+}
+
+/// Build a private finding for a matched Sigma rule. Sigma is the generic
+/// request-pattern pass: it carries no Nuclei detectability (recorded as
+/// `Unknown`) and is conservatively `ResponseUnverified`. The rule's own CVE
+/// tags are preserved but never merged into the CVE metrics.
+fn sigma_finding(rule: &crate::sigma::CompiledRule, event: &WebEvent) -> PrivateFinding {
+    PrivateFinding {
+        source: FindingSource::Sigma,
+        template_id: rule.id.clone(),
+        cves: rule.cves.clone(),
+        detectability: Detectability::Unknown,
+        request_specificity: RequestSpecificity::ResponseUnverified,
+        timestamp: event.timestamp.map(|time| time.to_rfc3339()),
+        source_ip: event.source_ip.clone(),
+        client_ip: event.client_ip.clone(),
+        host: event.host.clone(),
+        method: event.method.clone(),
+        uri_path: event.uri_path.clone(),
+        uri_query: event.uri_query.clone(),
+        headers: event.headers.clone(),
+        ja3: event.ja3.clone(),
+        ja4: event.ja4.clone(),
+        waf_action: event.waf_action.clone(),
+        waf_rule_id: event.waf_rule_id.clone(),
+        waf_rule_type: event.waf_rule_type.clone(),
+        waf_labels: event.waf_labels.clone(),
+        waf_non_terminating_rule_ids: event.waf_non_terminating_rule_ids.clone(),
+        request_id: event.request_id.clone(),
+        log_source: Some(event.log_source),
+        rule_title: Some(rule.title.clone()),
+        sigma_level: rule.level.clone(),
     }
 }
 

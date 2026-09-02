@@ -25,7 +25,7 @@ use shenron::{
     output::{Finding, FindingWriter},
     paths::{
         default_asn_dataset, default_nuclei_report, default_reputation_dataset,
-        default_templates_dir,
+        default_sigma_rules_dir, default_templates_dir,
     },
     production::{
         ablation_with_optional_kev as production_ablation,
@@ -185,6 +185,13 @@ enum ProductionCommand {
         /// Forwarded client IPs remain unavailable unless this is specified.
         #[arg(long, value_name = "IP-or-CIDR")]
         trusted_proxy: Vec<TrustedProxy>,
+        /// Supported Sigma rules directory for the generic detection pass.
+        /// Defaults to the prepared <data-dir>/sigma-rules when present.
+        #[arg(long)]
+        rules: Option<PathBuf>,
+        /// Disable the Sigma pass entirely (Nuclei CVE hunting is unaffected).
+        #[arg(long)]
+        no_sigma: bool,
     },
     /// Compare aggregate match volume across predicates derived from one validated Nuclei IR. Never writes private findings.
     Ablation {
@@ -443,10 +450,13 @@ fn main() -> Result<()> {
                 from,
                 to,
                 trusted_proxy,
+                rules,
+                no_sigma,
             } => {
                 let (nuclei_templates, nuclei_report) =
                     resolve_nuclei_inputs(nuclei_templates, nuclei_report)?;
                 let output = output.unwrap_or_else(default_hunt_output);
+                let sigma_ruleset = resolve_sigma_ruleset(rules, no_sigma);
                 let report = production_hunt(
                     &input,
                     &nuclei_templates,
@@ -458,6 +468,7 @@ fn main() -> Result<()> {
                         time_range: HuntTimeRange { from, to },
                         trusted_proxies: TrustedProxySet::new(trusted_proxy),
                         triage_policy: HuntTriagePolicy::default(),
+                        sigma_ruleset,
                     },
                 )?;
                 let sanitized_path = output.join("sanitized-research.json");
@@ -699,7 +710,7 @@ fn main() -> Result<()> {
                     );
                 }
                 save_batch(&candidates, &output)?;
-                println!("Candidates written: {}\nOutput directory: {}\nAWS WAF BLOCK findings excluded: {}\nResponse-unverified findings excluded: {}\nFindings skipped for missing method/path: {}\nRecommended initial action: COUNT\nHistorical replay: required before preventive export.", stats.candidates, output.display(), stats.excluded_blocked_findings, stats.excluded_response_unverified_findings, stats.skipped_incomplete_findings);
+                println!("Candidates written: {}\nOutput directory: {}\nSigma findings excluded (candidates stay CVE/Nuclei-anchored): {}\nAWS WAF BLOCK findings excluded: {}\nResponse-unverified findings excluded: {}\nFindings skipped for missing method/path: {}\nRecommended initial action: COUNT\nHistorical replay: required before preventive export.", stats.candidates, output.display(), stats.excluded_sigma_findings, stats.excluded_blocked_findings, stats.excluded_response_unverified_findings, stats.skipped_incomplete_findings);
                 Ok(())
             }
             CandidateCommand::Replay {
@@ -844,6 +855,43 @@ fn default_hunt_output() -> PathBuf {
     PathBuf::from("private-results").join(format!("hunt-{}", Utc::now().format("%Y%m%dT%H%M%SZ")))
 }
 
+/// Resolve the Sigma ruleset for a hunt. The Sigma pass is on by default: it
+/// uses `--rules` when given, otherwise the prepared `<data-dir>/sigma-rules`
+/// when present. A missing directory is not an error — the hunt continues with
+/// Nuclei CVE detection only. `--no-sigma` disables the pass explicitly.
+fn resolve_sigma_ruleset(
+    rules: Option<PathBuf>,
+    no_sigma: bool,
+) -> Option<shenron::sigma::RuleSet> {
+    if no_sigma {
+        eprintln!("Sigma pass: disabled with --no-sigma; running Nuclei CVE detection only.");
+        return None;
+    }
+    let rules_dir = rules.or_else(|| {
+        let default = default_sigma_rules_dir();
+        default.is_dir().then_some(default)
+    });
+    match rules_dir {
+        Some(dir) => {
+            let ruleset = load_rules(&dir);
+            eprintln!(
+                "Sigma pass: {} supported rules from {} ({} unsupported skipped).",
+                ruleset.supported.len(),
+                dir.display(),
+                ruleset.unsupported.len()
+            );
+            Some(ruleset)
+        }
+        None => {
+            eprintln!(
+                "Sigma pass: no rules directory found (looked for {}). Pass --rules <dir> to enable it, or --no-sigma to silence this note. Continuing with Nuclei CVE detection only.",
+                default_sigma_rules_dir().display()
+            );
+            None
+        }
+    }
+}
+
 fn parse_rfc3339_utc(value: &str) -> std::result::Result<DateTime<Utc>, String> {
     DateTime::parse_from_rfc3339(value)
         .map(|time| time.with_timezone(&Utc))
@@ -919,6 +967,10 @@ fn print_hunt(report: &SanitizedHuntReport, sanitized_path: &Path) {
         "WAF outcome:                unavailable for this telemetry source".to_owned()
     };
     println!("Read-only production hunt complete.\nPrivate findings:            written under the supplied output directory\nSanitized report:            {}\n\n{}\n\nRequests analyzed:           {}\nFiles analyzed:              {}\nParse errors:                {}\nCVE-related request matches: {}\n  Request-specific:          {}\n  Response-unverified:       {}\nUnique CVEs observed:        {}\nUnique CISA KEVs observed:   {}\nSource clusters:             {}\nJA4 fingerprints:            {}\nDetection-match confidence (template detectability; NOT attack/compromise confidence):\n  HIGH:                      {}\n  MEDIUM:                    {}\n  LOW:                       {}\n\n{}", sanitized_path.display(), time_range, metrics.total_requests_analyzed, metrics.files_analyzed, metrics.parse_errors, metrics.cve_related_request_matches, metrics.request_specific_matches, metrics.response_unverified_matches, metrics.unique_cves_observed, metrics.unique_cisa_kevs_observed, metrics.unique_source_clusters, metrics.unique_ja4_fingerprints, metrics.high_confidence_findings, metrics.medium_confidence_findings, metrics.low_confidence_findings, outcomes);
+    println!(
+        "\nSigma (generic request-pattern pass; separate from the CVE metrics above):\n  Rules evaluated:           {}\n  Rule matches:              {}\n  Distinct rules matched:    {}",
+        metrics.sigma_rules_evaluated, metrics.sigma_rule_matches, metrics.distinct_sigma_rules,
+    );
 }
 
 fn print_ablation(report: &AblationReport, output_path: Option<&Path>) {
@@ -1163,8 +1215,13 @@ struct ReputationJson {
 /// full private evidence appears only under `--show-evidence`.
 #[derive(Serialize)]
 struct FindingJson {
+    source: shenron::production::FindingSource,
     cves: Vec<String>,
     template_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rule_title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sigma_level: Option<String>,
     detectability: shenron::nuclei::Detectability,
     request_specificity: shenron::nuclei::RequestSpecificity,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1308,8 +1365,11 @@ fn finding_json(
         request_id: finding.request_id.clone(),
     });
     FindingJson {
+        source: finding.source,
         cves: finding.cves.clone(),
         template_id: finding.template_id.clone(),
+        rule_title: finding.rule_title.clone(),
+        sigma_level: finding.sigma_level.clone(),
         detectability: finding.detectability,
         request_specificity: finding.request_specificity,
         timestamp: finding.timestamp.clone(),

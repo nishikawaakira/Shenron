@@ -40,6 +40,11 @@ pub fn default_asn_dataset() -> PathBuf {
     default_data_dir().join("asn-ranges.tsv")
 }
 
+/// Default local Sigma rules directory for the `production hunt` Sigma pass.
+pub fn default_sigma_rules_dir() -> PathBuf {
+    default_data_dir().join("sigma-rules")
+}
+
 fn data_dir_from_environment(
     shenron_data_dir: Option<OsString>,
     xdg_data_home: Option<OsString>,

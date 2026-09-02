@@ -387,6 +387,9 @@ fn batch_build_excludes_already_blocked_aws_waf_findings() {
         ja4: None,
         request_id: None,
         log_source: None,
+        source: shenron::production::FindingSource::Nuclei,
+        rule_title: None,
+        sigma_level: None,
     };
     let (candidates, stats) = build_batch_from_findings(
         &[finding("ALLOW", "/unblocked"), finding("BLOCK", "/blocked")],
@@ -442,6 +445,9 @@ fn batch_candidate_ids_are_sequential_within_each_cve() {
         ja4: None,
         request_id: None,
         log_source: None,
+        source: shenron::production::FindingSource::Nuclei,
+        rule_title: None,
+        sigma_level: None,
     };
     let (candidates, _) = build_batch_from_findings(
         &[
@@ -490,6 +496,9 @@ fn batch_build_excludes_response_unverified_unless_explicitly_included() {
         ja4: None,
         request_id: None,
         log_source: None,
+        source: shenron::production::FindingSource::Nuclei,
+        rule_title: None,
+        sigma_level: None,
     };
     let findings = vec![finding];
     let (candidates, stats) =

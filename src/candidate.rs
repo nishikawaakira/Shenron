@@ -14,7 +14,7 @@ use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::production::FindingExplanation;
+use crate::production::{FindingExplanation, FindingSource};
 use crate::{
     event::{TelemetryProfile, WebEvent},
     nuclei::RequestSpecificity,
@@ -158,6 +158,7 @@ pub fn load(path: &Path) -> Result<DefensiveCandidate> {
 #[derive(Debug, Clone, Copy)]
 pub struct BatchBuildStats {
     pub candidates: usize,
+    pub excluded_sigma_findings: usize,
     pub excluded_blocked_findings: usize,
     pub excluded_response_unverified_findings: usize,
     pub skipped_incomplete_findings: usize,
@@ -174,10 +175,18 @@ pub fn build_batch_from_findings(
 ) -> (Vec<DefensiveCandidate>, BatchBuildStats) {
     let mut groups =
         BTreeMap::<(String, String, String, Option<String>), Vec<&FindingExplanation>>::new();
+    let mut excluded_sigma_findings = 0;
     let mut excluded_blocked_findings = 0;
     let mut excluded_response_unverified_findings = 0;
     let mut skipped_incomplete_findings = 0;
     for finding in findings {
+        // Candidates stay CVE- and Nuclei-IR-anchored. A generic Sigma TTP match
+        // does not carry the per-CVE, request-specific evidence the COUNT
+        // candidate bar requires, so Sigma findings never form a candidate.
+        if finding.source == FindingSource::Sigma {
+            excluded_sigma_findings += 1;
+            continue;
+        }
         if telemetry_profile == TelemetryProfile::AwsWaf
             && finding
                 .waf_action
@@ -267,6 +276,7 @@ pub fn build_batch_from_findings(
         .collect::<Vec<_>>();
     let stats = BatchBuildStats {
         candidates: candidates.len(),
+        excluded_sigma_findings,
         excluded_blocked_findings,
         excluded_response_unverified_findings,
         skipped_incomplete_findings,

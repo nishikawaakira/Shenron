@@ -98,6 +98,14 @@ uses an empty KEV set.
 when only one public input family should be refreshed. `setup` downloads public
 intelligence only and never transmits customer data.
 
+Alongside the CVE-anchored Nuclei pass, `hunt` runs a generic **Sigma** detection
+pass **on by default** in the same stream, catching generic request-pattern TTPs
+(such as secret-file path enumeration) that map to no CVE template. It loads rules
+from `--rules <DIR>` or the prepared `<data-dir>/sigma-rules`; `--no-sigma`
+disables it. Sigma findings carry a `source` field, are counted separately from
+the CVE metrics, and never feed `candidate build`. See
+[Sigma detection inside hunt](docs/sigma-in-hunt.md).
+
 ## Sigma and log limits
 
 See [supported aliases and syntax](docs/sigma-support.md). Unsupported rules are reported and skipped; nothing is matched with silently weakened logic. This MVP expects newline-delimited AWS WAF JSON records, not a complete JSON array or Firehose envelope.

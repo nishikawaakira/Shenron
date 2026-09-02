@@ -1158,6 +1158,9 @@ mod tests {
             ja4: ja4.map(str::to_owned),
             request_id: Some(request_id.to_owned()),
             log_source: Some(crate::event::LogSource::AwsWaf),
+            source: crate::production::FindingSource::Nuclei,
+            rule_title: None,
+            sigma_level: None,
         }
     }
 

@@ -9,8 +9,8 @@ use predicates::prelude::PredicateBooleanExt;
 use predicates::str::contains;
 use shenron::event::{TelemetryProfile, TrustedProxy, TrustedProxySet};
 use shenron::production::{
-    ablation, count_hypotheses, explain_private_findings, historical_replay, hunt, inspect,
-    inspect_with_trusted_proxies, HuntTimeRange,
+    ablation, count_hypotheses, explain_private_findings, historical_replay, hunt,
+    hunt_with_options, inspect, inspect_with_trusted_proxies, HuntOptions, HuntTimeRange,
 };
 use tempfile::tempdir;
 use walkdir::WalkDir;
@@ -1319,6 +1319,60 @@ fn explain_scores_behavior_and_groups_shared_ja4_fingerprints() {
         .stdout(contains(
             "t13d1516h2_shared\n  Triage basis: breadth\n  Distinct validated clients sharing this fingerprint: 0\n  Distinct observed peers sharing this fingerprint: 2\n  Identity spread used for behavior score: 2\n  Matching request observations: 4\n  Distinct Nuclei template patterns: 3\n  Unique CVEs: 3\n  Matched template records: 4\n  Behavior priority score: 38/100 (low)",
         ));
+}
+
+#[test]
+fn hunt_runs_the_sigma_pass_and_keeps_it_distinct_from_cve_findings() {
+    let directory = tempdir().unwrap();
+    let rules_dir = directory.path().join("rules");
+    fs::create_dir(&rules_dir).unwrap();
+    fs::write(
+        rules_dir.join("vuln-path.yml"),
+        concat!(
+            "title: Vulnerable Path Probe\n",
+            "id: test-vuln-path\n",
+            "logsource:\n  category: webserver\n  product: aws\n  service: waf\n",
+            "detection:\n  selection:\n    uri_path|contains: 'vulnerable'\n  condition: selection\n",
+            "level: medium\n",
+        ),
+    )
+    .unwrap();
+    let ruleset = shenron::sigma::load_rules(&rules_dir);
+    assert_eq!(ruleset.supported.len(), 1);
+
+    let output = directory.path().join("out");
+    let report = hunt_with_options(
+        Path::new("tests/fixtures/production/waf.jsonl"),
+        Path::new("tests/fixtures/nuclei"),
+        Path::new("tests/fixtures/production/nuclei-report.json"),
+        Some(Path::new("tests/fixtures/production/kev-report.json")),
+        &output,
+        TelemetryProfile::AwsWaf,
+        HuntOptions {
+            sigma_ruleset: Some(ruleset),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    // The Sigma pass ran and is reported separately from the CVE metrics.
+    assert_eq!(report.metrics.sigma_rules_evaluated, 1);
+    assert!(report.metrics.sigma_rule_matches >= 1);
+    assert_eq!(report.metrics.distinct_sigma_rules, 1);
+
+    // Both sources are present and distinguishable in the private findings.
+    let private = fs::read_to_string(output.join("private-findings.jsonl")).unwrap();
+    assert!(private.contains(r#""source":"sigma""#));
+    assert!(private.contains(r#""source":"nuclei""#));
+
+    // A Sigma finding never feeds candidate build.
+    let findings = explain_private_findings(&output.join("private-findings.jsonl")).unwrap();
+    let (_candidates, stats) =
+        shenron::candidate::build_batch_from_findings(&findings, TelemetryProfile::AwsWaf, true);
+    assert_eq!(
+        stats.excluded_sigma_findings,
+        report.metrics.sigma_rule_matches
+    );
 }
 
 #[test]
