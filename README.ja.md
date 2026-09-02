@@ -174,4 +174,4 @@ Shenron は GNU Affero General Public License v3.0（`AGPL-3.0-only`）で提供
 機能を利用者へ提供する場合は、その利用者に対応するソースコードを提供する義務が生じます
 （AGPL 第13条）。
 
-Copyright (C) 2026 the Shenron authors.
+Copyright (C) 2026 Akira Nishikawa
