@@ -2,6 +2,7 @@
 
 pub mod access_log;
 pub mod candidate;
+pub mod comparison;
 pub mod concentration;
 pub mod event;
 pub mod kev;

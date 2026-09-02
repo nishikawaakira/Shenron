@@ -154,6 +154,123 @@ fn concentration_writes_private_detail_without_leaking_it_to_sanitized_or_defaul
 }
 
 #[test]
+fn compare_reads_existing_runs_without_leaking_private_values_by_default() {
+    let directory = tempdir().unwrap();
+    let baseline = directory.path().join("baseline");
+    let current = directory.path().join("current");
+    for run in [&baseline, &current] {
+        let report = hunt(
+            Path::new("tests/fixtures/production/waf.jsonl"),
+            Path::new("tests/fixtures/nuclei"),
+            Path::new("tests/fixtures/production/nuclei-report.json"),
+            Path::new("tests/fixtures/production/kev-report.json"),
+            run,
+            TelemetryProfile::AwsWaf,
+            HuntTimeRange::default(),
+        )
+        .unwrap();
+        serde_json::to_writer_pretty(
+            fs::File::create(run.join("sanitized-research.json")).unwrap(),
+            &report,
+        )
+        .unwrap();
+    }
+    let output = directory.path().join("comparison");
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "production",
+            "compare",
+            "--baseline",
+            baseline.to_str().unwrap(),
+            "--current",
+            current.to_str().unwrap(),
+            "--output",
+            output.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(contains("Temporal comparison"))
+        .stdout(contains("/vulnerable/execute").not())
+        .stdout(contains("198.51.100.1").not());
+    let sanitized = fs::read_to_string(output.join("comparison-summary.json")).unwrap();
+    assert!(sanitized.contains("SANITIZED_TEMPORAL_COMPARISON"));
+    assert!(!sanitized.contains("/vulnerable/execute"));
+    assert!(!sanitized.contains("198.51.100.1"));
+    let private = fs::read_to_string(output.join("comparison-detail.json")).unwrap();
+    assert!(private.contains("TEMPORAL_COMPARISON_PRIVATE"));
+
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "production",
+            "compare",
+            "--baseline",
+            baseline.to_str().unwrap(),
+            "--current",
+            current.to_str().unwrap(),
+            "--output",
+            directory.path().join("shown-comparison").to_str().unwrap(),
+            "--show-paths",
+            "--show-source-ips",
+        ])
+        .assert()
+        .success()
+        .stdout(contains("/vulnerable/execute"))
+        .stdout(contains("198.51.100.1"));
+}
+
+#[test]
+fn hunt_baseline_writes_temporal_comparison_artifacts() {
+    let directory = tempdir().unwrap();
+    let baseline = directory.path().join("baseline");
+    let baseline_report = hunt(
+        Path::new("tests/fixtures/production/waf.jsonl"),
+        Path::new("tests/fixtures/nuclei"),
+        Path::new("tests/fixtures/production/nuclei-report.json"),
+        Path::new("tests/fixtures/production/kev-report.json"),
+        &baseline,
+        TelemetryProfile::AwsWaf,
+        HuntTimeRange::default(),
+    )
+    .unwrap();
+    serde_json::to_writer_pretty(
+        fs::File::create(baseline.join("sanitized-research.json")).unwrap(),
+        &baseline_report,
+    )
+    .unwrap();
+    let output = directory.path().join("current");
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "production",
+            "hunt",
+            "--input",
+            "tests/fixtures/production/waf.jsonl",
+            "--format",
+            "aws-waf",
+            "--nuclei-templates",
+            "tests/fixtures/nuclei",
+            "--nuclei-report",
+            "tests/fixtures/production/nuclei-report.json",
+            "--kev-report",
+            "tests/fixtures/production/kev-report.json",
+            "--output",
+            output.to_str().unwrap(),
+            "--baseline",
+            baseline.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(contains("Baseline comparison written:"));
+    assert!(output.join("comparison-summary.json").is_file());
+    assert!(output.join("comparison-detail.json").is_file());
+    let sanitized = fs::read_to_string(output.join("comparison-summary.json")).unwrap();
+    assert!(!sanitized.contains("/vulnerable/execute"));
+    assert!(!sanitized.contains("198.51.100.1"));
+}
+
+#[test]
 fn historical_replay_measures_sanitized_cve_coverage_and_other_matches() {
     let directory = tempdir().unwrap();
     let findings = directory.path().join("private-findings.jsonl");

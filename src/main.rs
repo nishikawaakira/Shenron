@@ -20,6 +20,9 @@ use shenron::{
         export as export_candidate, load as load_candidate, replay as replay_candidate,
         save as save_candidate, save_batch, Backend,
     },
+    comparison::{
+        compare_runs, write_comparison, PrivateTemporalComparison, SanitizedTemporalComparison,
+    },
     concentration::PrivateRequestConcentrationReport,
     event::{TelemetryCapabilities, TelemetryProfile, TrustedProxy, TrustedProxySet},
     nuclei::{path_distinctiveness, PathDistinctiveness},
@@ -195,6 +198,26 @@ enum ProductionCommand {
         /// Disable the Sigma pass entirely (Nuclei CVE hunting is unaffected).
         #[arg(long)]
         no_sigma: bool,
+        /// Prior local run-artifact directory to compare after this hunt completes.
+        #[arg(long)]
+        baseline: Option<PathBuf>,
+    },
+    /// Compare two existing local run-artifact directories without re-streaming logs.
+    Compare {
+        #[arg(long)]
+        baseline: PathBuf,
+        #[arg(long)]
+        current: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
+        #[arg(long)]
+        show_entities: bool,
+        #[arg(long)]
+        show_paths: bool,
+        #[arg(long)]
+        show_source_ips: bool,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
     },
     /// Measure bounded request-volume distribution without CTI inputs or detector matching.
     Concentration {
@@ -480,6 +503,7 @@ fn main() -> Result<()> {
                 trusted_proxy,
                 rules,
                 no_sigma,
+                baseline,
             } => {
                 let (nuclei_templates, nuclei_report) =
                     resolve_nuclei_inputs(nuclei_templates, nuclei_report)?;
@@ -502,6 +526,43 @@ fn main() -> Result<()> {
                 let sanitized_path = output.join("sanitized-research.json");
                 serde_json::to_writer_pretty(File::create(&sanitized_path)?, &report)?;
                 print_hunt(&report, &sanitized_path);
+                if let Some(baseline) = baseline {
+                    let comparison = compare_runs(&baseline, &output)?;
+                    write_comparison(&output, &comparison)?;
+                    println!(
+                        "Baseline comparison written: {}\n  Newly observed CVEs: {}\n  First-seen entities: {}\n  Elevated paths: {}",
+                        output.join("comparison-summary.json").display(),
+                        comparison.sanitized.cve_diff.newly_observed_cves.len(),
+                        comparison.sanitized.first_seen_counts.source_ips
+                            + comparison.sanitized.first_seen_counts.hosts
+                            + comparison.sanitized.first_seen_counts.uri_paths
+                            + comparison.sanitized.first_seen_counts.ja4_fingerprints,
+                        comparison.sanitized.concentration_delta.elevated_paths,
+                    );
+                }
+                Ok(())
+            }
+            ProductionCommand::Compare {
+                baseline,
+                current,
+                output,
+                show_entities,
+                show_paths,
+                show_source_ips,
+                limit,
+            } => {
+                shenron::production::ensure_separate_output(&baseline, &output)?;
+                shenron::production::ensure_separate_output(&current, &output)?;
+                let comparison = compare_runs(&baseline, &current)?;
+                write_comparison(&output, &comparison)?;
+                print_temporal_comparison(
+                    &comparison.sanitized,
+                    &comparison.private,
+                    show_entities,
+                    show_paths,
+                    show_source_ips,
+                    limit,
+                );
                 Ok(())
             }
             ProductionCommand::Concentration {
@@ -1126,6 +1187,105 @@ fn print_concentration(
                         ),
                 );
             }
+        }
+    }
+}
+
+fn print_temporal_comparison(
+    report: &SanitizedTemporalComparison,
+    private: &PrivateTemporalComparison,
+    show_entities: bool,
+    show_paths: bool,
+    show_source_ips: bool,
+    limit: usize,
+) {
+    println!(
+        "Temporal comparison (local artifact diff only; not an attack, abuse, compromise, or attribution determination):\n  Comparison kind:           {}\n  Baseline-comparable:       {}\n  Newly observed CVEs:       {}\n  Disappeared CVEs:          {}\n  First-seen source IPs:     {}\n  First-seen hosts:          {}\n  First-seen URI paths:      {}\n  First-seen JA4 values:     {}\n  Elevated paths:            {}\n  Elevated source IPs:       {}\n  Low-baseline paths:        {}\n  Low-baseline source IPs:   {}",
+        report.comparability.kind,
+        report.comparability.comparable,
+        report.cve_diff.newly_observed_cves.len(),
+        report.cve_diff.disappeared_cves.len(),
+        report.first_seen_counts.source_ips,
+        report.first_seen_counts.hosts,
+        report.first_seen_counts.uri_paths,
+        report.first_seen_counts.ja4_fingerprints,
+        report.concentration_delta.elevated_paths,
+        report.concentration_delta.elevated_source_ips,
+        report.concentration_delta.low_baseline_paths,
+        report.concentration_delta.low_baseline_source_ips,
+    );
+    for reason in &report.comparability.reasons {
+        println!("  Comparability note:       {reason}");
+    }
+    if show_entities {
+        println!("\nPrivate first-seen entities:");
+        for (label, values) in [
+            ("host", &private.first_seen_entities.hosts),
+            ("JA4", &private.first_seen_entities.ja4_fingerprints),
+        ] {
+            for value in values.iter().take(display_limit(limit)) {
+                println!("  {label}: {}", terminal_safe(value));
+            }
+        }
+    }
+    if show_paths {
+        println!("\nPrivate first-seen paths:");
+        for value in private
+            .first_seen_entities
+            .uri_paths
+            .iter()
+            .take(display_limit(limit))
+        {
+            println!("  {}", terminal_safe(value));
+        }
+        println!("\nPrivate path comparison:");
+        for detail in private
+            .concentration_delta_detail
+            .paths
+            .iter()
+            .take(display_limit(limit))
+        {
+            println!(
+                "  {}\n    Baseline/current: {:?}/{}  label={}  ratio={}",
+                terminal_safe(&detail.key),
+                detail.baseline_requests,
+                detail.current_requests,
+                detail.label,
+                detail
+                    .ratio
+                    .map(|ratio| format!("{ratio:.2}x"))
+                    .unwrap_or_else(|| "unavailable".to_owned()),
+            );
+        }
+    }
+    if show_source_ips {
+        println!("\nPrivate first-seen source IPs:");
+        for value in private
+            .first_seen_entities
+            .source_ips
+            .iter()
+            .take(display_limit(limit))
+        {
+            println!("  {}", terminal_safe(value));
+        }
+        println!("\nPrivate source-IP comparison:");
+        for detail in private
+            .concentration_delta_detail
+            .source_ips
+            .iter()
+            .take(display_limit(limit))
+        {
+            println!(
+                "  {}\n    Baseline/current: {:?}/{}  label={}  ratio={}",
+                terminal_safe(&detail.key),
+                detail.baseline_requests,
+                detail.current_requests,
+                detail.label,
+                detail
+                    .ratio
+                    .map(|ratio| format!("{ratio:.2}x"))
+                    .unwrap_or_else(|| "unavailable".to_owned()),
+            );
         }
     }
 }

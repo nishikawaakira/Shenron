@@ -88,6 +88,25 @@ that contains paths and observed connection-peer IPs. Use the CTI-independent
 hunt. Neither command classifies concentration as a denial-of-service attempt,
 attack, abuse, compromise, or attacker identity.
 
+## Temporal comparison and retro-hunting
+
+Compare two existing local run directories without re-streaming either corpus:
+
+```bash
+shenron production compare \
+  --baseline ./private-results/previous-run \
+  --current ./private-results/current-run \
+  --output ./private-results/comparison
+```
+
+The command writes sanitized `comparison-summary.json` and private
+`comparison-detail.json`. Paths, connection-peer IPs, hosts, and JA4 values stay
+private and print only with `--show-entities`, `--show-paths`, or
+`--show-source-ips`. `hunt --baseline ./private-results/previous-run` writes the
+same pair into the new hunt directory after the current artifact is complete.
+First-seen and elevated-volume labels are triage context only; they are never a
+determination of DoS, attack, abuse, exploitation, compromise, or attribution.
+
 Long streaming commands (`hunt`, `ablation`, `replay`, `count-hypotheses`) emit a periodic progress heartbeat to stderr during a large scan. It reports only a running record count and a fixed command label — never a request value, IP address, or hostname — and stdout continues to carry findings and reports.
 
 `--output` must be outside the raw-input tree. When omitted, hunt writes to `./private-results/hunt-<UTC timestamp>/`. The command writes `private-findings.jsonl` locally with investigation evidence, including fields that may be sensitive. `sanitized-research.json` has aggregate CVE/KEV counts, time ranges, WAF outcomes, and cardinalities only; it never includes raw request values, IPs, hostnames, JA3/JA4 values, queries, or headers. The default `private-results/` location is ignored by Git, but that is only an additional safeguard and not a data-security boundary.

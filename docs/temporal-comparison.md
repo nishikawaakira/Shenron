@@ -1,11 +1,17 @@
 # Temporal comparison and retro-hunting (design proposal)
 
-Status: **design agreed, not yet implemented**. This document records the design
+Status: **implemented (Part A)**. This document records the design
 decisions before any code is written, so that the implementation stays inside
 Shenron's pillars. The formerly open decisions on the robust statistic and the
 retro-hunt scope are now settled (see "Settled decisions"); the delivery is a
 single-pass command rather than a family of subcommands (see "One command, not a
 family").
+
+Part A implements the artifact comparison engine, `production compare`, and
+`production hunt --baseline`. It writes `comparison-summary.json`
+(`SANITIZED_TEMPORAL_COMPARISON`) and `comparison-detail.json`
+(`TEMPORAL_COMPARISON_PRIVATE`). Part B, the consolidated behavior-score and
+reputation triage view, remains intentionally unimplemented.
 
 ## Why
 

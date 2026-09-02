@@ -54,6 +54,8 @@ Read-only local AWS WAF production inspection and validated Nuclei hunting are a
 
 `shenron production concentration` measures bounded, aggregate request-volume distribution without CTI inputs and keeps paths/IPs in a separate private artifact. It is not a denial-of-service, attack, abuse, compromise, or attribution determination; see [request concentration](docs/request-concentration.md).
 
+`shenron production compare` diffs two local frozen run artifacts, while `hunt --baseline <prior-run>` writes the same temporal comparison after a new hunt. CVE changes and aggregate counts are sanitized; first-seen entities and path/IP detail remain private. Neither first-seen nor elevated-volume labels determine maliciousness, attack, compromise, or attribution; see [temporal comparison](docs/temporal-comparison.md).
+
 Defensive candidates can be built from private hunt findings, replayed locally, reviewed for backend compatibility, and exported as COUNT-only AWS WAF JSON, Terraform rule fragments, or OSSEC detection XML. Export never deploys a control and refuses non-faithful translations. See the [candidate model](docs/waf-candidate-model.md).
 
 The same passive scanner supports explicit `--format nginx` parsing for standard combined logs. `--format apache` automatically accepts both standard Combined and vhost-prefixed Combined logs per line; `--format apache-vhost` remains available when a vhost prefix must be required. Source capabilities remain explicit; see [telemetry capabilities](docs/telemetry-capabilities.md).
