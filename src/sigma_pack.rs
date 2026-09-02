@@ -61,4 +61,35 @@ mod tests {
         assert_eq!(ruleset.supported.len(), BUNDLED_RULES.len());
         assert!(ruleset.unsupported.is_empty());
     }
+
+    // Regression: `/.well-known/security.txt` is the RFC 9116 standard path that
+    // well-behaved crawlers and researchers request; it is not a probe indicator
+    // and must not be flagged by any bundled rule. See commit that removed it
+    // from the management/actuator probe.
+    #[test]
+    fn bundled_pack_does_not_flag_the_standard_security_txt_path() {
+        let dir = tempdir().unwrap();
+        install_bundled_pack(dir.path()).unwrap();
+        let ruleset = load_rules(dir.path());
+        let matches_any = |path: &str| {
+            let event = crate::access_log::parse_combined_line(
+                &format!(
+                    r#"203.0.113.9 - - [17/Aug/2026:00:00:00 +0900] "GET {path} HTTP/1.1" 200 12 "-" "curl/8""#
+                ),
+                crate::access_log::AccessLogFormat::ApacheCombined,
+            )
+            .unwrap();
+            ruleset.supported.iter().any(|rule| rule.matches(&event))
+        };
+
+        // The standard well-known path (and an ordinary page) are not flagged.
+        assert!(!matches_any("/.well-known/security.txt"));
+        assert!(!matches_any("/index.html"));
+
+        // Genuine probe paths are still flagged, so the rule was narrowed, not
+        // disabled.
+        assert!(matches_any("/.env"));
+        assert!(matches_any("/.git/config"));
+        assert!(matches_any("/actuator/health"));
+    }
 }
