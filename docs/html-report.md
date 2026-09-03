@@ -36,8 +36,11 @@ IP addresses and begins with this banner:
 > PRIVATE — contains raw IP addresses and request paths. Do not share.
 
 Do not publish or attach the report as if it were sanitized research output.
-Shenron also prints the private warning to stderr when generating it. The
-output path must be separate from the immutable input run directory.
+Shenron also prints the private warning to stderr when generating it. Because
+the input is already-produced artifacts rather than raw logs, the report may be
+written inside its own run directory (for example
+`--output <run-dir>/report.html`); Shenron only refuses to overwrite a
+directory or one of the source artifacts it reads.
 
 The document contains inline CSS and server-side generated inline SVG only. It
 has no JavaScript, external CSS, fonts, images, CDN links, fetches, or other

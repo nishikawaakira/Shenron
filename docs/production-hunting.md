@@ -128,7 +128,10 @@ artifacts are labeled unavailable, never inferred. The report is explicitly
 private because it contains raw paths and observed peer IPs; it is not a
 sanitized artifact. Every artifact-derived string is HTML-escaped. The charts
 show volume and review priority only, not DoS, attack, exploitation, abuse,
-compromise, probability of malice, or attribution. See the full [HTML report
+compromise, probability of malice, or attribution. The `--output` may be a file
+inside the run directory (for example `<run-dir>/report.html`), since the input
+is produced artifacts rather than raw logs; Shenron refuses only to overwrite a
+directory or a source artifact it reads. See the full [HTML report
 guide](html-report.md).
 
 ## Temporal comparison and retro-hunting

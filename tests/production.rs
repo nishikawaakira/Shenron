@@ -1020,6 +1020,41 @@ fn production_report_renders_existing_hunt_artifacts_as_private_offline_html() {
     for forbidden in ["http://", "https://", "src=", "<script src"] {
         assert!(!html.contains(forbidden));
     }
+
+    // The report may be written inside its own run directory (its input is
+    // already-produced artifacts, not raw logs).
+    let in_dir_report = hunt_output.join("report.html");
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "production",
+            "report",
+            "--input",
+            hunt_output.to_str().unwrap(),
+            "--output",
+            in_dir_report.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    assert!(in_dir_report.is_file());
+
+    // ...but it must not clobber a source artifact it reads.
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "production",
+            "report",
+            "--input",
+            hunt_output.to_str().unwrap(),
+            "--output",
+            hunt_output
+                .join("request-concentration.json")
+                .to_str()
+                .unwrap(),
+        ])
+        .assert()
+        .failure()
+        .stderr(contains("would overwrite the source artifact"));
 }
 
 fn copy_tree(source: &Path, destination: &Path) {

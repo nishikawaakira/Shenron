@@ -714,7 +714,10 @@ fn main() -> Result<()> {
                         input.display()
                     );
                 }
-                shenron::production::ensure_separate_output(&input, &output)?;
+                // The report renders artifacts a run already produced, not raw
+                // logs, so writing it inside the run directory is allowed. Only
+                // refuse to overwrite a directory or a source artifact.
+                ensure_report_output_is_safe(&input, &output)?;
                 let artifacts = load_report_artifacts(&input)?;
                 let html = render_report(&artifacts, limit, timeline_points);
                 if let Some(parent) = output
@@ -1175,6 +1178,40 @@ fn resolve_optional_local_dataset(
 
 /// Load only already-generated local artifacts. Missing files remain absent so
 /// the renderer can label their sections unavailable without approximation.
+/// The run-artifact file names a report reads. The output must not clobber one
+/// of these when it is written inside the same run directory.
+const REPORT_SOURCE_ARTIFACTS: &[&str] = &[
+    "sanitized-research.json",
+    "private-findings.jsonl",
+    "request-concentration.json",
+    "triage-view.json",
+    "triage-summary.json",
+    "run-manifest.json",
+    "comparison-summary.json",
+    "comparison-detail.json",
+];
+
+/// Allow writing the report inside its own run directory (its input is already
+/// produced artifacts, not raw logs), but refuse to overwrite a directory or a
+/// source artifact the report reads.
+fn ensure_report_output_is_safe(input: &Path, output: &Path) -> Result<()> {
+    if output.is_dir() {
+        anyhow::bail!(
+            "--output must be a file path, not a directory: {}",
+            output.display()
+        );
+    }
+    if let Some(name) = output.file_name().and_then(|name| name.to_str()) {
+        let inside_run_dir = output.parent().is_some_and(|parent| parent == input);
+        if inside_run_dir && REPORT_SOURCE_ARTIFACTS.contains(&name) {
+            anyhow::bail!(
+                "--output would overwrite the source artifact {name}; choose a different report file name"
+            );
+        }
+    }
+    Ok(())
+}
+
 fn load_report_artifacts(input: &Path) -> Result<ReportArtifacts> {
     let concentration_path = input.join("request-concentration.json");
     Ok(ReportArtifacts {
