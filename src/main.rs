@@ -42,6 +42,7 @@ use shenron::{
         HistoricalReplayReport, HuntOptions, HuntTimeRange, HuntTriagePolicy, InspectionReport,
         SanitizedConcentrationReport, SanitizedHuntReport,
     },
+    report::{render_report, ReportArtifacts, ReportTriageView, PRIVATE_REPORT_WARNING},
     reputation::{load_asn_database, load_reputation_database, AsnDatabase, ReputationDatabase},
     sigma::load_rules,
     triage::{asn_entity_groups, entity_groups, EntityDimension, TriagePolicy},
@@ -225,6 +226,21 @@ enum ProductionCommand {
         show_source_ips: bool,
         #[arg(long, default_value_t = 20)]
         limit: usize,
+    },
+    /// Render existing local run artifacts as a private, self-contained HTML report.
+    Report {
+        /// Hunt or concentration output directory to read without reprocessing logs.
+        #[arg(long)]
+        input: PathBuf,
+        /// HTML destination. It must be separate from the immutable run directory.
+        #[arg(long)]
+        output: PathBuf,
+        /// Maximum paths, peer IPs, prefixes, and triage rows. Use 0 for all.
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        /// Maximum deterministic points in each minute-series chart.
+        #[arg(long, default_value_t = 240, value_parser = parse_positive_usize)]
+        timeline_points: usize,
     },
     /// Measure bounded request-volume distribution without CTI inputs or detector matching.
     Concentration {
@@ -686,6 +702,35 @@ fn main() -> Result<()> {
                 );
                 Ok(())
             }
+            ProductionCommand::Report {
+                input,
+                output,
+                limit,
+                timeline_points,
+            } => {
+                if !input.is_dir() {
+                    anyhow::bail!(
+                        "report input must be an existing hunt or concentration output directory: {}",
+                        input.display()
+                    );
+                }
+                shenron::production::ensure_separate_output(&input, &output)?;
+                let artifacts = load_report_artifacts(&input)?;
+                let html = render_report(&artifacts, limit, timeline_points);
+                if let Some(parent) = output
+                    .parent()
+                    .filter(|parent| !parent.as_os_str().is_empty())
+                {
+                    std::fs::create_dir_all(parent).with_context(|| {
+                        format!("creating report output directory {}", parent.display())
+                    })?;
+                }
+                std::fs::write(&output, html)
+                    .with_context(|| format!("writing private HTML report {}", output.display()))?;
+                eprintln!("{PRIVATE_REPORT_WARNING}");
+                eprintln!("Private HTML report written: {}", output.display());
+                Ok(())
+            }
             ProductionCommand::Concentration {
                 input,
                 format,
@@ -1126,6 +1171,31 @@ fn resolve_optional_local_dataset(
         let path = default_path();
         path.is_file().then_some(path)
     })
+}
+
+/// Load only already-generated local artifacts. Missing files remain absent so
+/// the renderer can label their sections unavailable without approximation.
+fn load_report_artifacts(input: &Path) -> Result<ReportArtifacts> {
+    let concentration_path = input.join("request-concentration.json");
+    Ok(ReportArtifacts {
+        sanitized: read_optional_json(&input.join("sanitized-research.json"))?,
+        manifest: read_optional_json(&input.join("run-manifest.json"))?,
+        concentration: concentration_path
+            .is_file()
+            .then(|| load_private_concentration(&concentration_path))
+            .transpose()?,
+        triage: read_optional_json::<ReportTriageView>(&input.join("triage-view.json"))?,
+    })
+}
+
+fn read_optional_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<Option<T>> {
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let file = File::open(path).with_context(|| format!("opening {}", path.display()))?;
+    serde_json::from_reader(BufReader::new(file))
+        .with_context(|| format!("reading {}", path.display()))
+        .map(Some)
 }
 
 /// Build the post-hunt consolidated triage artifacts from the private findings

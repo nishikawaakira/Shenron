@@ -962,6 +962,66 @@ fn auto_format_detects_waf_and_apache_vhost_but_rejects_ambiguous_combined() {
         .stdout(contains("Telemetry profile:          ApacheCombined"));
 }
 
+#[test]
+fn production_report_renders_existing_hunt_artifacts_as_private_offline_html() {
+    let directory = tempdir().unwrap();
+    let hunt_output = directory.path().join("hunt-output");
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "production",
+            "hunt",
+            "--input",
+            "tests/fixtures/production/waf.jsonl",
+            "--format",
+            "aws-waf",
+            "--nuclei-templates",
+            "tests/fixtures/nuclei",
+            "--nuclei-report",
+            "tests/fixtures/production/nuclei-report.json",
+            "--kev-report",
+            "tests/fixtures/production/kev-report.json",
+            "--output",
+            hunt_output.to_str().unwrap(),
+            "--no-sigma",
+        ])
+        .assert()
+        .success();
+
+    let html_path = directory.path().join("run-report.html");
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "production",
+            "report",
+            "--input",
+            hunt_output.to_str().unwrap(),
+            "--output",
+            html_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stderr(contains(
+            "PRIVATE — contains raw IP addresses and request paths. Do not share.",
+        ));
+
+    let html = fs::read_to_string(html_path).unwrap();
+    for expected in [
+        "PRIVATE — contains raw IP addresses and request paths. Do not share.",
+        "Top paths",
+        "Top observed connection peers",
+        "Requests per minute",
+        "Hunt triage view",
+        "/vulnerable/execute",
+        "198.51.100.1",
+    ] {
+        assert!(html.contains(expected));
+    }
+    for forbidden in ["http://", "https://", "src=", "<script src"] {
+        assert!(!html.contains(forbidden));
+    }
+}
+
 fn copy_tree(source: &Path, destination: &Path) {
     for entry in WalkDir::new(source) {
         let entry = entry.unwrap();

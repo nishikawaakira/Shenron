@@ -665,6 +665,8 @@ mod tests {
                 })
                 .collect(),
             focus: None,
+            requests_per_minute_series: Vec::new(),
+            minute_buckets_beyond_cap: 0,
         }
     }
     #[test]

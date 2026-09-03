@@ -98,6 +98,14 @@ events without timestamps are excluded from that rate and counted explicitly.
 Response-byte totals are reported only for telemetry profiles that record them;
 AWS WAF marks them unavailable rather than replacing them with zero.
 
+The private `request-concentration.json` also stores the retained global and,
+when selected, focused-path minute buckets as an epoch-minute/request-count
+series in ascending order. `production report` uses this series for its inline
+SVG timeline. The series is never copied into `sanitized-research.json`. Minute
+tracking is bounded at 1,000,000 distinct buckets for each global/focus map;
+records in new buckets beyond that cap are counted and disclosed, while already
+retained buckets continue to receive exact counts.
+
 ## Bounded tracking and reproducibility
 
 The default exact key limits are 100,000 URI paths, 1,000,000 source IPs, and

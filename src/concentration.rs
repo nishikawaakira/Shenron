@@ -22,6 +22,9 @@ pub const DEFAULT_MAX_TRACKED_SOURCE_IPS: usize = 1_000_000;
 /// intentionally independent of the top-level source-IP map so a focus remains
 /// useful even if the general distribution reaches its own admission cap.
 pub const DEFAULT_MAX_FOCUS_SOURCE_IPS: usize = 1_000_000;
+/// Roughly 1.9 years of one-minute buckets. Both global and focus timelines
+/// stop admitting new minutes at this fixed cap and disclose omitted records.
+pub const DEFAULT_MAX_MINUTE_BUCKETS: usize = 1_000_000;
 pub const DEFAULT_FOCUS_IPV4_GROUP_PREFIX: u8 = 24;
 pub const DEFAULT_FOCUS_IPV6_GROUP_PREFIX: u8 = 48;
 
@@ -52,6 +55,7 @@ pub struct ConcentrationLimits {
     pub max_source_ips: usize,
     pub max_focus_source_ips: usize,
     pub max_source_path_pairs: usize,
+    pub max_minute_buckets: usize,
 }
 
 impl Default for ConcentrationLimits {
@@ -61,6 +65,7 @@ impl Default for ConcentrationLimits {
             max_source_ips: DEFAULT_MAX_TRACKED_SOURCE_IPS,
             max_focus_source_ips: DEFAULT_MAX_FOCUS_SOURCE_IPS,
             max_source_path_pairs: DEFAULT_MAX_TRACKED_SOURCE_PATH_PAIRS,
+            max_minute_buckets: DEFAULT_MAX_MINUTE_BUCKETS,
         }
     }
 }
@@ -166,6 +171,14 @@ pub struct PrivateFocusPrefixGroup {
     pub distinct_source_ips: usize,
 }
 
+/// One retained private time-series point. Epoch minutes avoid locale and
+/// timezone ambiguity; report renderers label them as UTC.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct MinuteRequestCount {
+    pub minute_epoch: i64,
+    pub requests: u64,
+}
+
 /// Private detail for one exact URI-path focus. Connection-peer IPs are not
 /// client/attacker attribution: they can be CDN, LB, NAT, or proxy addresses.
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -182,6 +195,12 @@ pub struct PrivateFocusSummary {
     /// before prefix grouping support.
     #[serde(default)]
     pub network_prefix_groups: Vec<PrivateFocusPrefixGroup>,
+    /// Private minute-resolution series, ordered by epoch minute.
+    #[serde(default)]
+    pub requests_per_minute_series: Vec<MinuteRequestCount>,
+    /// Focus-path records in new minute buckets omitted after the fixed cap.
+    #[serde(default)]
+    pub minute_buckets_beyond_cap: u64,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -194,6 +213,12 @@ pub struct PrivateRequestConcentrationReport {
     /// Omitted from historical artifacts created before path focus support.
     #[serde(default)]
     pub focus: Option<PrivateFocusSummary>,
+    /// Private minute-resolution series, ordered by epoch minute.
+    #[serde(default)]
+    pub requests_per_minute_series: Vec<MinuteRequestCount>,
+    /// Global records in new minute buckets omitted after the fixed cap.
+    #[serde(default)]
+    pub minute_buckets_beyond_cap: u64,
 }
 
 #[derive(Debug, Default)]
@@ -221,6 +246,7 @@ pub struct RequestConcentration {
     source_path_pairs: BTreeMap<(String, String), u64>,
     source_ips_with_incomplete_path_pairs: BTreeSet<String>,
     minute_buckets: BTreeMap<i64, u64>,
+    minute_buckets_beyond_cap: u64,
     requests_without_uri_path: u64,
     requests_without_source_ip: u64,
     paths_beyond_tracking_cap: u64,
@@ -231,6 +257,7 @@ pub struct RequestConcentration {
     focus_total: u64,
     focus_sources: BTreeMap<String, u64>,
     focus_minute_buckets: BTreeMap<i64, u64>,
+    focus_minute_buckets_beyond_cap: u64,
     focus_status_classes: StatusClassCounts,
     focus_source_ips_beyond_cap: u64,
 }
@@ -250,6 +277,7 @@ impl RequestConcentration {
             source_path_pairs: BTreeMap::new(),
             source_ips_with_incomplete_path_pairs: BTreeSet::new(),
             minute_buckets: BTreeMap::new(),
+            minute_buckets_beyond_cap: 0,
             requests_without_uri_path: 0,
             requests_without_source_ip: 0,
             paths_beyond_tracking_cap: 0,
@@ -260,6 +288,7 @@ impl RequestConcentration {
             focus_total: 0,
             focus_sources: BTreeMap::new(),
             focus_minute_buckets: BTreeMap::new(),
+            focus_minute_buckets_beyond_cap: 0,
             focus_status_classes: StatusClassCounts::default(),
             focus_source_ips_beyond_cap: 0,
         }
@@ -361,6 +390,8 @@ impl RequestConcentration {
                 })
                 .collect(),
             focus: self.private_focus_summary(),
+            requests_per_minute_series: Self::minute_series(&self.minute_buckets),
+            minute_buckets_beyond_cap: self.minute_buckets_beyond_cap,
         }
     }
 
@@ -370,10 +401,12 @@ impl RequestConcentration {
         }
         self.focus_total += 1;
         if let Some(timestamp) = event.timestamp {
-            *self
-                .focus_minute_buckets
-                .entry(timestamp.timestamp().div_euclid(60))
-                .or_default() += 1;
+            Self::track_minute_bucket(
+                &mut self.focus_minute_buckets,
+                &mut self.focus_minute_buckets_beyond_cap,
+                self.limits.max_minute_buckets,
+                timestamp.timestamp().div_euclid(60),
+            );
         }
         record_status_class(&mut self.focus_status_classes, event.status);
         let Some(source_ip) = event.source_ip.as_deref() else {
@@ -428,6 +461,8 @@ impl RequestConcentration {
                 response_status_classes: self.focus_status_classes.clone(),
                 sources,
                 network_prefix_groups: Vec::new(),
+                requests_per_minute_series: Self::minute_series(&self.focus_minute_buckets),
+                minute_buckets_beyond_cap: self.focus_minute_buckets_beyond_cap,
             }
         })
     }
@@ -437,10 +472,12 @@ impl RequestConcentration {
             self.observations_without_timestamp += 1;
             return;
         };
-        *self
-            .minute_buckets
-            .entry(timestamp.timestamp().div_euclid(60))
-            .or_default() += 1;
+        Self::track_minute_bucket(
+            &mut self.minute_buckets,
+            &mut self.minute_buckets_beyond_cap,
+            self.limits.max_minute_buckets,
+            timestamp.timestamp().div_euclid(60),
+        );
     }
 
     fn track_path(&mut self, path: &str, event: &WebEvent) -> bool {
@@ -542,6 +579,29 @@ impl RequestConcentration {
 
     fn request_rate(&self) -> (Option<u64>, Option<f64>, Option<f64>) {
         Self::request_rate_for(&self.minute_buckets)
+    }
+
+    fn track_minute_bucket(
+        buckets: &mut BTreeMap<i64, u64>,
+        beyond_cap: &mut u64,
+        maximum: usize,
+        minute_epoch: i64,
+    ) {
+        if !buckets.contains_key(&minute_epoch) && buckets.len() >= maximum {
+            *beyond_cap += 1;
+            return;
+        }
+        *buckets.entry(minute_epoch).or_default() += 1;
+    }
+
+    fn minute_series(buckets: &BTreeMap<i64, u64>) -> Vec<MinuteRequestCount> {
+        buckets
+            .iter()
+            .map(|(minute_epoch, requests)| MinuteRequestCount {
+                minute_epoch: *minute_epoch,
+                requests: *requests,
+            })
+            .collect()
     }
 
     fn request_rate_for(buckets: &BTreeMap<i64, u64>) -> (Option<u64>, Option<f64>, Option<f64>) {
@@ -700,6 +760,67 @@ mod tests {
     }
 
     #[test]
+    fn keeps_private_minute_series_sorted_and_discloses_bucket_caps() {
+        let mut concentration = RequestConcentration::with_limits(
+            true,
+            ConcentrationLimits {
+                max_minute_buckets: 2,
+                ..ConcentrationLimits::default()
+            },
+        );
+        concentration.focus_on_path("/target");
+        for minute in [2, 0, 2, 3] {
+            concentration.observe(&event(Some("/target"), Some("198.51.100.1"), Some(minute)));
+        }
+
+        let private = concentration.private_report();
+        assert_eq!(
+            private.requests_per_minute_series,
+            vec![
+                MinuteRequestCount {
+                    minute_epoch: 0,
+                    requests: 1,
+                },
+                MinuteRequestCount {
+                    minute_epoch: 2,
+                    requests: 2,
+                },
+            ]
+        );
+        assert_eq!(private.minute_buckets_beyond_cap, 1);
+        let focus = private.focus.unwrap();
+        assert_eq!(focus.requests_per_minute_series.len(), 2);
+        assert_eq!(focus.minute_buckets_beyond_cap, 1);
+
+        let sanitized = serde_json::to_string(&concentration.summary()).unwrap();
+        assert!(!sanitized.contains("requests_per_minute_series"));
+        assert!(!sanitized.contains("198.51.100.1"));
+        assert!(!sanitized.contains("/target"));
+    }
+
+    #[test]
+    fn loads_private_artifacts_created_before_minute_series_fields() {
+        let mut concentration = RequestConcentration::new(true);
+        concentration.focus_on_path("/target");
+        let mut value = serde_json::to_value(concentration.private_report()).unwrap();
+        let object = value.as_object_mut().unwrap();
+        object.remove("requests_per_minute_series");
+        object.remove("minute_buckets_beyond_cap");
+        let focus = object
+            .get_mut("focus")
+            .and_then(serde_json::Value::as_object_mut)
+            .unwrap();
+        focus.remove("requests_per_minute_series");
+        focus.remove("minute_buckets_beyond_cap");
+        let loaded: PrivateRequestConcentrationReport = serde_json::from_value(value).unwrap();
+        assert!(loaded.requests_per_minute_series.is_empty());
+        assert_eq!(loaded.minute_buckets_beyond_cap, 0);
+        let focus = loaded.focus.unwrap();
+        assert!(focus.requests_per_minute_series.is_empty());
+        assert_eq!(focus.minute_buckets_beyond_cap, 0);
+    }
+
+    #[test]
     fn finds_path_concentration_even_when_sources_are_distributed() {
         let mut concentration = RequestConcentration::new(true);
         for index in 0..200 {
@@ -736,6 +857,7 @@ mod tests {
                 max_source_ips: 1,
                 max_focus_source_ips: 1,
                 max_source_path_pairs: 1,
+                max_minute_buckets: 1,
             },
         );
         concentration.observe(&event(Some("/one"), Some("198.51.100.1"), Some(0)));
@@ -780,6 +902,7 @@ mod tests {
                 max_source_ips: 10,
                 max_focus_source_ips: 10,
                 max_source_path_pairs: 1,
+                max_minute_buckets: 10,
             },
         );
         concentration.observe(&event(Some("/first"), Some("198.51.100.1"), Some(0)));
@@ -857,6 +980,7 @@ mod tests {
                 max_source_ips: 10,
                 max_focus_source_ips: 1,
                 max_source_path_pairs: 10,
+                max_minute_buckets: 10,
             },
         );
         concentration.focus_on_path("/target");

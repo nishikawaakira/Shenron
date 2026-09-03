@@ -12,6 +12,7 @@ pub mod nuclei;
 pub mod output;
 pub mod paths;
 pub mod production;
+pub mod report;
 pub mod reputation;
 pub mod reputation_update;
 pub mod sigma;

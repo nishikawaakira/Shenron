@@ -109,6 +109,28 @@ network-prefix groups without replacing the individual peer-IP list. IPv4 uses
 and `--ipv6-group-prefix` can change it. A shared prefix is not evidence of a
 shared operator, owner, or actor.
 
+## Private offline HTML report
+
+Render an existing hunt or concentration output directory without reading the
+raw logs again:
+
+```bash
+shenron production report \
+  --input ./private-results/hunt-20260901T120000Z \
+  --output ./private-results/hunt-20260901T120000Z-report.html
+```
+
+The self-contained HTML uses inline CSS and server-generated inline SVG only:
+there is no JavaScript, external resource, fetch, or network access. It combines
+available aggregate provenance, private path/IP concentration and minute
+timelines, focused-path prefix groups, and the private hunt triage view. Missing
+artifacts are labeled unavailable, never inferred. The report is explicitly
+private because it contains raw paths and observed peer IPs; it is not a
+sanitized artifact. Every artifact-derived string is HTML-escaped. The charts
+show volume and review priority only, not DoS, attack, exploitation, abuse,
+compromise, probability of malice, or attribution. See the full [HTML report
+guide](html-report.md).
+
 ## Temporal comparison and retro-hunting
 
 Compare two existing local run directories without re-streaming either corpus:

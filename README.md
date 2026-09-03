@@ -58,6 +58,8 @@ Use `production concentration --path /example/path --show-source-ips` to review 
 
 The same private focus view also aggregates retained peer addresses by network prefix (`/24` IPv4 and `/48` IPv6 by default; configurable with `--ipv4-group-prefix` and `--ipv6-group-prefix`) without replacing IP-level rows. Prefixes are address blocks, not evidence of a shared owner or actor.
 
+`shenron production report --input <run-dir> --output <report.html>` turns existing hunt or concentration artifacts into a private, self-contained offline HTML report with inline SVG path/IP bars, minute timelines, and hunt triage. It contains raw paths and IPs, uses no JavaScript or external resources, and is visualization for human review rather than a DoS, attack, compromise, malice, or attribution determination; see [private HTML reports](docs/html-report.md).
+
 `shenron production compare` diffs two local frozen run artifacts, while `hunt --baseline <prior-run>` writes the same temporal comparison after a new hunt. CVE changes and aggregate counts are sanitized; first-seen entities and path/IP detail remain private. Neither first-seen nor elevated-volume labels determine maliciousness, attack, compromise, or attribution; see [temporal comparison](docs/temporal-comparison.md).
 
 Every `production hunt` also writes an aggregate-only `triage-summary.json` and a private ranked `triage-view.json`; pass `--show-triage` (and optionally `--limit`) to display private entries. This order is for human triage, not threat severity or probability of malice; first-seen means review, never malicious.
