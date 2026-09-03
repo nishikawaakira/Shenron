@@ -171,44 +171,71 @@ enum ProductionCommand {
     },
     /// Hunt with the same validated Nuclei request matchers; writes separate private and sanitized artifacts.
     Hunt {
-        #[arg(long)]
-        input: PathBuf,
-        #[arg(long, value_enum, default_value_t = InputFormat::Auto)]
+        /// Raw web telemetry to analyze. Mutually exclusive with --results-dir.
+        #[arg(
+            long,
+            required_unless_present = "results_dir",
+            conflicts_with = "results_dir"
+        )]
+        input: Option<PathBuf>,
+        /// Existing run directory to render without re-analyzing raw logs.
+        #[arg(long, conflicts_with = "input")]
+        results_dir: Option<PathBuf>,
+        #[arg(
+            long,
+            value_enum,
+            default_value_t = InputFormat::Auto,
+            conflicts_with = "results_dir"
+        )]
         format: InputFormat,
-        #[arg(long)]
+        #[arg(long, conflicts_with = "results_dir")]
         nuclei_templates: Option<PathBuf>,
-        #[arg(long)]
+        #[arg(long, conflicts_with = "results_dir")]
         nuclei_report: Option<PathBuf>,
-        #[arg(long)]
+        #[arg(long, conflicts_with = "results_dir")]
         kev_report: Option<PathBuf>,
-        #[arg(long)]
+        #[arg(long, conflicts_with = "results_dir")]
         output: Option<PathBuf>,
         /// Inclusive UTC start time in RFC 3339 format, for example 2026-04-01T00:00:00Z.
-        #[arg(long, value_parser = parse_rfc3339_utc)]
+        #[arg(
+            long,
+            value_parser = parse_rfc3339_utc,
+            conflicts_with = "results_dir"
+        )]
         from: Option<DateTime<Utc>>,
         /// Inclusive UTC end time in RFC 3339 format, for example 2026-04-30T23:59:59Z.
-        #[arg(long, value_parser = parse_rfc3339_utc)]
+        #[arg(
+            long,
+            value_parser = parse_rfc3339_utc,
+            conflicts_with = "results_dir"
+        )]
         to: Option<DateTime<Utc>>,
         /// Trusted direct proxy IP or CIDR. Repeat to trust multiple proxy networks.
         /// Forwarded client IPs remain unavailable unless this is specified.
-        #[arg(long, value_name = "IP-or-CIDR")]
+        #[arg(long, value_name = "IP-or-CIDR", conflicts_with = "results_dir")]
         trusted_proxy: Vec<TrustedProxy>,
         /// Supported Sigma rules directory for the generic detection pass.
         /// Defaults to the prepared <data-dir>/sigma-rules when present.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "results_dir")]
         rules: Option<PathBuf>,
         /// Disable the Sigma pass entirely (Nuclei CVE hunting is unaffected).
-        #[arg(long)]
+        #[arg(long, conflicts_with = "results_dir")]
         no_sigma: bool,
         /// Prior local run-artifact directory to compare after this hunt completes.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "results_dir")]
         baseline: Option<PathBuf>,
         /// Display ranked private connection/client-IP triage entries.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "results_dir")]
         show_triage: bool,
         /// Maximum private triage entries to display. Use 0 to display all.
         #[arg(long, default_value_t = 20)]
         limit: usize,
+        /// Also write a private HTML report. Omit PATH to use <run-dir>/report.html.
+        #[arg(long, num_args = 0..=1, value_name = "PATH")]
+        report: Option<Option<PathBuf>>,
+        /// Human-readable HTML report language.
+        #[arg(long, value_enum, default_value_t = ReportLanguage::En)]
+        report_lang: ReportLanguage,
     },
     /// Compare two existing local run-artifact directories without re-streaming logs.
     Compare {
@@ -226,24 +253,6 @@ enum ProductionCommand {
         show_source_ips: bool,
         #[arg(long, default_value_t = 20)]
         limit: usize,
-    },
-    /// Render existing local run artifacts as a private, self-contained HTML report.
-    Report {
-        /// Hunt or concentration output directory to read without reprocessing logs.
-        #[arg(long)]
-        input: PathBuf,
-        /// HTML destination. It must be separate from the immutable run directory.
-        #[arg(long)]
-        output: PathBuf,
-        /// Maximum paths, peer IPs, prefixes, and triage rows. Use 0 for all.
-        #[arg(long, default_value_t = 20)]
-        limit: usize,
-        /// Maximum deterministic points in each minute-series chart.
-        #[arg(long, default_value_t = 240, value_parser = parse_positive_usize)]
-        timeline_points: usize,
-        /// Human-readable report language.
-        #[arg(long, value_enum, default_value_t = ReportLanguage::En)]
-        lang: ReportLanguage,
     },
     /// Measure bounded request-volume distribution without CTI inputs or detector matching.
     Concentration {
@@ -628,6 +637,7 @@ fn main() -> Result<()> {
             }
             ProductionCommand::Hunt {
                 input,
+                results_dir,
                 format,
                 nuclei_templates,
                 nuclei_report,
@@ -641,7 +651,31 @@ fn main() -> Result<()> {
                 baseline,
                 show_triage,
                 limit,
+                report: html_report,
+                report_lang,
             } => {
+                if let Some(run_dir) = results_dir {
+                    if !run_dir.is_dir() {
+                        anyhow::bail!(
+                            "--results-dir must be an existing hunt or concentration output directory: {}",
+                            run_dir.display()
+                        );
+                    }
+                    let report_output = html_report
+                        .flatten()
+                        .unwrap_or_else(|| run_dir.join("report.html"));
+                    return write_html_report(
+                        &run_dir,
+                        &run_dir,
+                        &report_output,
+                        limit,
+                        report_lang,
+                    );
+                }
+
+                // clap requires one of --input or --results-dir. This branch is
+                // therefore the raw-log hunt path.
+                let input = input.expect("clap requires --input unless --results-dir is present");
                 let (nuclei_templates, nuclei_report) =
                     resolve_nuclei_inputs(nuclei_templates, nuclei_report)?;
                 let output = output.unwrap_or_else(default_hunt_output);
@@ -688,6 +722,11 @@ fn main() -> Result<()> {
                     );
                 }
                 write_hunt_triage_view(&output, &first_seen_source_ips, show_triage, limit)?;
+                if let Some(selected_report) = html_report {
+                    let report_output =
+                        selected_report.unwrap_or_else(|| output.join("report.html"));
+                    write_html_report(&output, &input, &report_output, limit, report_lang)?;
+                }
                 Ok(())
             }
             ProductionCommand::Compare {
@@ -711,49 +750,6 @@ fn main() -> Result<()> {
                     show_source_ips,
                     limit,
                 );
-                Ok(())
-            }
-            ProductionCommand::Report {
-                input,
-                output,
-                limit,
-                timeline_points,
-                lang,
-            } => {
-                if !input.is_dir() {
-                    anyhow::bail!(
-                        "report input must be an existing hunt or concentration output directory: {}",
-                        input.display()
-                    );
-                }
-                // The report renders artifacts a run already produced, not raw
-                // logs, so writing it inside the run directory is allowed. Only
-                // refuse to overwrite a directory or a source artifact.
-                ensure_report_output_is_safe(&input, &output)?;
-                let artifacts = load_report_artifacts(&input)?;
-                let html = render_report(&artifacts, limit, timeline_points, lang);
-                if let Some(parent) = output
-                    .parent()
-                    .filter(|parent| !parent.as_os_str().is_empty())
-                {
-                    std::fs::create_dir_all(parent).with_context(|| {
-                        format!("creating report output directory {}", parent.display())
-                    })?;
-                }
-                std::fs::write(&output, html)
-                    .with_context(|| format!("writing private HTML report {}", output.display()))?;
-                eprintln!("{}", lang.private_warning());
-                match lang {
-                    ReportLanguage::En => {
-                        eprintln!("Private HTML report written: {}", output.display());
-                    }
-                    ReportLanguage::Ja => {
-                        eprintln!(
-                            "プライベート HTML レポートを出力しました: {}",
-                            output.display()
-                        );
-                    }
-                }
                 Ok(())
             }
             ProductionCommand::Concentration {
@@ -1247,6 +1243,50 @@ fn ensure_report_output_is_safe(input: &Path, output: &Path) -> Result<()> {
         if inside_run_dir && REPORT_SOURCE_ARTIFACTS.contains(&name) {
             anyhow::bail!(
                 "--output would overwrite the source artifact {name}; choose a different report file name"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Render one run's existing artifacts to a private, self-contained HTML file.
+///
+/// `safe_input_ref` is the raw input for a new hunt and the run directory for
+/// a render-only invocation. This keeps report output separate from raw logs
+/// while still allowing `<run-dir>/report.html` for existing artifacts.
+fn write_html_report(
+    run_dir: &Path,
+    safe_input_ref: &Path,
+    output: &Path,
+    limit: usize,
+    lang: ReportLanguage,
+) -> Result<()> {
+    ensure_report_output_is_safe(safe_input_ref, output)?;
+    if safe_input_ref != run_dir {
+        shenron::production::ensure_separate_output(safe_input_ref, output)?;
+        ensure_report_output_is_safe(run_dir, output)?;
+    }
+
+    let artifacts = load_report_artifacts(run_dir)?;
+    let html = render_report(&artifacts, limit, 240, lang);
+    if let Some(parent) = output
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating report output directory {}", parent.display()))?;
+    }
+    std::fs::write(output, html)
+        .with_context(|| format!("writing private HTML report {}", output.display()))?;
+    eprintln!("{}", lang.private_warning());
+    match lang {
+        ReportLanguage::En => {
+            eprintln!("Private HTML report written: {}", output.display());
+        }
+        ReportLanguage::Ja => {
+            eprintln!(
+                "プライベート HTML レポートを出力しました: {}",
+                output.display()
             );
         }
     }

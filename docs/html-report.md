@@ -1,18 +1,28 @@
 # Private offline HTML report
 
-`shenron report` renders an existing hunt or concentration run as a
-single self-contained HTML file. It reads only local artifacts and does not
-re-stream the original logs:
+`shenron hunt` can analyze raw logs and render a report in one invocation:
 
 ```bash
-shenron report \
-  --input ./private-results/hunt-20260901T120000Z \
-  --output ./private-results/hunt-20260901T120000Z-report.html \
-  --lang ja
+shenron hunt \
+  --input ./logs \
+  --format apache \
+  --report \
+  --report-lang ja
 ```
 
-The input is a run directory. Shenron uses whichever of these artifacts are
-present and labels missing sections unavailable rather than estimating them:
+The hunt writes its normal artifacts and then renders
+`<run-dir>/report.html`. Pass a path to `--report` to override that location.
+To rerender an existing hunt or concentration run without re-streaming or
+re-analyzing raw logs, use the same command with the distinct results input:
+
+```bash
+shenron hunt \
+  --results-dir ./private-results/hunt-20260901T120000Z \
+  --report-lang ja
+```
+
+Report rendering uses whichever of these artifacts are present and labels
+missing sections unavailable rather than estimating them:
 
 - `sanitized-research.json` for aggregate counts;
 - `run-manifest.json` for the telemetry profile, time range, Shenron version,
@@ -26,11 +36,11 @@ present and labels missing sections unavailable rather than estimating them:
 The report shows aggregate cards, Top-N path and peer-IP bars, global and
 focused-path request timelines, focused-path network-prefix bars when present,
 and the hunt triage table. `--limit` defaults to 20 and controls private path,
-IP, prefix, and triage rows; `0` shows all. `--timeline-points` defaults to 240.
+IP, prefix, and triage rows; `0` shows all. The timeline uses at most 240 points.
 Longer minute series are deterministically downsampled into equal-width minute
 spans whose request counts are summed. Retained-bucket and key-tracking caps are
 disclosed; omitted data is never approximated. Human-readable labels default to
-English; pass `--lang ja` for Japanese. Integer counts use three-digit comma
+English; pass `--report-lang ja` for Japanese. Integer counts use three-digit comma
 grouping in either language. Older artifacts without a retained minute series
 show guidance to rerun `hunt` or `concentration` with the current build.
 
@@ -52,11 +62,11 @@ IP addresses and begins with this banner:
 > PRIVATE — contains raw IP addresses and request paths. Do not share.
 
 Do not publish or attach the report as if it were sanitized research output.
-Shenron also prints the private warning to stderr when generating it. Because
-the input is already-produced artifacts rather than raw logs, the report may be
-written inside its own run directory (for example
-`--output <run-dir>/report.html`); Shenron only refuses to overwrite a
-directory or one of the source artifacts it reads.
+Shenron also prints the private warning to stderr when generating it. In
+`--results-dir` mode the input is already-produced artifacts, so the report
+defaults to `<run-dir>/report.html`; Shenron refuses to overwrite a directory
+or one of the source artifacts it reads. In raw `--input` mode the report also
+remains separate from the raw-input tree.
 
 The document contains inline CSS and server-side generated inline SVG only. It
 has no JavaScript, external CSS, fonts, images, CDN links, fetches, or other

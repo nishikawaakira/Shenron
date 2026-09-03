@@ -157,7 +157,7 @@ AWS WAF marks them unavailable rather than replacing them with zero.
 
 The private `request-concentration.json` also stores the retained global and,
 when selected, focused-path minute buckets as an epoch-minute/request-count
-series in ascending order. `report` uses this series for its inline
+series in ascending order. `hunt --results-dir <run-dir>` report rendering uses this series for its inline
 SVG timeline. The series is never copied into `sanitized-research.json`. Minute
 tracking is bounded at 1,000,000 distinct buckets for each global/focus map;
 records in new buckets beyond that cap are counted and disclosed, while already

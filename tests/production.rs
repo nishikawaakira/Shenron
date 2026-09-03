@@ -1020,7 +1020,7 @@ fn auto_format_detects_waf_and_apache_vhost_but_rejects_ambiguous_combined() {
 }
 
 #[test]
-fn production_report_renders_existing_hunt_artifacts_as_private_offline_html() {
+fn hunt_writes_and_rerenders_private_offline_html() {
     let directory = tempdir().unwrap();
     let hunt_output = directory.path().join("hunt-output");
     Command::cargo_bin("shenron")
@@ -1040,88 +1040,78 @@ fn production_report_renders_existing_hunt_artifacts_as_private_offline_html() {
             "--output",
             hunt_output.to_str().unwrap(),
             "--no-sigma",
-        ])
-        .assert()
-        .success();
-
-    let html_path = directory.path().join("run-report.html");
-    Command::cargo_bin("shenron")
-        .unwrap()
-        .args([
-            "report",
-            "--input",
-            hunt_output.to_str().unwrap(),
-            "--output",
-            html_path.to_str().unwrap(),
-        ])
-        .assert()
-        .success()
-        .stderr(contains(
-            "PRIVATE — contains raw IP addresses and request paths. Do not share.",
-        ));
-
-    let html = fs::read_to_string(html_path).unwrap();
-    for expected in [
-        "PRIVATE — contains raw IP addresses and request paths. Do not share.",
-        "Top paths",
-        "Top observed connection peers",
-        "Requests per minute",
-        "Hunt triage view",
-        "/vulnerable/execute",
-        "198.51.100.1",
-    ] {
-        assert!(html.contains(expected));
-    }
-    for forbidden in ["http://", "https://", "src=", "<script src"] {
-        assert!(!html.contains(forbidden));
-    }
-
-    let japanese_html_path = directory.path().join("run-report-ja.html");
-    Command::cargo_bin("shenron")
-        .unwrap()
-        .args([
-            "report",
-            "--input",
-            hunt_output.to_str().unwrap(),
-            "--output",
-            japanese_html_path.to_str().unwrap(),
-            "--lang",
+            "--report",
+            "--report-lang",
             "ja",
         ])
         .assert()
         .success()
         .stderr(contains("生の IP アドレスとリクエストパスを含みます"));
-    let japanese_html = fs::read_to_string(japanese_html_path).unwrap();
-    assert!(japanese_html.contains("<html lang=\"ja\">"));
-    assert!(japanese_html.contains("集計サマリ"));
+
+    let html_path = hunt_output.join("report.html");
+    let html = fs::read_to_string(&html_path).unwrap();
+    for expected in [
+        "<html lang=\"ja\">",
+        "集計サマリ",
+        "観測された CVE 数",
+        "hunt トリアージビュー",
+        "/vulnerable/execute",
+        "198.51.100.1",
+    ] {
+        assert!(html.contains(expected));
+    }
+    assert!(!html.contains("トリアージを利用できません"));
     for forbidden in ["http://", "https://", "src=", "<script src"] {
-        assert!(!japanese_html.contains(forbidden));
+        assert!(!html.contains(forbidden));
     }
 
-    // The report may be written inside its own run directory (its input is
-    // already-produced artifacts, not raw logs).
-    let in_dir_report = hunt_output.join("report.html");
+    let findings_before = fs::read(hunt_output.join("private-findings.jsonl")).unwrap();
+    fs::remove_file(&html_path).unwrap();
     Command::cargo_bin("shenron")
         .unwrap()
         .args([
-            "report",
-            "--input",
+            "hunt",
+            "--results-dir",
             hunt_output.to_str().unwrap(),
-            "--output",
-            in_dir_report.to_str().unwrap(),
+            "--report-lang",
+            "ja",
+        ])
+        .assert()
+        .success()
+        .stderr(contains("生の IP アドレスとリクエストパスを含みます"));
+    let rerendered_html = fs::read_to_string(&html_path).unwrap();
+    assert!(rerendered_html.contains("<html lang=\"ja\">"));
+    assert!(rerendered_html.contains("集計サマリ"));
+    assert_eq!(
+        fs::read(hunt_output.join("private-findings.jsonl")).unwrap(),
+        findings_before
+    );
+    for forbidden in ["http://", "https://", "src=", "<script src"] {
+        assert!(!rerendered_html.contains(forbidden));
+    }
+
+    let custom_report = directory.path().join("custom-report.html");
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "hunt",
+            "--results-dir",
+            hunt_output.to_str().unwrap(),
+            "--report",
+            custom_report.to_str().unwrap(),
         ])
         .assert()
         .success();
-    assert!(in_dir_report.is_file());
+    assert!(custom_report.is_file());
 
-    // ...but it must not clobber a source artifact it reads.
+    // A render-only invocation must not clobber a source artifact it reads.
     Command::cargo_bin("shenron")
         .unwrap()
         .args([
-            "report",
-            "--input",
+            "hunt",
+            "--results-dir",
             hunt_output.to_str().unwrap(),
-            "--output",
+            "--report",
             hunt_output
                 .join("request-concentration.json")
                 .to_str()
@@ -1130,6 +1120,41 @@ fn production_report_renders_existing_hunt_artifacts_as_private_offline_html() {
         .assert()
         .failure()
         .stderr(contains("would overwrite the source artifact"));
+}
+
+#[test]
+fn hunt_requires_exactly_one_input_mode_and_rejects_hunt_options_for_results() {
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .arg("hunt")
+        .assert()
+        .failure()
+        .stderr(contains("--input <INPUT>"));
+
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "hunt",
+            "--input",
+            "tests/fixtures/production/waf.jsonl",
+            "--results-dir",
+            "tests/fixtures/production",
+        ])
+        .assert()
+        .failure()
+        .stderr(contains("cannot be used with"));
+
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "hunt",
+            "--results-dir",
+            "tests/fixtures/production",
+            "--no-sigma",
+        ])
+        .assert()
+        .failure()
+        .stderr(contains("cannot be used with"));
 }
 
 fn copy_tree(source: &Path, destination: &Path) {
