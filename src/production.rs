@@ -1013,7 +1013,55 @@ pub fn concentration(
             .with_context(|| format!("creating {}", sanitized_path.display()))?,
         &report,
     )?;
+    write_concentration_run_manifest(output, telemetry_profile, &time_range)?;
     Ok(report)
+}
+
+/// Provenance manifest for a `concentration` run. It records the same
+/// version, generation time, telemetry profile, and filter range that `hunt`
+/// writes, so the HTML report reads provenance the same way for both. Nuclei is
+/// not part of a concentration run, so `nuclei_revision` is always absent. It is
+/// not a sanitized research artifact and contains no raw request values.
+#[derive(Serialize)]
+struct ConcentrationRunManifest {
+    report_kind: &'static str,
+    safety_note: &'static str,
+    shenron_version: &'static str,
+    generated_at: String,
+    telemetry_profile: TelemetryProfile,
+    nuclei_revision: Option<String>,
+    hunt_parameters: ConcentrationManifestParameters,
+}
+
+#[derive(Serialize)]
+struct ConcentrationManifestParameters {
+    filter_from: Option<String>,
+    filter_to: Option<String>,
+}
+
+fn write_concentration_run_manifest(
+    output: &Path,
+    telemetry_profile: TelemetryProfile,
+    time_range: &HuntTimeRange,
+) -> anyhow::Result<()> {
+    let manifest = ConcentrationRunManifest {
+        report_kind: "RUN_MANIFEST",
+        safety_note: "Contains only run configuration and provenance for a request-concentration run. No raw request values, IP addresses, hostnames, JA3/JA4, queries, or headers are included.",
+        shenron_version: env!("CARGO_PKG_VERSION"),
+        generated_at: Utc::now().to_rfc3339(),
+        telemetry_profile,
+        nuclei_revision: None,
+        hunt_parameters: ConcentrationManifestParameters {
+            filter_from: time_range.from.map(|time| time.to_rfc3339()),
+            filter_to: time_range.to.map(|time| time.to_rfc3339()),
+        },
+    };
+    let path = output.join("run-manifest.json");
+    serde_json::to_writer_pretty(
+        File::create(&path).with_context(|| format!("creating {}", path.display()))?,
+        &manifest,
+    )?;
+    Ok(())
 }
 
 /// Read the private concentration detail written by `hunt` or `concentration`.

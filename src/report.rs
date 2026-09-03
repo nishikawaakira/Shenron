@@ -102,6 +102,8 @@ struct Labels {
     resolved_asn: &'static str,
     first_seen: &'static str,
     unavailable: &'static str,
+    not_applicable: &'static str,
+    time_range_observed: &'static str,
     none: &'static str,
     reachable_max: &'static str,
     observations: &'static str,
@@ -182,6 +184,8 @@ const EN_LABELS: Labels = Labels {
     resolved_asn: "Resolved ASN",
     first_seen: "First-seen",
     unavailable: "unavailable",
+    not_applicable: "not applicable (no CVE pass)",
+    time_range_observed: "Time range is the observed span of retained minute buckets, not a requested filter.",
     none: "none",
     reachable_max: "reachable max",
     observations: "observations",
@@ -262,6 +266,8 @@ const JA_LABELS: Labels = Labels {
     resolved_asn: "解決された ASN",
     first_seen: "first-seen",
     unavailable: "利用不可",
+    not_applicable: "対象外（Nuclei 未実行）",
+    time_range_observed: "期間は保持された分バケットの観測範囲であり、指定したフィルタ範囲ではありません。",
     none: "なし",
     reachable_max: "到達可能な最大値",
     observations: "観測",
@@ -399,6 +405,17 @@ pub fn render_report(
         ],
     )
     .unwrap_or_else(|| labels.unavailable.to_owned());
+    // A concentration run performs no Nuclei pass and does not set explicit
+    // filter bounds. Recognize it so provenance reads as "not applicable"
+    // rather than "unavailable", and so the observed minute span can stand in
+    // for the time range.
+    let is_concentration_run =
+        first_string(artifacts, &[(ArtifactKind::Sanitized, "/report_kind")])
+            .is_some_and(|kind| kind == "SANITIZED_REQUEST_CONCENTRATION");
+    let observed_range = artifacts
+        .concentration
+        .as_ref()
+        .and_then(observed_time_range);
     let from = first_string(
         artifacts,
         &[
@@ -408,6 +425,7 @@ pub fn render_report(
             (ArtifactKind::Sanitized, "/metrics/earliest_timestamp"),
         ],
     )
+    .or_else(|| observed_range.as_ref().map(|(from, _)| from.clone()))
     .unwrap_or_else(|| labels.unavailable.to_owned());
     let to = first_string(
         artifacts,
@@ -418,23 +436,50 @@ pub fn render_report(
             (ArtifactKind::Sanitized, "/metrics/latest_timestamp"),
         ],
     )
+    .or_else(|| observed_range.as_ref().map(|(_, to)| to.clone()))
     .unwrap_or_else(|| labels.unavailable.to_owned());
+    // The time range was derived from the observed series only when no explicit
+    // filter/manifest bound supplied it.
+    let time_range_from_series = observed_range.is_some()
+        && first_string(
+            artifacts,
+            &[
+                (ArtifactKind::Manifest, "/hunt_parameters/filter_from"),
+                (ArtifactKind::Sanitized, "/filter_from"),
+            ],
+        )
+        .is_none();
     let version = first_string(artifacts, &[(ArtifactKind::Manifest, "/shenron_version")])
         .unwrap_or_else(|| labels.unavailable.to_owned());
     let revision = first_string(artifacts, &[(ArtifactKind::Manifest, "/nuclei_revision")])
-        .unwrap_or_else(|| labels.unavailable.to_owned());
+        .unwrap_or_else(|| {
+            if is_concentration_run {
+                labels.not_applicable
+            } else {
+                labels.unavailable
+            }
+            .to_owned()
+        });
     let generated_at = first_string(artifacts, &[(ArtifactKind::Manifest, "/generated_at")])
         .unwrap_or_else(|| labels.unavailable.to_owned());
 
     let mut html = format!(
         "<!doctype html><html lang=\"{}\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>{}</title><style>\
-        :root{{color-scheme:dark;--bg:#0b1020;--panel:#151d31;--muted:#a8b3c7;--text:#f4f7fb;--accent:#66d9c2;--warn:#ffcf66;--danger:#ff6b78;--line:#33415f}}*{{box-sizing:border-box}}body{{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 system-ui,sans-serif}}main{{max-width:1240px;margin:auto;padding:24px}}.private{{background:#6b1320;border:2px solid var(--danger);padding:16px;font-size:18px;font-weight:800}}.note,.unavailable,.cap{{color:var(--muted)}}.note{{border-left:3px solid var(--warn);padding-left:12px}}.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px}}.card,section{{background:var(--panel);border:1px solid var(--line);border-radius:10px}}.card{{padding:14px}}.card b{{display:block;font-size:24px}}section{{margin-top:18px;padding:18px}}h1,h2,h3{{margin-top:0}}svg{{width:100%;height:auto;background:#10172a;border-radius:8px}}.bar{{fill:var(--accent)}}.axis{{stroke:var(--line);stroke-width:1}}.timeline{{fill:none;stroke:var(--accent);stroke-width:3}}.timeline-area{{fill:#66d9c226;stroke:none}}svg text{{fill:var(--text);font:12px system-ui,sans-serif}}table{{width:100%;border-collapse:collapse;display:block;overflow-x:auto}}th,td{{padding:9px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top;white-space:nowrap}}.score{{width:120px;background:#26334f;border-radius:9px;overflow:hidden}}.score span{{display:block;height:10px;background:var(--accent)}}code{{color:#b9f4e8}}.small{{font-size:12px;color:var(--muted)}}</style></head><body><main>",
+        :root{{color-scheme:dark;--bg:#0b1020;--panel:#151d31;--muted:#a8b3c7;--text:#f4f7fb;--accent:#66d9c2;--warn:#ffcf66;--danger:#ff6b78;--line:#33415f}}*{{box-sizing:border-box}}body{{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 system-ui,sans-serif}}main{{max-width:1240px;margin:auto;padding:24px}}.private{{background:#6b1320;border:2px solid var(--danger);padding:16px;font-size:18px;font-weight:800}}.note,.unavailable,.cap{{color:var(--muted)}}.note{{border-left:3px solid var(--warn);padding-left:12px}}.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px}}.card,section{{background:var(--panel);border:1px solid var(--line);border-radius:10px}}.card{{padding:14px}}.card b{{display:block;font-size:24px}}section{{margin-top:18px;padding:18px}}h1,h2,h3{{margin-top:0}}svg{{width:100%;height:auto;background:#10172a;border-radius:8px}}.bar{{fill:var(--accent)}}.axis{{stroke:var(--line);stroke-width:1}}.timeline{{fill:none;stroke:var(--accent);stroke-width:3}}.timeline-area{{fill:#66d9c226;stroke:none}}.timeline-dot{{fill:var(--accent)}}.hit{{fill:transparent}}.hit:hover{{fill:#66d9c22e}}svg text{{fill:var(--text);font:12px system-ui,sans-serif}}table{{width:100%;border-collapse:collapse;display:block;overflow-x:auto}}th,td{{padding:9px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top;white-space:nowrap}}.score{{width:120px;background:#26334f;border-radius:9px;overflow:hidden}}.score span{{display:block;height:10px;background:var(--accent)}}code{{color:#b9f4e8}}.small{{font-size:12px;color:var(--muted)}}</style></head><body><main>",
         language.html_lang(),
         html_escape(labels.title),
     );
+    let time_range_note = if time_range_from_series {
+        format!(
+            "<p class=\"small\">{}</p>",
+            html_escape(labels.time_range_observed)
+        )
+    } else {
+        String::new()
+    };
     html.push_str(&format!(
         "<div class=\"private\">{}</div><h1>{}</h1><p class=\"note\">{}</p>\
-         <section><h2>{}</h2><div class=\"grid\">{}{}{}{}{}{}</div></section>",
+         <section><h2>{}</h2><div class=\"grid\">{}{}{}{}{}{}</div>{}</section>",
         html_escape(language.private_warning()),
         html_escape(labels.title),
         html_escape(labels.overall_note),
@@ -445,6 +490,7 @@ pub fn render_report(
         card(labels.shenron_version, &version),
         card(labels.nuclei_revision, &revision),
         card(labels.run_generated_at, &generated_at),
+        time_range_note,
     ));
 
     render_summary(&mut html, artifacts, language);
@@ -800,12 +846,21 @@ fn bar_chart(title: &str, rows: &[BarRow<'_>], language: ReportLanguage) -> Stri
     for (index, row) in rows.iter().enumerate() {
         let y = index * 42 + 8;
         let width = row.value as f64 / maximum as f64 * 500.0;
+        // A native SVG <title> gives the full label and count on hover even when
+        // the on-chart label is visually truncated.
+        let tip = format!(
+            "{} · {} {}",
+            row.label,
+            group_thousands(row.value),
+            row.details
+        );
         svg.push_str(&format!(
-            "<text x=\"8\" y=\"{}\">{}</text><rect class=\"bar\" x=\"300\" y=\"{}\" width=\"{:.2}\" height=\"14\"></rect><text x=\"{}\" y=\"{}\">{} · {}</text>",
+            "<text x=\"8\" y=\"{}\">{}</text><rect class=\"bar\" x=\"300\" y=\"{}\" width=\"{:.2}\" height=\"14\"><title>{}</title></rect><text x=\"{}\" y=\"{}\">{} · {}</text>",
             y + 12,
             html_escape(row.label),
             y,
             width,
+            html_escape(&tip),
             310.0 + width,
             y + 12,
             group_thousands(row.value),
@@ -845,25 +900,57 @@ fn timeline_chart(
         .unwrap_or(1)
         .max(1);
     let span = (last as i128 - first as i128).max(1) as f64;
+    // Per-point x for a point i minutes into the span. Shared by the polyline,
+    // the visible dots, and the invisible hover targets so they stay aligned.
+    let point_x =
+        |minute_epoch: i64| 60.0 + (minute_epoch as i128 - first as i128) as f64 / span * 880.0;
+    let point_y = |requests: u64| 180.0 - requests as f64 / peak as f64 * 145.0;
     let mut coordinate_values = points
         .iter()
         .map(|point| {
-            let x = 60.0 + (point.minute_epoch as i128 - first as i128) as f64 / span * 880.0;
-            let y = 180.0 - point.requests as f64 / peak as f64 * 145.0;
-            format!("{x:.2},{y:.2}")
+            format!(
+                "{:.2},{:.2}",
+                point_x(point.minute_epoch),
+                point_y(point.requests)
+            )
         })
         .collect::<Vec<_>>();
     if coordinate_values.len() == 1 {
-        let y = 180.0 - points[0].requests as f64 / peak as f64 * 145.0;
-        coordinate_values.push(format!("940.00,{y:.2}"));
+        coordinate_values.push(format!("940.00,{:.2}", point_y(points[0].requests)));
     }
     let coordinates = coordinate_values.join(" ");
     let area = format!("60,180 {coordinates} 940,180");
+    // A full-height transparent column per point carries a native SVG <title>
+    // tooltip (no JavaScript) showing that minute and its request count on
+    // hover; a small dot marks each retained point.
+    let column = if points.len() > 1 {
+        880.0 / (points.len() - 1) as f64
+    } else {
+        880.0
+    };
+    let mut markers = String::new();
+    for point in &points {
+        let x = point_x(point.minute_epoch);
+        let y = point_y(point.requests);
+        let hit_x = (x - column / 2.0).max(60.0);
+        let hit_width = column.min(940.0 - hit_x).max(0.5);
+        let tip = format!(
+            "{} · {} {}",
+            minute_label(point.minute_epoch, language),
+            group_thousands(point.requests),
+            labels.request_count_label,
+        );
+        markers.push_str(&format!(
+            "<rect class=\"hit\" x=\"{hit_x:.2}\" y=\"35\" width=\"{hit_width:.2}\" height=\"145\"><title>{}</title></rect><circle class=\"timeline-dot\" cx=\"{x:.2}\" cy=\"{y:.2}\" r=\"2.5\"></circle>",
+            html_escape(&tip),
+        ));
+    }
     format!(
-        "<svg width=\"1000\" height=\"220\" viewBox=\"0 0 1000 220\" role=\"img\" aria-label=\"{}\"><line class=\"axis\" x1=\"60\" y1=\"180\" x2=\"940\" y2=\"180\"></line><line class=\"axis\" x1=\"60\" y1=\"35\" x2=\"60\" y2=\"180\"></line><polygon class=\"timeline-area\" points=\"{}\"></polygon><polyline class=\"timeline\" points=\"{}\"></polyline><text x=\"60\" y=\"205\">{}</text><text x=\"760\" y=\"205\">{}</text><text x=\"65\" y=\"30\">{} {}</text></svg><p class=\"small\">{} {}</p>",
+        "<svg width=\"1000\" height=\"220\" viewBox=\"0 0 1000 220\" role=\"img\" aria-label=\"{}\"><line class=\"axis\" x1=\"60\" y1=\"180\" x2=\"940\" y2=\"180\"></line><line class=\"axis\" x1=\"60\" y1=\"35\" x2=\"60\" y2=\"180\"></line><polygon class=\"timeline-area\" points=\"{}\"></polygon><polyline class=\"timeline\" points=\"{}\"></polyline>{}<text x=\"60\" y=\"205\">{}</text><text x=\"760\" y=\"205\">{}</text><text x=\"65\" y=\"30\">{} {}</text></svg><p class=\"small\">{} {}</p>",
         html_escape(title),
         area,
         coordinates,
+        markers,
         html_escape(&minute_label(first, language)),
         html_escape(&minute_label(last, language)),
         html_escape(labels.peak),
@@ -922,6 +1009,25 @@ fn minute_label(minute_epoch: i64, language: ReportLanguage) -> String {
                 group_signed_thousands(minute_epoch)
             )
         })
+}
+
+/// Observed UTC span (first, last) of the retained minute series as RFC 3339
+/// strings, or `None` when no timestamped minute buckets were retained. This is
+/// the span of the data actually observed, not a requested filter window.
+fn observed_time_range(
+    concentration: &PrivateRequestConcentrationReport,
+) -> Option<(String, String)> {
+    let series = &concentration.requests_per_minute_series;
+    let first = series.iter().map(|point| point.minute_epoch).min()?;
+    let last = series.iter().map(|point| point.minute_epoch).max()?;
+    Some((minute_timestamp(first)?, minute_timestamp(last)?))
+}
+
+fn minute_timestamp(minute_epoch: i64) -> Option<String> {
+    minute_epoch
+        .checked_mul(60)
+        .and_then(|seconds| DateTime::<Utc>::from_timestamp(seconds, 0))
+        .map(|timestamp| timestamp.to_rfc3339())
 }
 
 fn source_rows<'a>(
@@ -1363,5 +1469,60 @@ mod tests {
         for forbidden in ["http://", "https://", "src=", "<script src"] {
             assert!(!html.contains(forbidden));
         }
+    }
+
+    #[test]
+    fn concentration_provenance_derives_range_and_marks_nuclei_not_applicable() {
+        // A concentration run has no Nuclei pass and no explicit filter bounds.
+        let artifacts = ReportArtifacts {
+            sanitized: Some(serde_json::json!({
+                "report_kind": "SANITIZED_REQUEST_CONCENTRATION",
+                "telemetry_profile": "apache-combined"
+            })),
+            manifest: None,
+            concentration: Some(synthetic_concentration("/a")),
+            triage: None,
+        };
+        let html = render_report(&artifacts, 20, 240, ReportLanguage::En);
+        // Time range is derived from the observed minute series (epoch minutes 0..1).
+        assert!(html.contains("1970-01-01T00:00:00+00:00"));
+        assert!(html.contains("1970-01-01T00:01:00+00:00"));
+        assert!(html.contains("Time range is the observed span"));
+        // Nuclei revision reads as not applicable, not a bare "unavailable".
+        assert!(html.contains("not applicable (no CVE pass)"));
+    }
+
+    #[test]
+    fn timeline_points_carry_native_hover_titles() {
+        let series = vec![
+            MinuteRequestCount {
+                minute_epoch: 100,
+                requests: 3,
+            },
+            MinuteRequestCount {
+                minute_epoch: 101,
+                requests: 7,
+            },
+        ];
+        let html = timeline_chart("t", &series, 240, ReportLanguage::Ja);
+        assert!(html.contains("<rect class=\"hit\""));
+        assert!(html.contains("<title>"));
+        assert!(html.contains("リクエスト"));
+        assert!(html.contains("class=\"timeline-dot\""));
+        for forbidden in ["http://", "https://", "src=", "<script"] {
+            assert!(!html.contains(forbidden));
+        }
+    }
+
+    #[test]
+    fn bar_rows_carry_native_hover_titles() {
+        let rows = [BarRow {
+            label: "/x",
+            value: 1234,
+            details: "d".to_owned(),
+        }];
+        let html = bar_chart("Top", &rows, ReportLanguage::En);
+        assert!(html.contains("<rect class=\"bar\""));
+        assert!(html.contains("<title>/x · 1,234 d</title>"));
     }
 }

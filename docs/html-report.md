@@ -16,7 +16,9 @@ present and labels missing sections unavailable rather than estimating them:
 
 - `sanitized-research.json` for aggregate counts;
 - `run-manifest.json` for the telemetry profile, time range, Shenron version,
-  and pinned Nuclei revision;
+  and pinned Nuclei revision. Both `hunt` and `concentration` write this
+  manifest, so provenance is populated for either run; a `concentration` run has
+  no Nuclei pass, so its Nuclei revision reads as not applicable;
 - `request-concentration.json` for private paths, observed connection-peer IPs,
   prefix groups, tracking-cap disclosures, and minute-resolution timelines;
 - `triage-view.json` for the ranked private behavior-priority view.
@@ -31,6 +33,13 @@ disclosed; omitted data is never approximated. Human-readable labels default to
 English; pass `--lang ja` for Japanese. Integer counts use three-digit comma
 grouping in either language. Older artifacts without a retained minute series
 show guidance to rerun `hunt` or `concentration` with the current build.
+
+Charts carry native hover tooltips implemented with SVG `<title>` elements and
+no JavaScript: hovering a point on a request timeline shows that minute and its
+request count, and hovering a bar shows the full path or peer address with its
+count even when the on-chart label is truncated. When a run recorded no explicit
+filter window, the provenance time range is the observed span of retained minute
+buckets, and the report says so.
 
 ## Privacy and offline guarantees
 

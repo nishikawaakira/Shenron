@@ -886,11 +886,7 @@ fn hunt_uses_prepared_default_inputs_and_output_without_kev() {
 fn auto_format_detects_waf_and_apache_vhost_but_rejects_ambiguous_combined() {
     Command::cargo_bin("shenron")
         .unwrap()
-        .args([
-            "inspect",
-            "--input",
-            "tests/fixtures/production/waf.jsonl",
-        ])
+        .args(["inspect", "--input", "tests/fixtures/production/waf.jsonl"])
         .assert()
         .success()
         .stdout(contains("Telemetry profile:          AwsWaf"));
@@ -917,11 +913,7 @@ fn auto_format_detects_waf_and_apache_vhost_but_rejects_ambiguous_combined() {
     .unwrap();
     Command::cargo_bin("shenron")
         .unwrap()
-        .args([
-            "inspect",
-            "--input",
-            combined.to_str().unwrap(),
-        ])
+        .args(["inspect", "--input", combined.to_str().unwrap()])
         .assert()
         .failure()
         .stderr(contains("Could not determine the input format safely."))
