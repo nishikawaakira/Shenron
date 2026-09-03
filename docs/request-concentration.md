@@ -54,7 +54,7 @@ peers that could not be retained after that cap.
 When `--show-source-ips` is enabled, Shenron retains the individual peer-IP
 list and also prints a derived address-block aggregation. IPv4 sources default
 to `/24` groups; IPv6 sources default to `/48` groups. Use
-`--group-prefix <0..32>` to choose the IPv4 prefix length and
+`--ipv4-group-prefix <0..32>` to choose the IPv4 prefix length and
 `--ipv6-group-prefix <0..128>` to choose the IPv6 length. The private focus
 section of `request-concentration.json` contains each prefix, its request
 count and share within the focused path, and its distinct retained peer-IP

@@ -56,7 +56,7 @@ Read-only local AWS WAF production inspection and validated Nuclei hunting are a
 
 Use `production concentration --path /example/path --show-source-ips` to review private, deterministic request counts for observed connection peers on one exact path. This is concentration context only; observed peers are not attacker attribution.
 
-The same private focus view also aggregates retained peer addresses by network prefix (`/24` IPv4 and `/48` IPv6 by default; configurable with `--group-prefix` and `--ipv6-group-prefix`) without replacing IP-level rows. Prefixes are address blocks, not evidence of a shared owner or actor.
+The same private focus view also aggregates retained peer addresses by network prefix (`/24` IPv4 and `/48` IPv6 by default; configurable with `--ipv4-group-prefix` and `--ipv6-group-prefix`) without replacing IP-level rows. Prefixes are address blocks, not evidence of a shared owner or actor.
 
 `shenron production compare` diffs two local frozen run artifacts, while `hunt --baseline <prior-run>` writes the same temporal comparison after a new hunt. CVE changes and aggregate counts are sanitized; first-seen entities and path/IP detail remain private. Neither first-seen nor elevated-volume labels determine maliciousness, attack, compromise, or attribution; see [temporal comparison](docs/temporal-comparison.md).
 

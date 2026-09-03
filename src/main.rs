@@ -240,7 +240,7 @@ enum ProductionCommand {
         path: Option<String>,
         /// IPv4 prefix length for private focus-path address-block aggregation (default: 24).
         #[arg(long, value_parser = parse_ipv4_prefix_length)]
-        group_prefix: Option<u8>,
+        ipv4_group_prefix: Option<u8>,
         /// IPv6 prefix length for private focus-path address-block aggregation (default: 48).
         #[arg(long, value_parser = parse_ipv6_prefix_length)]
         ipv6_group_prefix: Option<u8>,
@@ -691,7 +691,7 @@ fn main() -> Result<()> {
                 format,
                 output,
                 path,
-                group_prefix,
+                ipv4_group_prefix,
                 ipv6_group_prefix,
                 from,
                 to,
@@ -699,12 +699,12 @@ fn main() -> Result<()> {
                 show_source_ips,
                 limit,
             } => {
-                if path.is_none() && (group_prefix.is_some() || ipv6_group_prefix.is_some()) {
-                    anyhow::bail!("--group-prefix and --ipv6-group-prefix require --path");
+                if path.is_none() && (ipv4_group_prefix.is_some() || ipv6_group_prefix.is_some()) {
+                    anyhow::bail!("--ipv4-group-prefix and --ipv6-group-prefix require --path");
                 }
                 let default_prefixes = FocusPrefixLengths::default();
                 let focus_prefix_lengths = FocusPrefixLengths {
-                    ipv4: group_prefix.unwrap_or(default_prefixes.ipv4),
+                    ipv4: ipv4_group_prefix.unwrap_or(default_prefixes.ipv4),
                     ipv6: ipv6_group_prefix.unwrap_or(default_prefixes.ipv6),
                 };
                 let report = production_concentration(

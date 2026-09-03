@@ -24,6 +24,12 @@ Could not determine the input format safely.
 Pass --format aws-waf, nginx, apache, or apache-vhost.
 ```
 
+Auto mode samples input files with a recognized extension (`.json`, `.jsonl`,
+`.log`, `.txt`, `.gz`); a directory of only differently named rotations (for
+example `access.log.1`) yields no sample and reports the message above. The
+scan itself still reads every file once the format is known, so passing an
+explicit `--format` resolves that case.
+
 Select the source explicitly for standard Combined or when strict parsing is
 desired:
 

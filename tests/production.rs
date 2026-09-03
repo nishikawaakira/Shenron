@@ -201,7 +201,7 @@ fn concentration_path_focus_keeps_sources_private_until_explicitly_requested() {
             directory.path().join("shown-focused").to_str().unwrap(),
             "--path",
             "/vulnerable/execute",
-            "--group-prefix",
+            "--ipv4-group-prefix",
             "16",
             "--show-source-ips",
         ])

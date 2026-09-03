@@ -105,7 +105,7 @@ abuse, compromise, or attribution determination.
 
 With `--show-source-ips`, the same private focus output also includes derived
 network-prefix groups without replacing the individual peer-IP list. IPv4 uses
-`/24` by default and `--group-prefix` can change it; IPv6 uses `/48` by default
+`/24` by default and `--ipv4-group-prefix` can change it; IPv6 uses `/48` by default
 and `--ipv6-group-prefix` can change it. A shared prefix is not evidence of a
 shared operator, owner, or actor.
 
