@@ -70,6 +70,17 @@ struct Labels {
     distinct_paths: &'static str,
     distinct_peers: &'static str,
     observed_cves: &'static str,
+    cve_list_heading: &'static str,
+    cve_list_note: &'static str,
+    cve_id: &'static str,
+    kev_membership: &'static str,
+    kev_badge: &'static str,
+    detectability: &'static str,
+    distinctive_matches: &'static str,
+    generic_matches: &'static str,
+    cve_first_seen: &'static str,
+    last_seen: &'static str,
+    protection_gap_rate: &'static str,
     triage_entities: &'static str,
     tier_summary: &'static str,
     concentration: &'static str,
@@ -155,6 +166,17 @@ const EN_LABELS: Labels = Labels {
     distinct_paths: "Distinct paths",
     distinct_peers: "Distinct observed peers",
     observed_cves: "Observed CVEs",
+    cve_list_heading: "Observed CVEs",
+    cve_list_note: "KEV membership and detectability are catalog facts, not an exploitation, compromise, or attacker-identity determination. Request counts are observed matcher volume, not proof of exploitation.",
+    cve_id: "CVE ID",
+    kev_membership: "CISA KEV",
+    kev_badge: "KEV",
+    detectability: "Detectability",
+    distinctive_matches: "Distinctive-path matches",
+    generic_matches: "Generic-path matches",
+    cve_first_seen: "First-seen",
+    last_seen: "Last-seen",
+    protection_gap_rate: "Protection-gap rate",
     triage_entities: "Triage entities",
     tier_summary: "Behavior-priority tiers (not threat severity)",
     concentration: "Request concentration",
@@ -240,6 +262,17 @@ const JA_LABELS: Labels = Labels {
     distinct_paths: "異なるパス数",
     distinct_peers: "異なる観測接続ピア数",
     observed_cves: "観測された CVE 数",
+    cve_list_heading: "観測された CVE",
+    cve_list_note: "KEV 該否と detectability はカタログ上の情報であり、悪用・侵害・攻撃者特定の判定ではありません。リクエスト件数は観測されたマッチ量であり、悪用の証明ではありません。",
+    cve_id: "CVE ID",
+    kev_membership: "CISA KEV",
+    kev_badge: "KEV",
+    detectability: "検知可能性",
+    distinctive_matches: "distinctive-path 一致数",
+    generic_matches: "generic-path 一致数",
+    cve_first_seen: "初回観測",
+    last_seen: "最終観測",
+    protection_gap_rate: "保護ギャップ率",
     triage_entities: "トリアージ対象数",
     tier_summary: "挙動優先度 tier（脅威の深刻度ではありません）",
     concentration: "リクエスト集中度",
@@ -474,7 +507,7 @@ pub fn render_report(
 
     let mut html = format!(
         "<!doctype html><html lang=\"{}\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>{}</title><style>\
-        :root{{color-scheme:dark;--bg:#0b1020;--panel:#151d31;--muted:#a8b3c7;--text:#f4f7fb;--accent:#66d9c2;--warn:#ffcf66;--danger:#ff6b78;--line:#33415f}}*{{box-sizing:border-box}}body{{margin:0;overflow-x:hidden;background:var(--bg);color:var(--text);font:14px/1.5 system-ui,sans-serif}}main{{max-width:1240px;margin:auto;padding:24px;min-width:0}}.private{{background:#6b1320;border:2px solid var(--danger);padding:16px;font-size:18px;font-weight:800;overflow-wrap:anywhere;word-break:break-word}}.note,.unavailable,.cap{{color:var(--muted)}}.note{{border-left:3px solid var(--warn);padding-left:12px}}.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;min-width:0}}.card,section{{background:var(--panel);border:1px solid var(--line);border-radius:10px;min-width:0}}.card{{padding:14px;overflow:hidden}}.card span,.card b{{overflow-wrap:anywhere;word-break:break-word}}.card b{{display:block;font-size:24px}}section{{margin-top:18px;padding:18px;overflow:hidden}}h1,h2,h3{{margin-top:0;overflow-wrap:anywhere;word-break:break-word}}.chart-scroll,.table-scroll{{max-width:100%;overflow:auto;max-height:70vh}}svg{{width:100%;height:auto;background:#10172a;border-radius:8px}}.chart-scroll svg{{display:block;min-width:1000px}}.bar{{fill:var(--accent)}}.axis{{stroke:var(--line);stroke-width:1}}.timeline{{fill:none;stroke:var(--accent);stroke-width:3}}.timeline-area{{fill:#66d9c226;stroke:none}}.timeline-dot{{fill:var(--accent)}}.col{{cursor:crosshair}}.hit{{fill:transparent;pointer-events:all}}.col:hover .hit{{fill:#66d9c22e}}.tip{{visibility:hidden;pointer-events:none}}.col:hover .tip{{visibility:visible}}.tip-bg{{fill:#070b14;stroke:var(--accent);stroke-width:1}}.tip-label{{fill:#fff;font-weight:700}}svg text{{fill:var(--text);font:12px system-ui,sans-serif}}table{{width:100%;min-width:1000px;border-collapse:collapse}}th,td{{padding:9px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top;white-space:nowrap}}.score{{width:120px;background:#26334f;border-radius:9px;overflow:hidden}}.score span{{display:block;height:10px;background:var(--accent)}}code{{color:#b9f4e8;overflow-wrap:anywhere;word-break:break-word}}.small{{font-size:12px;color:var(--muted)}}</style></head><body><main>",
+        :root{{color-scheme:dark;--bg:#0b1020;--panel:#151d31;--muted:#a8b3c7;--text:#f4f7fb;--accent:#66d9c2;--warn:#ffcf66;--danger:#ff6b78;--line:#33415f}}*{{box-sizing:border-box}}body{{margin:0;overflow-x:hidden;background:var(--bg);color:var(--text);font:14px/1.5 system-ui,sans-serif}}main{{max-width:1240px;margin:auto;padding:24px;min-width:0}}a{{color:var(--accent)}}.private{{background:#6b1320;border:2px solid var(--danger);padding:16px;font-size:18px;font-weight:800;overflow-wrap:anywhere;word-break:break-word}}.note,.unavailable,.cap{{color:var(--muted)}}.note{{border-left:3px solid var(--warn);padding-left:12px}}.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;min-width:0}}.card,section{{background:var(--panel);border:1px solid var(--line);border-radius:10px;min-width:0}}.card{{padding:14px;overflow:hidden}}.card span,.card b{{overflow-wrap:anywhere;word-break:break-word}}.card b{{display:block;font-size:24px}}.badge{{display:inline-block;padding:1px 7px;border:1px solid var(--warn);border-radius:999px;color:var(--warn);font-weight:700}}section{{margin-top:18px;padding:18px;overflow:hidden}}h1,h2,h3{{margin-top:0;overflow-wrap:anywhere;word-break:break-word}}.chart-scroll,.table-scroll{{max-width:100%;overflow:auto;max-height:70vh}}svg{{width:100%;height:auto;background:#10172a;border-radius:8px}}.chart-scroll svg{{display:block;min-width:1000px}}.bar{{fill:var(--accent)}}.axis{{stroke:var(--line);stroke-width:1}}.timeline{{fill:none;stroke:var(--accent);stroke-width:3}}.timeline-area{{fill:#66d9c226;stroke:none}}.timeline-dot{{fill:var(--accent)}}.col{{cursor:crosshair}}.hit{{fill:transparent;pointer-events:all}}.col:hover .hit{{fill:#66d9c22e}}.tip{{visibility:hidden;pointer-events:none}}.col:hover .tip{{visibility:visible}}.tip-bg{{fill:#070b14;stroke:var(--accent);stroke-width:1}}.tip-label{{fill:#fff;font-weight:700}}svg text{{fill:var(--text);font:12px system-ui,sans-serif}}table{{width:100%;min-width:1000px;border-collapse:collapse}}th,td{{padding:9px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top;white-space:nowrap}}.score{{width:120px;background:#26334f;border-radius:9px;overflow:hidden}}.score span{{display:block;height:10px;background:var(--accent)}}code{{color:#b9f4e8;overflow-wrap:anywhere;word-break:break-word}}.small{{font-size:12px;color:var(--muted)}}</style></head><body><main>",
         language.html_lang(),
         html_escape(labels.title),
     );
@@ -511,6 +544,7 @@ pub fn render_report(
         language,
     );
     render_triage(&mut html, artifacts.triage.as_ref(), limit, language);
+    render_cve_list(&mut html, artifacts, language);
     html.push_str("</main></body></html>");
     html
 }
@@ -566,14 +600,23 @@ fn render_summary(html: &mut String, artifacts: &ReportArtifacts, language: Repo
         (labels.requests, optional_number(total, language)),
         (labels.distinct_paths, optional_number(paths, language)),
         (labels.distinct_peers, optional_number(source_ips, language)),
-        (labels.observed_cves, optional_number(cves, language)),
-        (
-            labels.triage_entities,
-            optional_number(triage_entities, language),
-        ),
     ] {
         html.push_str(&card(label, &value));
     }
+    let cve_count = optional_number(cves, language);
+    if observed_cve_findings(artifacts).is_some() {
+        html.push_str(&anchor_card(
+            labels.observed_cves,
+            &cve_count,
+            "observed-cves",
+        ));
+    } else {
+        html.push_str(&card(labels.observed_cves, &cve_count));
+    }
+    html.push_str(&card(
+        labels.triage_entities,
+        &optional_number(triage_entities, language),
+    ));
     html.push_str("</div>");
     if let Some(view) = &artifacts.triage {
         let mut tiers = BTreeMap::<&str, usize>::new();
@@ -800,37 +843,39 @@ fn render_triage(
         ));
         return;
     }
+    let show_reputation = triage
+        .entities
+        .iter()
+        .any(|entity| entity.reputation.is_some());
+    let show_resolved_asn = triage
+        .entities
+        .iter()
+        .any(|entity| entity.resolved_asn.is_some());
+    html.push_str("<div class=\"table-scroll\"><table><thead><tr>");
+    for heading in [
+        labels.entity,
+        labels.identity,
+        labels.behavior_priority,
+        labels.basis,
+        labels.observed_breadth,
+    ] {
+        html.push_str(&format!("<th>{}</th>", html_escape(heading)));
+    }
+    if show_reputation {
+        html.push_str(&format!("<th>{}</th>", html_escape(labels.reputation)));
+    }
+    if show_resolved_asn {
+        html.push_str(&format!("<th>{}</th>", html_escape(labels.resolved_asn)));
+    }
     html.push_str(&format!(
-        "<div class=\"table-scroll\"><table><thead><tr><th>{}</th><th>{}</th><th>{}</th><th>{}</th><th>{}</th><th>{}</th><th>{}</th><th>{}</th></tr></thead><tbody>",
-        html_escape(labels.entity),
-        html_escape(labels.identity),
-        html_escape(labels.behavior_priority),
-        html_escape(labels.basis),
-        html_escape(labels.observed_breadth),
-        html_escape(labels.reputation),
-        html_escape(labels.resolved_asn),
-        html_escape(labels.first_seen),
+        "<th>{}</th></tr></thead><tbody>",
+        html_escape(labels.first_seen)
     ));
     for entity in entities {
         let score = entity.behavior_score.total.min(100);
         let basis = entity.triage_basis.as_deref().unwrap_or(labels.none);
-        let reputation = entity.reputation.as_ref().map_or_else(
-            || labels.unavailable.to_owned(),
-            |value| {
-                format!(
-                    "{}/100 {} ({})",
-                    group_thousands(value.score as u64),
-                    value.tier,
-                    value.scope
-                )
-            },
-        );
-        let asn = entity.resolved_asn.as_ref().map_or_else(
-            || labels.unavailable.to_owned(),
-            |value| format!("AS{} {}", group_thousands(value.asn as u64), value.org),
-        );
         html.push_str(&format!(
-            "<tr><td><code>{}</code></td><td>{}</td><td>{}/100 {}<div class=\"score\"><span style=\"width:{}%\"></span></div><span class=\"small\">{} {}</span></td><td>{}</td><td>{} {} / {} {} / {} {}<br><span class=\"small\">{} {}</span></td><td>{}</td><td>{}</td><td>{}</td></tr>",
+            "<tr><td><code>{}</code></td><td>{}</td><td>{}/100 {}<div class=\"score\"><span style=\"width:{}%\"></span></div><span class=\"small\">{} {}</span></td><td>{}</td><td>{} {} / {} {} / {} {}<br><span class=\"small\">{} {}</span></td>",
             html_escape(&entity.key),
             html_escape(&entity.identity),
             group_thousands(entity.behavior_score.total as u64),
@@ -847,8 +892,30 @@ fn render_triage(
             html_escape(labels.cves),
             group_thousands(entity.matching_records as u64),
             html_escape(labels.matching_records),
-            html_escape(&reputation),
-            html_escape(&asn),
+        ));
+        if show_reputation {
+            let reputation = entity.reputation.as_ref().map_or_else(
+                || labels.unavailable.to_owned(),
+                |value| {
+                    format!(
+                        "{}/100 {} ({})",
+                        group_thousands(value.score as u64),
+                        value.tier,
+                        value.scope
+                    )
+                },
+            );
+            html.push_str(&format!("<td>{}</td>", html_escape(&reputation)));
+        }
+        if show_resolved_asn {
+            let asn = entity.resolved_asn.as_ref().map_or_else(
+                || labels.unavailable.to_owned(),
+                |value| format!("AS{} {}", group_thousands(value.asn as u64), value.org),
+            );
+            html.push_str(&format!("<td>{}</td>", html_escape(&asn)));
+        }
+        html.push_str(&format!(
+            "<td>{}</td></tr>",
             html_escape(if entity.first_seen {
                 labels.yes_review
             } else {
@@ -865,6 +932,95 @@ fn render_triage(
         language,
     );
     html.push_str("</section>");
+}
+
+fn render_cve_list(html: &mut String, artifacts: &ReportArtifacts, language: ReportLanguage) {
+    let Some(findings) = observed_cve_findings(artifacts) else {
+        return;
+    };
+    let labels = language.labels();
+    html.push_str(&format!(
+        "<section id=\"observed-cves\"><h2>{}</h2><p class=\"note\">{}</p>\
+         <div class=\"table-scroll\"><table><thead><tr>\
+         <th>{}</th><th>{}</th><th>{}</th><th>{}</th><th>{}</th><th>{}</th>\
+         <th>{}</th><th>{}</th><th>{}</th></tr></thead><tbody>",
+        html_escape(labels.cve_list_heading),
+        html_escape(labels.cve_list_note),
+        html_escape(labels.cve_id),
+        html_escape(labels.kev_membership),
+        html_escape(labels.detectability),
+        html_escape(labels.requests),
+        html_escape(labels.distinctive_matches),
+        html_escape(labels.generic_matches),
+        html_escape(labels.cve_first_seen),
+        html_escape(labels.last_seen),
+        html_escape(labels.protection_gap_rate),
+    ));
+    for finding in findings {
+        let cve = finding
+            .get("cve")
+            .and_then(Value::as_str)
+            .unwrap_or(labels.unavailable);
+        let kev = if finding
+            .get("cisa_kev")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            format!(
+                "<span class=\"badge\">{}</span>",
+                html_escape(labels.kev_badge)
+            )
+        } else {
+            "—".to_owned()
+        };
+        let detectability = finding
+            .get("detectability")
+            .and_then(Value::as_str)
+            .unwrap_or(labels.unavailable);
+        let first_seen = finding
+            .get("first_seen")
+            .and_then(Value::as_str)
+            .unwrap_or(labels.unavailable);
+        let last_seen = finding
+            .get("last_seen")
+            .and_then(Value::as_str)
+            .unwrap_or(labels.unavailable);
+        let protection_gap_rate = finding
+            .get("protection_gap_rate")
+            .and_then(Value::as_f64)
+            .map_or_else(|| "—".to_owned(), |rate| format!("{:.1}%", rate * 100.0));
+        html.push_str(&format!(
+            "<tr><td><code>{}</code></td><td>{}</td><td>{}</td><td>{}</td>\
+             <td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
+            html_escape(cve),
+            kev,
+            html_escape(detectability),
+            cve_count(finding, "request_count", language),
+            cve_count(finding, "distinctive_path_matches", language),
+            cve_count(finding, "generic_path_matches", language),
+            html_escape(first_seen),
+            html_escape(last_seen),
+            html_escape(&protection_gap_rate),
+        ));
+    }
+    html.push_str("</tbody></table></div></section>");
+}
+
+fn cve_count(finding: &Value, field: &str, language: ReportLanguage) -> String {
+    finding.get(field).and_then(Value::as_u64).map_or_else(
+        || html_escape(language.labels().unavailable),
+        group_thousands,
+    )
+}
+
+fn observed_cve_findings(artifacts: &ReportArtifacts) -> Option<&[Value]> {
+    artifacts
+        .sanitized
+        .as_ref()?
+        .pointer("/cve_findings")?
+        .as_array()
+        .filter(|findings| !findings.is_empty())
+        .map(Vec::as_slice)
 }
 
 struct BarRow<'a> {
@@ -1258,6 +1414,15 @@ fn card(label: &str, value: &str) -> String {
     )
 }
 
+fn anchor_card(label: &str, value: &str, target: &str) -> String {
+    format!(
+        "<div class=\"card\"><span>{}</span><b><a href=\"#{}\">{}</a></b></div>",
+        html_escape(label),
+        html_escape(target),
+        html_escape(value),
+    )
+}
+
 fn optional_number(value: Option<u64>, language: ReportLanguage) -> String {
     value.map_or_else(|| language.labels().unavailable.to_owned(), group_thousands)
 }
@@ -1495,6 +1660,104 @@ mod tests {
         assert!(html.contains("Aggregate summary unavailable"));
         assert!(html.contains("Concentration unavailable"));
         assert!(html.contains("Triage unavailable"));
+    }
+
+    #[test]
+    fn triage_omits_globally_unavailable_optional_columns() {
+        let mut triage = ReportTriageView {
+            entities: vec![ReportTriageEntity {
+                key: "198.51.100.1".to_owned(),
+                identity: "observed-peer".to_owned(),
+                ..ReportTriageEntity::default()
+            }],
+        };
+        let mut html = String::new();
+        render_triage(&mut html, Some(&triage), 20, ReportLanguage::En);
+        assert!(!html.contains("Reputation opinion"));
+        assert!(!html.contains("Resolved ASN"));
+        assert_eq!(html.matches("<th>").count(), 6);
+        assert_eq!(html.matches("<td>").count(), 6);
+
+        let mut japanese = String::new();
+        render_triage(&mut japanese, Some(&triage), 20, ReportLanguage::Ja);
+        assert!(!japanese.contains("レピュテーション意見"));
+        assert!(!japanese.contains("解決された ASN"));
+
+        triage.entities[0].reputation = Some(ReportReputation {
+            score: 85,
+            tier: "high".to_owned(),
+            scope: "ip".to_owned(),
+        });
+        let mut enriched = String::new();
+        render_triage(&mut enriched, Some(&triage), 20, ReportLanguage::En);
+        assert!(enriched.contains("Reputation opinion"));
+        assert!(!enriched.contains("Resolved ASN"));
+        assert_eq!(enriched.matches("<th>").count(), 7);
+        assert_eq!(enriched.matches("<td>").count(), 7);
+    }
+
+    #[test]
+    fn observed_cve_card_links_to_the_sanitized_cve_table() {
+        let artifacts = ReportArtifacts {
+            sanitized: Some(serde_json::json!({
+                "cve_findings": [
+                    {
+                        "cve": "CVE-2026-10001",
+                        "cisa_kev": true,
+                        "detectability": "HIGH",
+                        "request_count": 1234,
+                        "distinctive_path_matches": 1200,
+                        "generic_path_matches": 34,
+                        "first_seen": "2026-09-01T00:00:00+00:00",
+                        "last_seen": "2026-09-02T00:00:00+00:00",
+                        "protection_gap_rate": 0.5
+                    },
+                    {
+                        "cve": "CVE-&<escaped>",
+                        "cisa_kev": false,
+                        "detectability": "MEDIUM",
+                        "request_count": 2,
+                        "distinctive_path_matches": 0,
+                        "generic_path_matches": 2,
+                        "first_seen": null,
+                        "last_seen": null,
+                        "protection_gap_rate": null
+                    }
+                ]
+            })),
+            ..ReportArtifacts::default()
+        };
+        let html = render_report(&artifacts, 20, 240, ReportLanguage::En);
+        for expected in [
+            "<a href=\"#observed-cves\">2</a>",
+            "<section id=\"observed-cves\">",
+            "CVE-2026-10001",
+            "<span class=\"badge\">KEV</span>",
+            "Distinctive-path matches",
+            "Generic-path matches",
+            "1,234",
+            "50.0%",
+            "CVE-&amp;&lt;escaped&gt;",
+        ] {
+            assert!(html.contains(expected), "missing {expected}");
+        }
+        assert!(!html.contains("CVE-&<escaped>"));
+        for forbidden in ["http://", "https://", "src=", "<script"] {
+            assert!(!html.contains(forbidden));
+        }
+
+        let japanese = render_report(&artifacts, 20, 240, ReportLanguage::Ja);
+        assert!(japanese.contains("観測された CVE 数"));
+        assert!(japanese.contains("検知可能性"));
+        assert!(japanese.contains("保護ギャップ率"));
+
+        let empty = ReportArtifacts {
+            sanitized: Some(serde_json::json!({"cve_findings": []})),
+            ..ReportArtifacts::default()
+        };
+        let empty_html = render_report(&empty, 20, 240, ReportLanguage::En);
+        assert!(!empty_html.contains("href=\"#observed-cves\""));
+        assert!(!empty_html.contains("<section id=\"observed-cves\">"));
     }
 
     #[test]

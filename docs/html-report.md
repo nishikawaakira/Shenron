@@ -35,8 +35,14 @@ missing sections unavailable rather than estimating them:
 
 The report shows aggregate cards, Top-N path and peer-IP bars, global and
 focused-path request timelines, focused-path network-prefix bars when present,
-and the hunt triage table. `--limit` defaults to 20 and controls private path,
-IP, prefix, and triage rows; `0` shows all. The timeline uses at most 240 points.
+the hunt triage table, and a sanitized aggregate row for each observed CVE. The
+Observed CVEs summary card links to that final section when CVE rows exist. It
+lists catalog KEV membership and detectability alongside aggregate request,
+path-distinctiveness, time-range, and protection-gap fields; these remain
+catalog and matcher-volume context, not an exploitation, compromise, or
+attacker-identity determination. `--limit` defaults to 20 and controls private
+path, IP, prefix, and triage rows; `0` shows all. The CVE list remains complete.
+The timeline uses at most 240 points.
 Longer minute series are deterministically downsampled into equal-width minute
 spans whose request counts are summed. Retained-bucket and key-tracking caps are
 disclosed; omitted data is never approximated. Human-readable labels default to
@@ -53,6 +59,12 @@ bounded vertical scroll containers, so wide labels and high row counts do not
 force page-level horizontal scrolling or become unreachable. When a run
 recorded no explicit filter window, the provenance time range is the observed
 span of retained minute buckets, and the report says so.
+
+The triage table omits the Reputation opinion or Resolved ASN column when every
+entity lacks that enrichment. If either value exists for at least one entity,
+its column remains visible and unavailable rows are labelled individually. The
+always-present entity, identity, behavior-priority, basis, observed-breadth, and
+first-seen columns are unchanged.
 
 ## Privacy and offline guarantees
 

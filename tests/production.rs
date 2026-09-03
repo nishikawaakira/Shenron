@@ -1022,9 +1022,12 @@ fn auto_format_detects_waf_and_apache_vhost_but_rejects_ambiguous_combined() {
 #[test]
 fn hunt_writes_and_rerenders_private_offline_html() {
     let directory = tempdir().unwrap();
+    let empty_data_dir = directory.path().join("empty-data");
+    fs::create_dir_all(&empty_data_dir).unwrap();
     let hunt_output = directory.path().join("hunt-output");
     Command::cargo_bin("shenron")
         .unwrap()
+        .env("SHENRON_DATA_DIR", &empty_data_dir)
         .args([
             "hunt",
             "--input",
@@ -1054,6 +1057,9 @@ fn hunt_writes_and_rerenders_private_offline_html() {
         "<html lang=\"ja\">",
         "集計サマリ",
         "観測された CVE 数",
+        "<a href=\"#observed-cves\">1</a>",
+        "<section id=\"observed-cves\">",
+        "CVE-2024-10001",
         "hunt トリアージビュー",
         "/vulnerable/execute",
         "198.51.100.1",
@@ -1061,6 +1067,8 @@ fn hunt_writes_and_rerenders_private_offline_html() {
         assert!(html.contains(expected));
     }
     assert!(!html.contains("トリアージを利用できません"));
+    assert!(!html.contains("レピュテーション意見"));
+    assert!(!html.contains("解決された ASN"));
     for forbidden in ["http://", "https://", "src=", "<script src"] {
         assert!(!html.contains(forbidden));
     }
