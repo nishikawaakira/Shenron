@@ -7,7 +7,8 @@ re-stream the original logs:
 ```bash
 shenron production report \
   --input ./private-results/hunt-20260901T120000Z \
-  --output ./private-results/hunt-20260901T120000Z-report.html
+  --output ./private-results/hunt-20260901T120000Z-report.html \
+  --lang ja
 ```
 
 The input is a run directory. Shenron uses whichever of these artifacts are
@@ -26,7 +27,10 @@ and the hunt triage table. `--limit` defaults to 20 and controls private path,
 IP, prefix, and triage rows; `0` shows all. `--timeline-points` defaults to 240.
 Longer minute series are deterministically downsampled into equal-width minute
 spans whose request counts are summed. Retained-bucket and key-tracking caps are
-disclosed; omitted data is never approximated.
+disclosed; omitted data is never approximated. Human-readable labels default to
+English; pass `--lang ja` for Japanese. Integer counts use three-digit comma
+grouping in either language. Older artifacts without a retained minute series
+show guidance to rerun `hunt` or `concentration` with the current build.
 
 ## Privacy and offline guarantees
 

@@ -1021,6 +1021,29 @@ fn production_report_renders_existing_hunt_artifacts_as_private_offline_html() {
         assert!(!html.contains(forbidden));
     }
 
+    let japanese_html_path = directory.path().join("run-report-ja.html");
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "production",
+            "report",
+            "--input",
+            hunt_output.to_str().unwrap(),
+            "--output",
+            japanese_html_path.to_str().unwrap(),
+            "--lang",
+            "ja",
+        ])
+        .assert()
+        .success()
+        .stderr(contains("生の IP アドレスとリクエストパスを含みます"));
+    let japanese_html = fs::read_to_string(japanese_html_path).unwrap();
+    assert!(japanese_html.contains("<html lang=\"ja\">"));
+    assert!(japanese_html.contains("集計サマリ"));
+    for forbidden in ["http://", "https://", "src=", "<script src"] {
+        assert!(!japanese_html.contains(forbidden));
+    }
+
     // The report may be written inside its own run directory (its input is
     // already-produced artifacts, not raw logs).
     let in_dir_report = hunt_output.join("report.html");

@@ -42,7 +42,7 @@ use shenron::{
         HistoricalReplayReport, HuntOptions, HuntTimeRange, HuntTriagePolicy, InspectionReport,
         SanitizedConcentrationReport, SanitizedHuntReport,
     },
-    report::{render_report, ReportArtifacts, ReportTriageView, PRIVATE_REPORT_WARNING},
+    report::{render_report, ReportArtifacts, ReportLanguage, ReportTriageView},
     reputation::{load_asn_database, load_reputation_database, AsnDatabase, ReputationDatabase},
     sigma::load_rules,
     triage::{asn_entity_groups, entity_groups, EntityDimension, TriagePolicy},
@@ -241,6 +241,9 @@ enum ProductionCommand {
         /// Maximum deterministic points in each minute-series chart.
         #[arg(long, default_value_t = 240, value_parser = parse_positive_usize)]
         timeline_points: usize,
+        /// Human-readable report language.
+        #[arg(long, value_enum, default_value_t = ReportLanguage::En)]
+        lang: ReportLanguage,
     },
     /// Measure bounded request-volume distribution without CTI inputs or detector matching.
     Concentration {
@@ -707,6 +710,7 @@ fn main() -> Result<()> {
                 output,
                 limit,
                 timeline_points,
+                lang,
             } => {
                 if !input.is_dir() {
                     anyhow::bail!(
@@ -719,7 +723,7 @@ fn main() -> Result<()> {
                 // refuse to overwrite a directory or a source artifact.
                 ensure_report_output_is_safe(&input, &output)?;
                 let artifacts = load_report_artifacts(&input)?;
-                let html = render_report(&artifacts, limit, timeline_points);
+                let html = render_report(&artifacts, limit, timeline_points, lang);
                 if let Some(parent) = output
                     .parent()
                     .filter(|parent| !parent.as_os_str().is_empty())
@@ -730,8 +734,18 @@ fn main() -> Result<()> {
                 }
                 std::fs::write(&output, html)
                     .with_context(|| format!("writing private HTML report {}", output.display()))?;
-                eprintln!("{PRIVATE_REPORT_WARNING}");
-                eprintln!("Private HTML report written: {}", output.display());
+                eprintln!("{}", lang.private_warning());
+                match lang {
+                    ReportLanguage::En => {
+                        eprintln!("Private HTML report written: {}", output.display());
+                    }
+                    ReportLanguage::Ja => {
+                        eprintln!(
+                            "プライベート HTML レポートを出力しました: {}",
+                            output.display()
+                        );
+                    }
+                }
                 Ok(())
             }
             ProductionCommand::Concentration {

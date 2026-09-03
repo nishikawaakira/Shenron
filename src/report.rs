@@ -20,6 +20,280 @@ use crate::concentration::{
 pub const PRIVATE_REPORT_WARNING: &str =
     "PRIVATE — contains raw IP addresses and request paths. Do not share.";
 
+/// Human-readable language used by the private HTML report. Artifact values
+/// are never translated and remain escaped verbatim.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum ReportLanguage {
+    #[default]
+    En,
+    Ja,
+}
+
+impl ReportLanguage {
+    pub const fn html_lang(self) -> &'static str {
+        match self {
+            Self::En => "en",
+            Self::Ja => "ja",
+        }
+    }
+
+    pub const fn private_warning(self) -> &'static str {
+        match self {
+            Self::En => PRIVATE_REPORT_WARNING,
+            Self::Ja => {
+                "PRIVATE — 生の IP アドレスとリクエストパスを含みます。共有しないでください。"
+            }
+        }
+    }
+
+    const fn labels(self) -> &'static Labels {
+        match self {
+            Self::En => &EN_LABELS,
+            Self::Ja => &JA_LABELS,
+        }
+    }
+}
+
+struct Labels {
+    title: &'static str,
+    overall_note: &'static str,
+    provenance: &'static str,
+    telemetry_profile: &'static str,
+    time_start: &'static str,
+    time_end: &'static str,
+    shenron_version: &'static str,
+    nuclei_revision: &'static str,
+    run_generated_at: &'static str,
+    aggregate_summary: &'static str,
+    aggregate_unavailable: &'static str,
+    requests: &'static str,
+    distinct_paths: &'static str,
+    distinct_peers: &'static str,
+    observed_cves: &'static str,
+    triage_entities: &'static str,
+    tier_summary: &'static str,
+    concentration: &'static str,
+    concentration_note: &'static str,
+    concentration_unavailable: &'static str,
+    top_paths: &'static str,
+    top_request_paths: &'static str,
+    top_peers: &'static str,
+    top_observed_peers: &'static str,
+    requests_per_minute: &'static str,
+    global_timeline: &'static str,
+    focused_path: &'static str,
+    focused_peers: &'static str,
+    focused_peer_chart: &'static str,
+    focused_prefixes: &'static str,
+    prefix_note: &'static str,
+    focused_prefix_chart: &'static str,
+    focused_requests_per_minute: &'static str,
+    focused_timeline: &'static str,
+    triage: &'static str,
+    triage_note: &'static str,
+    triage_unavailable: &'static str,
+    no_triage: &'static str,
+    entity: &'static str,
+    identity: &'static str,
+    behavior_priority: &'static str,
+    basis: &'static str,
+    observed_breadth: &'static str,
+    reputation: &'static str,
+    resolved_asn: &'static str,
+    first_seen: &'static str,
+    unavailable: &'static str,
+    none: &'static str,
+    reachable_max: &'static str,
+    observations: &'static str,
+    templates: &'static str,
+    cves: &'static str,
+    matching_records: &'static str,
+    yes_review: &'static str,
+    no: &'static str,
+    timeline_unavailable: &'static str,
+    epoch_minute: &'static str,
+    peak: &'static str,
+    timeline_footer: &'static str,
+    request_count_label: &'static str,
+    retained_peers: &'static str,
+    status: &'static str,
+    other: &'static str,
+    status_unavailable: &'static str,
+    cap_disclosure: &'static str,
+    cap_not_admitted: &'static str,
+    paths: &'static str,
+    peer_addresses: &'static str,
+    focused_peer_addresses: &'static str,
+    network_prefixes: &'static str,
+    global_minute_records: &'static str,
+    focused_minute_records: &'static str,
+    focused_new_peer_requests: &'static str,
+    new_path_requests: &'static str,
+    new_peer_requests: &'static str,
+    new_peer_path_pairs: &'static str,
+    omitted_suffix: &'static str,
+}
+
+const EN_LABELS: Labels = Labels {
+    title: "Shenron private run report",
+    overall_note: "This report visualizes observed access volume and triage context. It is not a determination of a denial-of-service attempt, attack, exploitation, abuse, compromise, malicious probability, or attacker identity. First-seen means review, not malicious.",
+    provenance: "Provenance",
+    telemetry_profile: "Telemetry profile",
+    time_start: "Time range start (UTC)",
+    time_end: "Time range end (UTC)",
+    shenron_version: "Shenron version",
+    nuclei_revision: "Nuclei revision",
+    run_generated_at: "Run generated at",
+    aggregate_summary: "Aggregate summary",
+    aggregate_unavailable: "Aggregate summary unavailable: sanitized-research.json and request-concentration.json were not found.",
+    requests: "Requests",
+    distinct_paths: "Distinct paths",
+    distinct_peers: "Distinct observed peers",
+    observed_cves: "Observed CVEs",
+    triage_entities: "Triage entities",
+    tier_summary: "Behavior-priority tiers (not threat severity)",
+    concentration: "Request concentration",
+    concentration_note: "These are observed access counts and concentration only, not a denial-of-service, attack, exploitation, abuse, compromise, or attribution determination. Source IPs are observed connection peers and may be a CDN, load balancer, NAT, or proxy; they are not attacker attribution.",
+    concentration_unavailable: "Concentration unavailable: request-concentration.json was not found.",
+    top_paths: "Top paths",
+    top_request_paths: "Top request paths",
+    top_peers: "Top observed connection peers",
+    top_observed_peers: "Top observed connection peers",
+    requests_per_minute: "Requests per minute",
+    global_timeline: "Global request timeline",
+    focused_path: "Focused path",
+    focused_peers: "Focused-path peers",
+    focused_peer_chart: "Focused-path observed peers",
+    focused_prefixes: "Focused-path network prefixes",
+    prefix_note: "Addresses are grouped by network prefix only. A shared prefix is not evidence of a shared operator, owner, or actor: allocations can be split across tenants and one operator can span many prefixes.",
+    focused_prefix_chart: "Focused-path network prefixes",
+    focused_requests_per_minute: "Focused-path requests per minute",
+    focused_timeline: "Focused-path request timeline",
+    triage: "Hunt triage view",
+    triage_note: "Behavior score is a human-review priority, not threat severity or a probability of malice. First-seen means review, not malicious. Entity keys can be observed peers rather than end clients and do not establish an attacker identity.",
+    triage_unavailable: "Triage unavailable: triage-view.json was not found.",
+    no_triage: "No triage entities were recorded.",
+    entity: "Entity",
+    identity: "Identity",
+    behavior_priority: "Behavior priority",
+    basis: "Basis",
+    observed_breadth: "Observed breadth",
+    reputation: "Reputation opinion",
+    resolved_asn: "Resolved ASN",
+    first_seen: "First-seen",
+    unavailable: "unavailable",
+    none: "none",
+    reachable_max: "reachable max",
+    observations: "observations",
+    templates: "templates",
+    cves: "CVEs",
+    matching_records: "matching records",
+    yes_review: "yes — review",
+    no: "no",
+    timeline_unavailable: "Timeline unavailable: no retained timestamped minute buckets. Re-run hunt or concentration with the current build to generate the timeline series.",
+    epoch_minute: "epoch minute",
+    peak: "peak",
+    timeline_footer: "retained/downsampled points; UTC. Downsampling sums deterministic equal-width minute spans.",
+    request_count_label: "requests",
+    retained_peers: "retained peers",
+    status: "status",
+    other: "other",
+    status_unavailable: "unavailable",
+    cap_disclosure: "Tracking cap disclosure",
+    cap_not_admitted: "were not admitted.",
+    paths: "paths",
+    peer_addresses: "peer addresses",
+    focused_peer_addresses: "focused peer addresses",
+    network_prefixes: "network prefixes",
+    global_minute_records: "global records in new minute buckets",
+    focused_minute_records: "focused-path records in new minute buckets",
+    focused_new_peer_requests: "focused-path requests from new peer addresses",
+    new_path_requests: "requests on new paths",
+    new_peer_requests: "requests from new peer addresses",
+    new_peer_path_pairs: "new peer/path associations",
+    omitted_suffix: "omitted by the report limit.",
+};
+
+const JA_LABELS: Labels = Labels {
+    title: "Shenron プライベート実行レポート",
+    overall_note: "これはアクセス量とトリアージ状況の可視化であり、DoS・攻撃・悪用・侵害・悪性確率・攻撃者特定の判定ではありません。first-seen は要確認を意味し、悪性を意味しません。",
+    provenance: "出自情報",
+    telemetry_profile: "テレメトリプロファイル",
+    time_start: "期間開始 (UTC)",
+    time_end: "期間終了 (UTC)",
+    shenron_version: "Shenron バージョン",
+    nuclei_revision: "Nuclei リビジョン",
+    run_generated_at: "実行成果物の生成日時",
+    aggregate_summary: "集計サマリ",
+    aggregate_unavailable: "集計サマリを利用できません。sanitized-research.json と request-concentration.json が見つかりません。",
+    requests: "リクエスト数",
+    distinct_paths: "異なるパス数",
+    distinct_peers: "異なる観測接続ピア数",
+    observed_cves: "観測された CVE 数",
+    triage_entities: "トリアージ対象数",
+    tier_summary: "挙動優先度 tier（脅威の深刻度ではありません）",
+    concentration: "リクエスト集中度",
+    concentration_note: "これは観測されたアクセス件数と集中度の表示であり、DoS・攻撃・悪用・侵害・攻撃者特定の判定ではありません。送信元 IP は観測された接続ピアであり、CDN・ロードバランサ・NAT・プロキシの場合があります。攻撃者帰属を示しません。",
+    concentration_unavailable: "集中度を利用できません。request-concentration.json が見つかりません。",
+    top_paths: "上位パス",
+    top_request_paths: "上位リクエストパス",
+    top_peers: "上位の観測接続ピア",
+    top_observed_peers: "上位の観測接続ピア",
+    requests_per_minute: "1分ごとのリクエスト数",
+    global_timeline: "全体リクエスト時系列",
+    focused_path: "フォーカスパス",
+    focused_peers: "フォーカスパスの接続ピア",
+    focused_peer_chart: "フォーカスパスの観測接続ピア",
+    focused_prefixes: "フォーカスパスのネットワークプレフィックス",
+    prefix_note: "アドレスはネットワークプレフィックスだけで集約しています。同じプレフィックスであることは、同じ運用者・所有者・主体の証拠ではありません。割り当ては複数テナントに分かれることがあり、1つの運用者が複数プレフィックスを使用することもあります。",
+    focused_prefix_chart: "フォーカスパスのネットワークプレフィックス",
+    focused_requests_per_minute: "フォーカスパスの1分ごとのリクエスト数",
+    focused_timeline: "フォーカスパスのリクエスト時系列",
+    triage: "hunt トリアージビュー",
+    triage_note: "behavior score は人手確認の優先順位であり、脅威度や悪性確率ではありません。first-seen は要確認を意味し、悪性を意味しません。エンティティキーは末端クライアントではなく観測接続ピアの場合があり、攻撃者特定を示しません。",
+    triage_unavailable: "トリアージを利用できません。triage-view.json が見つかりません。",
+    no_triage: "トリアージ対象は記録されていません。",
+    entity: "エンティティ",
+    identity: "識別種別",
+    behavior_priority: "挙動優先度",
+    basis: "トリアージ根拠",
+    observed_breadth: "観測された広がり",
+    reputation: "レピュテーション意見",
+    resolved_asn: "解決された ASN",
+    first_seen: "first-seen",
+    unavailable: "利用不可",
+    none: "なし",
+    reachable_max: "到達可能な最大値",
+    observations: "観測",
+    templates: "テンプレート",
+    cves: "CVE",
+    matching_records: "一致レコード",
+    yes_review: "はい — 要確認",
+    no: "いいえ",
+    timeline_unavailable: "時系列を利用できません。保持されたタイムスタンプ付き分バケットがありません。現在のビルドで hunt または concentration を再実行すると時系列が生成されます。",
+    epoch_minute: "エポック分",
+    peak: "ピーク",
+    timeline_footer: "保持またはダウンサンプルされた点。時刻は UTC。ダウンサンプリングは決定論的な等幅の分区間を合算します。",
+    request_count_label: "リクエスト",
+    retained_peers: "保持された接続ピア",
+    status: "ステータス",
+    other: "その他",
+    status_unavailable: "利用不可",
+    cap_disclosure: "追跡上限の開示",
+    cap_not_admitted: "は保持対象に追加されませんでした。",
+    paths: "パス",
+    peer_addresses: "接続ピアアドレス",
+    focused_peer_addresses: "フォーカスパスの接続ピアアドレス",
+    network_prefixes: "ネットワークプレフィックス",
+    global_minute_records: "新しい分バケットに属する全体レコード",
+    focused_minute_records: "新しい分バケットに属するフォーカスパスのレコード",
+    focused_new_peer_requests: "新しい接続ピアアドレスからのフォーカスパスへのリクエスト",
+    new_path_requests: "新しいパスへのリクエスト",
+    new_peer_requests: "新しい接続ピアアドレスからのリクエスト",
+    new_peer_path_pairs: "新しい接続ピアとパスの組み合わせ",
+    omitted_suffix: "がレポート上限により省略されました。",
+};
+
 /// Existing local run artifacts accepted by [`render_report`]. Missing
 /// artifacts remain `None` and are rendered as unavailable rather than guessed.
 #[derive(Debug, Default)]
@@ -110,7 +384,13 @@ pub fn html_escape(value: &str) -> String {
 
 /// Render one completely self-contained private HTML report. The output is
 /// deterministic for identical artifacts and parameters.
-pub fn render_report(artifacts: &ReportArtifacts, limit: usize, timeline_points: usize) -> String {
+pub fn render_report(
+    artifacts: &ReportArtifacts,
+    limit: usize,
+    timeline_points: usize,
+    language: ReportLanguage,
+) -> String {
+    let labels = language.labels();
     let profile = first_string(
         artifacts,
         &[
@@ -118,7 +398,7 @@ pub fn render_report(artifacts: &ReportArtifacts, limit: usize, timeline_points:
             (ArtifactKind::Sanitized, "/telemetry_profile"),
         ],
     )
-    .unwrap_or_else(|| "unavailable".to_owned());
+    .unwrap_or_else(|| labels.unavailable.to_owned());
     let from = first_string(
         artifacts,
         &[
@@ -128,7 +408,7 @@ pub fn render_report(artifacts: &ReportArtifacts, limit: usize, timeline_points:
             (ArtifactKind::Sanitized, "/metrics/earliest_timestamp"),
         ],
     )
-    .unwrap_or_else(|| "unavailable".to_owned());
+    .unwrap_or_else(|| labels.unavailable.to_owned());
     let to = first_string(
         artifacts,
         &[
@@ -138,47 +418,59 @@ pub fn render_report(artifacts: &ReportArtifacts, limit: usize, timeline_points:
             (ArtifactKind::Sanitized, "/metrics/latest_timestamp"),
         ],
     )
-    .unwrap_or_else(|| "unavailable".to_owned());
+    .unwrap_or_else(|| labels.unavailable.to_owned());
     let version = first_string(artifacts, &[(ArtifactKind::Manifest, "/shenron_version")])
-        .unwrap_or_else(|| "unavailable".to_owned());
+        .unwrap_or_else(|| labels.unavailable.to_owned());
     let revision = first_string(artifacts, &[(ArtifactKind::Manifest, "/nuclei_revision")])
-        .unwrap_or_else(|| "unavailable".to_owned());
+        .unwrap_or_else(|| labels.unavailable.to_owned());
     let generated_at = first_string(artifacts, &[(ArtifactKind::Manifest, "/generated_at")])
-        .unwrap_or_else(|| "unavailable".to_owned());
+        .unwrap_or_else(|| labels.unavailable.to_owned());
 
-    let mut html = String::from(
-        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Shenron private run report</title><style>\
-        :root{color-scheme:dark;--bg:#0b1020;--panel:#151d31;--muted:#a8b3c7;--text:#f4f7fb;--accent:#66d9c2;--warn:#ffcf66;--danger:#ff6b78;--line:#33415f}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 system-ui,sans-serif}main{max-width:1240px;margin:auto;padding:24px}.private{background:#6b1320;border:2px solid var(--danger);padding:16px;font-size:18px;font-weight:800}.note,.unavailable,.cap{color:var(--muted)}.note{border-left:3px solid var(--warn);padding-left:12px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px}.card,section{background:var(--panel);border:1px solid var(--line);border-radius:10px}.card{padding:14px}.card b{display:block;font-size:24px}section{margin-top:18px;padding:18px}h1,h2,h3{margin-top:0}svg{width:100%;height:auto;background:#10172a;border-radius:8px}.bar{fill:var(--accent)}.axis{stroke:var(--line);stroke-width:1}.timeline{fill:none;stroke:var(--accent);stroke-width:3}.timeline-area{fill:#66d9c226;stroke:none}svg text{fill:var(--text);font:12px system-ui,sans-serif}table{width:100%;border-collapse:collapse;display:block;overflow-x:auto}th,td{padding:9px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top;white-space:nowrap}.score{width:120px;background:#26334f;border-radius:9px;overflow:hidden}.score span{display:block;height:10px;background:var(--accent)}code{color:#b9f4e8}.small{font-size:12px;color:var(--muted)}</style></head><body><main>",
+    let mut html = format!(
+        "<!doctype html><html lang=\"{}\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>{}</title><style>\
+        :root{{color-scheme:dark;--bg:#0b1020;--panel:#151d31;--muted:#a8b3c7;--text:#f4f7fb;--accent:#66d9c2;--warn:#ffcf66;--danger:#ff6b78;--line:#33415f}}*{{box-sizing:border-box}}body{{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 system-ui,sans-serif}}main{{max-width:1240px;margin:auto;padding:24px}}.private{{background:#6b1320;border:2px solid var(--danger);padding:16px;font-size:18px;font-weight:800}}.note,.unavailable,.cap{{color:var(--muted)}}.note{{border-left:3px solid var(--warn);padding-left:12px}}.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px}}.card,section{{background:var(--panel);border:1px solid var(--line);border-radius:10px}}.card{{padding:14px}}.card b{{display:block;font-size:24px}}section{{margin-top:18px;padding:18px}}h1,h2,h3{{margin-top:0}}svg{{width:100%;height:auto;background:#10172a;border-radius:8px}}.bar{{fill:var(--accent)}}.axis{{stroke:var(--line);stroke-width:1}}.timeline{{fill:none;stroke:var(--accent);stroke-width:3}}.timeline-area{{fill:#66d9c226;stroke:none}}svg text{{fill:var(--text);font:12px system-ui,sans-serif}}table{{width:100%;border-collapse:collapse;display:block;overflow-x:auto}}th,td{{padding:9px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top;white-space:nowrap}}.score{{width:120px;background:#26334f;border-radius:9px;overflow:hidden}}.score span{{display:block;height:10px;background:var(--accent)}}code{{color:#b9f4e8}}.small{{font-size:12px;color:var(--muted)}}</style></head><body><main>",
+        language.html_lang(),
+        html_escape(labels.title),
     );
     html.push_str(&format!(
-        "<div class=\"private\">{}</div><h1>Shenron private run report</h1>\
-         <p class=\"note\">This report visualizes observed access volume and triage context. It is not a determination of a denial-of-service attempt, attack, exploitation, abuse, compromise, or attacker identity. First-seen means review, not malicious.</p>\
-         <section><h2>Provenance</h2><div class=\"grid\">{}{}{}{}{}{}</div></section>",
-        PRIVATE_REPORT_WARNING,
-        card("Telemetry profile", &profile),
-        card("Time range start (UTC)", &from),
-        card("Time range end (UTC)", &to),
-        card("Shenron version", &version),
-        card("Nuclei revision", &revision),
-        card("Run generated at", &generated_at),
+        "<div class=\"private\">{}</div><h1>{}</h1><p class=\"note\">{}</p>\
+         <section><h2>{}</h2><div class=\"grid\">{}{}{}{}{}{}</div></section>",
+        html_escape(language.private_warning()),
+        html_escape(labels.title),
+        html_escape(labels.overall_note),
+        html_escape(labels.provenance),
+        card(labels.telemetry_profile, &profile),
+        card(labels.time_start, &from),
+        card(labels.time_end, &to),
+        card(labels.shenron_version, &version),
+        card(labels.nuclei_revision, &revision),
+        card(labels.run_generated_at, &generated_at),
     ));
 
-    render_summary(&mut html, artifacts);
+    render_summary(&mut html, artifacts, language);
     render_concentration(
         &mut html,
         artifacts.concentration.as_ref(),
         limit,
         timeline_points,
+        language,
     );
-    render_triage(&mut html, artifacts.triage.as_ref(), limit);
+    render_triage(&mut html, artifacts.triage.as_ref(), limit, language);
     html.push_str("</main></body></html>");
     html
 }
 
-fn render_summary(html: &mut String, artifacts: &ReportArtifacts) {
-    html.push_str("<section><h2>Aggregate summary</h2>");
+fn render_summary(html: &mut String, artifacts: &ReportArtifacts, language: ReportLanguage) {
+    let labels = language.labels();
+    html.push_str(&format!(
+        "<section><h2>{}</h2>",
+        html_escape(labels.aggregate_summary)
+    ));
     if artifacts.sanitized.is_none() && artifacts.concentration.is_none() {
-        html.push_str("<p class=\"unavailable\">Aggregate summary unavailable: sanitized-research.json and request-concentration.json were not found.</p></section>");
+        html.push_str(&format!(
+            "<p class=\"unavailable\">{}</p></section>",
+            html_escape(labels.aggregate_unavailable)
+        ));
         return;
     }
     let total = artifacts
@@ -216,11 +508,14 @@ fn render_summary(html: &mut String, artifacts: &ReportArtifacts) {
         .map(|view| view.entities.len() as u64);
     html.push_str("<div class=\"grid\">");
     for (label, value) in [
-        ("Requests", optional_number(total)),
-        ("Distinct paths", optional_number(paths)),
-        ("Distinct observed peers", optional_number(source_ips)),
-        ("Observed CVEs", optional_number(cves)),
-        ("Triage entities", optional_number(triage_entities)),
+        (labels.requests, optional_number(total, language)),
+        (labels.distinct_paths, optional_number(paths, language)),
+        (labels.distinct_peers, optional_number(source_ips, language)),
+        (labels.observed_cves, optional_number(cves, language)),
+        (
+            labels.triage_entities,
+            optional_number(triage_entities, language),
+        ),
     ] {
         html.push_str(&card(label, &value));
     }
@@ -233,11 +528,12 @@ fn render_summary(html: &mut String, artifacts: &ReportArtifacts) {
                 .or_default() += 1;
         }
         html.push_str(&format!(
-            "<p class=\"small\">Behavior-priority tiers (not threat severity): info={}, low={}, medium={}, high={}.</p>",
-            tiers.get("info").copied().unwrap_or_default(),
-            tiers.get("low").copied().unwrap_or_default(),
-            tiers.get("medium").copied().unwrap_or_default(),
-            tiers.get("high").copied().unwrap_or_default(),
+            "<p class=\"small\">{}: info={}, low={}, medium={}, high={}.</p>",
+            html_escape(labels.tier_summary),
+            group_thousands(tiers.get("info").copied().unwrap_or_default() as u64),
+            group_thousands(tiers.get("low").copied().unwrap_or_default() as u64),
+            group_thousands(tiers.get("medium").copied().unwrap_or_default() as u64),
+            group_thousands(tiers.get("high").copied().unwrap_or_default() as u64),
         ));
     }
     html.push_str("</section>");
@@ -248,139 +544,227 @@ fn render_concentration(
     concentration: Option<&PrivateRequestConcentrationReport>,
     limit: usize,
     timeline_points: usize,
+    language: ReportLanguage,
 ) {
-    html.push_str("<section><h2>Request concentration</h2><p class=\"note\">These are observed access counts and concentration only, not a denial-of-service, attack, exploitation, abuse, compromise, or attribution determination. Source IPs are observed connection peers and may be a CDN, load balancer, NAT, or proxy; they are not attacker attribution.</p>");
+    let labels = language.labels();
+    html.push_str(&format!(
+        "<section><h2>{}</h2><p class=\"note\">{}</p>",
+        html_escape(labels.concentration),
+        html_escape(labels.concentration_note),
+    ));
     let Some(concentration) = concentration else {
-        html.push_str("<p class=\"unavailable\">Concentration unavailable: request-concentration.json was not found.</p></section>");
+        html.push_str(&format!(
+            "<p class=\"unavailable\">{}</p></section>",
+            html_escape(labels.concentration_unavailable),
+        ));
         return;
     };
 
-    html.push_str("<h3>Top paths</h3>");
+    html.push_str(&format!("<h3>{}</h3>", html_escape(labels.top_paths)));
     let path_rows = limited(&concentration.paths, limit)
         .iter()
         .map(|path| BarRow {
             label: path.uri_path.as_str(),
             value: path.summary.requests,
             details: format!(
-                "{:.1}% · {} peers · {}",
+                "{:.1}% · {} {} · {}",
                 path.summary.request_share * 100.0,
-                path.summary.distinct_source_ips,
-                status_details(&path.summary.response_status_classes),
+                group_thousands(path.summary.distinct_source_ips as u64),
+                labels.retained_peers,
+                status_details(&path.summary.response_status_classes, language),
             ),
         })
         .collect::<Vec<_>>();
-    html.push_str(&bar_chart("Top request paths", &path_rows));
-    omitted(html, concentration.paths.len(), path_rows.len(), "paths");
+    html.push_str(&bar_chart(labels.top_request_paths, &path_rows, language));
+    omitted(
+        html,
+        concentration.paths.len(),
+        path_rows.len(),
+        labels.paths,
+        language,
+    );
 
-    html.push_str("<h3>Top observed connection peers</h3>");
-    let source_rows = source_rows(&concentration.source_ips, limit);
-    html.push_str(&bar_chart("Top observed connection peers", &source_rows));
+    html.push_str(&format!("<h3>{}</h3>", html_escape(labels.top_peers)));
+    let source_rows = source_rows(&concentration.source_ips, limit, language);
+    html.push_str(&bar_chart(
+        labels.top_observed_peers,
+        &source_rows,
+        language,
+    ));
     omitted(
         html,
         concentration.source_ips.len(),
         source_rows.len(),
-        "peer addresses",
+        labels.peer_addresses,
+        language,
     );
 
-    html.push_str("<h3>Requests per minute</h3>");
+    html.push_str(&format!(
+        "<h3>{}</h3>",
+        html_escape(labels.requests_per_minute)
+    ));
     html.push_str(&timeline_chart(
-        "Global request timeline",
+        labels.global_timeline,
         &concentration.requests_per_minute_series,
         timeline_points,
+        language,
     ));
     cap_note(
         html,
         concentration.minute_buckets_beyond_cap,
-        "global records in new minute buckets",
+        labels.global_minute_records,
+        language,
     );
-    render_general_caps(html, concentration);
+    render_general_caps(html, concentration, language);
 
     if let Some(focus) = &concentration.focus {
         html.push_str(&format!(
-            "<h2>Focused path</h2><p><code>{}</code> — {} requests from {} retained observed peers.</p>",
+            "<h2>{}</h2><p><code>{}</code> — {}</p>",
+            html_escape(labels.focused_path),
             html_escape(&focus.uri_path),
-            focus.total_requests,
-            focus.distinct_source_ips,
+            html_escape(&focus_summary(
+                language,
+                focus.total_requests,
+                focus.distinct_source_ips as u64,
+            )),
         ));
-        html.push_str("<h3>Focused-path peers</h3>");
-        let rows = focus_source_rows(&focus.sources, limit);
-        html.push_str(&bar_chart("Focused-path observed peers", &rows));
+        html.push_str(&format!("<h3>{}</h3>", html_escape(labels.focused_peers)));
+        let rows = focus_source_rows(&focus.sources, limit, language);
+        html.push_str(&bar_chart(labels.focused_peer_chart, &rows, language));
         omitted(
             html,
             focus.sources.len(),
             rows.len(),
-            "focused peer addresses",
+            labels.focused_peer_addresses,
+            language,
         );
 
-        html.push_str("<h3>Focused-path network prefixes</h3><p class=\"note\">Addresses are grouped by network prefix only. A shared prefix is not evidence of a shared operator, owner, or actor: allocations can be split across tenants and one operator can span many prefixes.</p>");
-        let prefix_rows = prefix_rows(&focus.network_prefix_groups, limit);
-        html.push_str(&bar_chart("Focused-path network prefixes", &prefix_rows));
+        html.push_str(&format!(
+            "<h3>{}</h3><p class=\"note\">{}</p>",
+            html_escape(labels.focused_prefixes),
+            html_escape(labels.prefix_note),
+        ));
+        let prefix_rows = prefix_rows(&focus.network_prefix_groups, limit, language);
+        html.push_str(&bar_chart(
+            labels.focused_prefix_chart,
+            &prefix_rows,
+            language,
+        ));
         omitted(
             html,
             focus.network_prefix_groups.len(),
             prefix_rows.len(),
-            "network prefixes",
+            labels.network_prefixes,
+            language,
         );
 
-        html.push_str("<h3>Focused-path requests per minute</h3>");
+        html.push_str(&format!(
+            "<h3>{}</h3>",
+            html_escape(labels.focused_requests_per_minute)
+        ));
         html.push_str(&timeline_chart(
-            "Focused-path request timeline",
+            labels.focused_timeline,
             &focus.requests_per_minute_series,
             timeline_points,
+            language,
         ));
         cap_note(
             html,
             focus.minute_buckets_beyond_cap,
-            "focused-path records in new minute buckets",
+            labels.focused_minute_records,
+            language,
         );
         cap_note(
             html,
             focus.source_ips_beyond_cap,
-            "focused-path requests from new peer addresses",
+            labels.focused_new_peer_requests,
+            language,
         );
     }
     html.push_str("</section>");
 }
 
-fn render_triage(html: &mut String, triage: Option<&ReportTriageView>, limit: usize) {
-    html.push_str("<section><h2>Hunt triage view</h2><p class=\"note\">Behavior score is a human-review priority, not threat severity or a probability of malice. First-seen means review, not malicious. Entity keys can be observed peers rather than end clients and do not establish an attacker identity.</p>");
+fn render_triage(
+    html: &mut String,
+    triage: Option<&ReportTriageView>,
+    limit: usize,
+    language: ReportLanguage,
+) {
+    let labels = language.labels();
+    html.push_str(&format!(
+        "<section><h2>{}</h2><p class=\"note\">{}</p>",
+        html_escape(labels.triage),
+        html_escape(labels.triage_note),
+    ));
     let Some(triage) = triage else {
-        html.push_str("<p class=\"unavailable\">Triage unavailable: triage-view.json was not found.</p></section>");
+        html.push_str(&format!(
+            "<p class=\"unavailable\">{}</p></section>",
+            html_escape(labels.triage_unavailable),
+        ));
         return;
     };
     let entities = limited(&triage.entities, limit);
     if entities.is_empty() {
-        html.push_str("<p class=\"unavailable\">No triage entities were recorded.</p></section>");
+        html.push_str(&format!(
+            "<p class=\"unavailable\">{}</p></section>",
+            html_escape(labels.no_triage),
+        ));
         return;
     }
-    html.push_str("<table><thead><tr><th>Entity</th><th>Identity</th><th>Behavior priority</th><th>Basis</th><th>Observed breadth</th><th>Reputation opinion</th><th>Resolved ASN</th><th>First-seen</th></tr></thead><tbody>");
+    html.push_str(&format!(
+        "<table><thead><tr><th>{}</th><th>{}</th><th>{}</th><th>{}</th><th>{}</th><th>{}</th><th>{}</th><th>{}</th></tr></thead><tbody>",
+        html_escape(labels.entity),
+        html_escape(labels.identity),
+        html_escape(labels.behavior_priority),
+        html_escape(labels.basis),
+        html_escape(labels.observed_breadth),
+        html_escape(labels.reputation),
+        html_escape(labels.resolved_asn),
+        html_escape(labels.first_seen),
+    ));
     for entity in entities {
         let score = entity.behavior_score.total.min(100);
-        let basis = entity.triage_basis.as_deref().unwrap_or("none");
+        let basis = entity.triage_basis.as_deref().unwrap_or(labels.none);
         let reputation = entity.reputation.as_ref().map_or_else(
-            || "unavailable".to_owned(),
-            |value| format!("{}/100 {} ({})", value.score, value.tier, value.scope),
+            || labels.unavailable.to_owned(),
+            |value| {
+                format!(
+                    "{}/100 {} ({})",
+                    group_thousands(value.score as u64),
+                    value.tier,
+                    value.scope
+                )
+            },
         );
         let asn = entity.resolved_asn.as_ref().map_or_else(
-            || "unavailable".to_owned(),
-            |value| format!("AS{} {}", value.asn, value.org),
+            || labels.unavailable.to_owned(),
+            |value| format!("AS{} {}", group_thousands(value.asn as u64), value.org),
         );
         html.push_str(&format!(
-            "<tr><td><code>{}</code></td><td>{}</td><td>{}/100 {}<div class=\"score\"><span style=\"width:{}%\"></span></div><span class=\"small\">reachable max {}</span></td><td>{}</td><td>{} observations / {} templates / {} CVEs<br><span class=\"small\">{} matching records</span></td><td>{}</td><td>{}</td><td>{}</td></tr>",
+            "<tr><td><code>{}</code></td><td>{}</td><td>{}/100 {}<div class=\"score\"><span style=\"width:{}%\"></span></div><span class=\"small\">{} {}</span></td><td>{}</td><td>{} {} / {} {} / {} {}<br><span class=\"small\">{} {}</span></td><td>{}</td><td>{}</td><td>{}</td></tr>",
             html_escape(&entity.key),
             html_escape(&entity.identity),
-            entity.behavior_score.total,
+            group_thousands(entity.behavior_score.total as u64),
             html_escape(&entity.behavior_score.tier),
             score,
-            entity.behavior_score.reachable_max,
+            html_escape(labels.reachable_max),
+            group_thousands(entity.behavior_score.reachable_max as u64),
             html_escape(basis),
-            entity.distinct_observations,
-            entity.distinct_templates,
-            entity.distinct_cves,
-            entity.matching_records,
+            group_thousands(entity.distinct_observations as u64),
+            html_escape(labels.observations),
+            group_thousands(entity.distinct_templates as u64),
+            html_escape(labels.templates),
+            group_thousands(entity.distinct_cves as u64),
+            html_escape(labels.cves),
+            group_thousands(entity.matching_records as u64),
+            html_escape(labels.matching_records),
             html_escape(&reputation),
             html_escape(&asn),
-            if entity.first_seen { "yes — review" } else { "no" },
+            html_escape(if entity.first_seen {
+                labels.yes_review
+            } else {
+                labels.no
+            }),
         ));
     }
     html.push_str("</tbody></table>");
@@ -388,7 +772,8 @@ fn render_triage(html: &mut String, triage: Option<&ReportTriageView>, limit: us
         html,
         triage.entities.len(),
         entities.len(),
-        "triage entities",
+        labels.triage_entities,
+        language,
     );
     html.push_str("</section>");
 }
@@ -399,14 +784,17 @@ struct BarRow<'a> {
     details: String,
 }
 
-fn bar_chart(title: &str, rows: &[BarRow<'_>]) -> String {
+fn bar_chart(title: &str, rows: &[BarRow<'_>], language: ReportLanguage) -> String {
     if rows.is_empty() {
-        return "<p class=\"unavailable\">unavailable</p>".to_owned();
+        return format!(
+            "<p class=\"unavailable\">{}</p>",
+            html_escape(language.labels().unavailable)
+        );
     }
     let maximum = rows.iter().map(|row| row.value).max().unwrap_or(1).max(1);
     let height = rows.len() * 42 + 16;
     let mut svg = format!(
-        "<svg viewBox=\"0 0 1000 {height}\" role=\"img\" aria-label=\"{}\">",
+        "<svg width=\"1000\" height=\"{height}\" viewBox=\"0 0 1000 {height}\" role=\"img\" aria-label=\"{}\">",
         html_escape(title)
     );
     for (index, row) in rows.iter().enumerate() {
@@ -420,7 +808,7 @@ fn bar_chart(title: &str, rows: &[BarRow<'_>]) -> String {
             width,
             310.0 + width,
             y + 12,
-            row.value,
+            group_thousands(row.value),
             html_escape(&row.details),
         ));
     }
@@ -428,10 +816,19 @@ fn bar_chart(title: &str, rows: &[BarRow<'_>]) -> String {
     svg
 }
 
-fn timeline_chart(title: &str, series: &[MinuteRequestCount], maximum_points: usize) -> String {
+fn timeline_chart(
+    title: &str,
+    series: &[MinuteRequestCount],
+    maximum_points: usize,
+    language: ReportLanguage,
+) -> String {
+    let labels = language.labels();
     let points = downsample_timeline(series, maximum_points.max(1));
     if points.is_empty() {
-        return "<p class=\"unavailable\">Timeline unavailable: no retained timestamped minute buckets.</p>".to_owned();
+        return format!(
+            "<p class=\"unavailable\">{}</p>",
+            html_escape(labels.timeline_unavailable)
+        );
     }
     let first = points
         .first()
@@ -448,25 +845,31 @@ fn timeline_chart(title: &str, series: &[MinuteRequestCount], maximum_points: us
         .unwrap_or(1)
         .max(1);
     let span = (last as i128 - first as i128).max(1) as f64;
-    let coordinates = points
+    let mut coordinate_values = points
         .iter()
         .map(|point| {
             let x = 60.0 + (point.minute_epoch as i128 - first as i128) as f64 / span * 880.0;
             let y = 180.0 - point.requests as f64 / peak as f64 * 145.0;
             format!("{x:.2},{y:.2}")
         })
-        .collect::<Vec<_>>()
-        .join(" ");
+        .collect::<Vec<_>>();
+    if coordinate_values.len() == 1 {
+        let y = 180.0 - points[0].requests as f64 / peak as f64 * 145.0;
+        coordinate_values.push(format!("940.00,{y:.2}"));
+    }
+    let coordinates = coordinate_values.join(" ");
     let area = format!("60,180 {coordinates} 940,180");
     format!(
-        "<svg viewBox=\"0 0 1000 220\" role=\"img\" aria-label=\"{}\"><line class=\"axis\" x1=\"60\" y1=\"180\" x2=\"940\" y2=\"180\"></line><line class=\"axis\" x1=\"60\" y1=\"35\" x2=\"60\" y2=\"180\"></line><polygon class=\"timeline-area\" points=\"{}\"></polygon><polyline class=\"timeline\" points=\"{}\"></polyline><text x=\"60\" y=\"205\">{}</text><text x=\"760\" y=\"205\">{}</text><text x=\"65\" y=\"30\">peak {}</text></svg><p class=\"small\">{} retained/downsampled points; UTC. Downsampling sums deterministic equal-width minute spans.</p>",
+        "<svg width=\"1000\" height=\"220\" viewBox=\"0 0 1000 220\" role=\"img\" aria-label=\"{}\"><line class=\"axis\" x1=\"60\" y1=\"180\" x2=\"940\" y2=\"180\"></line><line class=\"axis\" x1=\"60\" y1=\"35\" x2=\"60\" y2=\"180\"></line><polygon class=\"timeline-area\" points=\"{}\"></polygon><polyline class=\"timeline\" points=\"{}\"></polyline><text x=\"60\" y=\"205\">{}</text><text x=\"760\" y=\"205\">{}</text><text x=\"65\" y=\"30\">{} {}</text></svg><p class=\"small\">{} {}</p>",
         html_escape(title),
         area,
         coordinates,
-        html_escape(&minute_label(first)),
-        html_escape(&minute_label(last)),
-        peak,
-        points.len(),
+        html_escape(&minute_label(first, language)),
+        html_escape(&minute_label(last, language)),
+        html_escape(labels.peak),
+        group_thousands(peak),
+        group_thousands(points.len() as u64),
+        html_escape(labels.timeline_footer),
     )
 }
 
@@ -507,91 +910,157 @@ fn downsample_timeline(
         .collect()
 }
 
-fn minute_label(minute_epoch: i64) -> String {
+fn minute_label(minute_epoch: i64, language: ReportLanguage) -> String {
     minute_epoch
         .checked_mul(60)
         .and_then(|seconds| DateTime::<Utc>::from_timestamp(seconds, 0))
         .map(|timestamp| timestamp.format("%Y-%m-%d %H:%M").to_string())
-        .unwrap_or_else(|| format!("epoch minute {minute_epoch}"))
+        .unwrap_or_else(|| {
+            format!(
+                "{} {}",
+                language.labels().epoch_minute,
+                group_signed_thousands(minute_epoch)
+            )
+        })
 }
 
-fn source_rows<'a>(sources: &'a [PrivateSourceConcentration], limit: usize) -> Vec<BarRow<'a>> {
+fn source_rows<'a>(
+    sources: &'a [PrivateSourceConcentration],
+    limit: usize,
+    language: ReportLanguage,
+) -> Vec<BarRow<'a>> {
     limited(sources, limit)
         .iter()
         .map(|source| BarRow {
             label: source.source_ip.as_str(),
             value: source.requests,
-            details: "requests".to_owned(),
+            details: language.labels().request_count_label.to_owned(),
         })
         .collect()
 }
 
-fn focus_source_rows<'a>(sources: &'a [PrivateFocusSource], limit: usize) -> Vec<BarRow<'a>> {
+fn focus_source_rows<'a>(
+    sources: &'a [PrivateFocusSource],
+    limit: usize,
+    language: ReportLanguage,
+) -> Vec<BarRow<'a>> {
     limited(sources, limit)
         .iter()
         .map(|source| BarRow {
             label: source.source_ip.as_str(),
             value: source.requests,
-            details: "requests".to_owned(),
+            details: language.labels().request_count_label.to_owned(),
         })
         .collect()
 }
 
-fn prefix_rows<'a>(groups: &'a [PrivateFocusPrefixGroup], limit: usize) -> Vec<BarRow<'a>> {
+fn prefix_rows<'a>(
+    groups: &'a [PrivateFocusPrefixGroup],
+    limit: usize,
+    language: ReportLanguage,
+) -> Vec<BarRow<'a>> {
     limited(groups, limit)
         .iter()
         .map(|group| BarRow {
             label: group.network_prefix.as_str(),
             value: group.requests,
             details: format!(
-                "{:.1}% · {} retained peers",
+                "{:.1}% · {} {}",
                 group.request_share * 100.0,
-                group.distinct_source_ips
+                group_thousands(group.distinct_source_ips as u64),
+                language.labels().retained_peers,
             ),
         })
         .collect()
 }
 
-fn render_general_caps(html: &mut String, report: &PrivateRequestConcentrationReport) {
+fn render_general_caps(
+    html: &mut String,
+    report: &PrivateRequestConcentrationReport,
+    language: ReportLanguage,
+) {
+    let labels = language.labels();
     for (count, label) in [
         (
             report.summary.paths_beyond_tracking_cap,
-            "requests on new paths",
+            labels.new_path_requests,
         ),
         (
             report.summary.source_ips_beyond_tracking_cap,
-            "requests from new peer addresses",
+            labels.new_peer_requests,
         ),
         (
             report.summary.source_path_pairs_beyond_tracking_cap,
-            "new peer/path associations",
+            labels.new_peer_path_pairs,
         ),
     ] {
-        cap_note(html, count, label);
+        cap_note(html, count, label, language);
     }
 }
 
-fn cap_note(html: &mut String, count: u64, label: &str) {
+fn cap_note(html: &mut String, count: u64, label: &str, language: ReportLanguage) {
     if count != 0 {
+        let labels = language.labels();
         html.push_str(&format!(
-            "<p class=\"cap\">Tracking cap disclosure: {} {} were not admitted.</p>",
-            count,
+            "<p class=\"cap\">{}: {} {} {}</p>",
+            html_escape(labels.cap_disclosure),
+            group_thousands(count),
             html_escape(label),
+            html_escape(labels.cap_not_admitted),
         ));
     }
 }
 
-fn status_details(counts: &StatusClassCounts) -> String {
+fn status_details(counts: &StatusClassCounts, language: ReportLanguage) -> String {
+    let labels = language.labels();
     format!(
-        "status 1xx:{} 2xx:{} 3xx:{} 4xx:{} 5xx:{} other:{} unavailable:{}",
-        counts.informational,
-        counts.success,
-        counts.redirection,
-        counts.client_error,
-        counts.server_error,
-        counts.other,
-        counts.unavailable,
+        "{} 1xx:{} 2xx:{} 3xx:{} 4xx:{} 5xx:{} {}:{} {}:{}",
+        labels.status,
+        group_thousands(counts.informational),
+        group_thousands(counts.success),
+        group_thousands(counts.redirection),
+        group_thousands(counts.client_error),
+        group_thousands(counts.server_error),
+        labels.other,
+        group_thousands(counts.other),
+        labels.status_unavailable,
+        group_thousands(counts.unavailable),
     )
+}
+
+fn focus_summary(language: ReportLanguage, requests: u64, peers: u64) -> String {
+    match language {
+        ReportLanguage::En => format!(
+            "{} requests from {} retained observed peers.",
+            group_thousands(requests),
+            group_thousands(peers),
+        ),
+        ReportLanguage::Ja => format!(
+            "{} リクエスト（保持された観測接続ピア {} 件）。",
+            group_thousands(requests),
+            group_thousands(peers),
+        ),
+    }
+}
+
+fn group_thousands(value: u64) -> String {
+    let digits = value.to_string();
+    let mut grouped = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, character) in digits.chars().enumerate() {
+        if index != 0 && (digits.len() - index).is_multiple_of(3) {
+            grouped.push(',');
+        }
+        grouped.push(character);
+    }
+    grouped
+}
+
+fn group_signed_thousands(value: i64) -> String {
+    if value < 0 {
+        format!("-{}", group_thousands(value.unsigned_abs()))
+    } else {
+        group_thousands(value as u64)
+    }
 }
 
 fn card(label: &str, value: &str) -> String {
@@ -602,8 +1071,8 @@ fn card(label: &str, value: &str) -> String {
     )
 }
 
-fn optional_number(value: Option<u64>) -> String {
-    value.map_or_else(|| "unavailable".to_owned(), |value| value.to_string())
+fn optional_number(value: Option<u64>, language: ReportLanguage) -> String {
+    value.map_or_else(|| language.labels().unavailable.to_owned(), group_thousands)
 }
 
 fn limited<T>(values: &[T], limit: usize) -> &[T] {
@@ -614,12 +1083,19 @@ fn limited<T>(values: &[T], limit: usize) -> &[T] {
     }
 }
 
-fn omitted(html: &mut String, total: usize, displayed: usize, label: &str) {
+fn omitted(
+    html: &mut String,
+    total: usize,
+    displayed: usize,
+    label: &str,
+    language: ReportLanguage,
+) {
     if total > displayed {
         html.push_str(&format!(
-            "<p class=\"small\">{} additional {} omitted by the report limit.</p>",
-            total - displayed,
+            "<p class=\"small\">{} {} {}</p>",
+            group_thousands((total - displayed) as u64),
             html_escape(label),
+            html_escape(language.labels().omitted_suffix),
         ));
     }
 }
@@ -761,6 +1237,10 @@ mod tests {
 
     #[test]
     fn renders_expected_private_sections_and_escapes_artifact_values() {
+        let mut concentration = synthetic_concentration("/x?<script>alert(1)</script>&\"'");
+        concentration.summary.total_requests = 1_234;
+        concentration.paths[0].summary.requests = 1_234;
+        concentration.source_ips[0].requests = 1_234;
         let artifacts = ReportArtifacts {
             sanitized: Some(serde_json::json!({
                 "metrics": {"total_requests_analyzed": 3, "unique_cves_observed": 1}
@@ -770,7 +1250,7 @@ mod tests {
                 "telemetry_profile": "aws-waf",
                 "nuclei_revision": "fixture"
             })),
-            concentration: Some(synthetic_concentration("/x?<script>alert(1)</script>&\"'")),
+            concentration: Some(concentration),
             triage: Some(ReportTriageView {
                 entities: vec![ReportTriageEntity {
                     key: "198.51.100.1".to_owned(),
@@ -788,7 +1268,7 @@ mod tests {
                 }],
             }),
         };
-        let html = render_report(&artifacts, 20, 240);
+        let html = render_report(&artifacts, 20, 240, ReportLanguage::En);
         for section in [
             "Top paths",
             "Top observed connection peers",
@@ -799,6 +1279,8 @@ mod tests {
         }
         assert!(!html.contains("<script>"));
         assert!(html.contains("&lt;script&gt;alert(1)&lt;/script&gt;&amp;&quot;&#39;"));
+        assert!(html.contains("1,234"));
+        assert!(html.contains("<svg width=\"1000\" height=\"58\" viewBox=\"0 0 1000 58\""));
         for forbidden in ["http://", "https://", "src=", "<script src"] {
             assert!(
                 !html.contains(forbidden),
@@ -809,7 +1291,7 @@ mod tests {
 
     #[test]
     fn renders_missing_artifacts_as_unavailable_without_panicking() {
-        let html = render_report(&ReportArtifacts::default(), 20, 240);
+        let html = render_report(&ReportArtifacts::default(), 20, 240, ReportLanguage::En);
         assert!(html.contains(PRIVATE_REPORT_WARNING));
         assert!(html.contains("Aggregate summary unavailable"));
         assert!(html.contains("Concentration unavailable"));
@@ -834,6 +1316,52 @@ mod tests {
 
     #[test]
     fn status_details_is_numeric_and_deterministic() {
-        assert!(status_details(&StatusClassCounts::default()).contains("status 1xx:0"));
+        assert!(
+            status_details(&StatusClassCounts::default(), ReportLanguage::En)
+                .contains("status 1xx:0")
+        );
+    }
+
+    #[test]
+    fn groups_integer_display_values_by_thousands() {
+        assert_eq!(group_thousands(0), "0");
+        assert_eq!(group_thousands(999), "999");
+        assert_eq!(group_thousands(1_000), "1,000");
+        assert_eq!(group_thousands(1_234_567), "1,234,567");
+        assert_eq!(group_thousands(u64::MAX), "18,446,744,073,709,551,615");
+    }
+
+    #[test]
+    fn timeline_has_intrinsic_dimensions_and_non_degenerate_polyline() {
+        let series = vec![MinuteRequestCount {
+            minute_epoch: 0,
+            requests: 1,
+        }];
+        let html = timeline_chart("Timeline", &series, 240, ReportLanguage::En);
+        assert!(html.contains("<svg width=\"1000\" height=\"220\""));
+        assert!(html.contains("<polyline"));
+        let points = html
+            .split_once("<polyline class=\"timeline\" points=\"")
+            .and_then(|(_, rest)| rest.split_once('\"'))
+            .map(|(value, _)| value)
+            .expect("timeline polyline points");
+        assert!(points.split_whitespace().count() >= 2);
+    }
+
+    #[test]
+    fn empty_timeline_explains_how_to_regenerate_the_series() {
+        let html = timeline_chart("Timeline", &[], 240, ReportLanguage::En);
+        assert!(html.contains("Re-run hunt or concentration with the current build"));
+    }
+
+    #[test]
+    fn japanese_report_translates_human_labels_and_remains_self_contained() {
+        let html = render_report(&ReportArtifacts::default(), 20, 240, ReportLanguage::Ja);
+        assert!(html.contains("<html lang=\"ja\">"));
+        assert!(html.contains("集計サマリ"));
+        assert!(html.contains("DoS・攻撃・悪用・侵害・悪性確率・攻撃者特定の判定ではありません"));
+        for forbidden in ["http://", "https://", "src=", "<script src"] {
+            assert!(!html.contains(forbidden));
+        }
     }
 }

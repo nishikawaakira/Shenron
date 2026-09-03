@@ -117,7 +117,8 @@ raw logs again:
 ```bash
 shenron production report \
   --input ./private-results/hunt-20260901T120000Z \
-  --output ./private-results/hunt-20260901T120000Z-report.html
+  --output ./private-results/hunt-20260901T120000Z-report.html \
+  --lang ja
 ```
 
 The self-contained HTML uses inline CSS and server-generated inline SVG only:
@@ -131,7 +132,9 @@ show volume and review priority only, not DoS, attack, exploitation, abuse,
 compromise, probability of malice, or attribution. The `--output` may be a file
 inside the run directory (for example `<run-dir>/report.html`), since the input
 is produced artifacts rather than raw logs; Shenron refuses only to overwrite a
-directory or a source artifact it reads. See the full [HTML report
+directory or a source artifact it reads. English is the default; `--lang ja`
+localizes every human-readable report label and safety notice into Japanese.
+Integer counts use three-digit comma grouping in both languages. See the full [HTML report
 guide](html-report.md).
 
 ## Temporal comparison and retro-hunting
