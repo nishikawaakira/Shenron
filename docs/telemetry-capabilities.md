@@ -14,7 +14,18 @@ Shenron normalizes every supported source into `WebEvent`, but detectability is 
 
 nginx documents its built-in `combined` format as `$remote_addr - $remote_user [$time_local] "$request" $status $body_bytes_sent "$http_referer" "$http_user_agent"`; Apache documents the equivalent `combined` `LogFormat` with `%h`, `%t`, `%r`, `%>s`, `%b`, Referer, and User-Agent. Neither standard form includes arbitrary request headers, a Host value, JA3/JA4, WAF metadata, or request bodies. See [nginx log module documentation](https://nginx.org/en/docs/http/ngx_http_log_module.html) and [Apache 2.4 log documentation](https://httpd.apache.org/docs/current/logs.html).
 
-Use explicit source selection:
+Log-reading commands default to `--format auto`. Auto mode safely identifies
+AWS WAF JSON and vhost-prefixed Apache Combined records. Standard nginx and
+Apache Combined records are structurally identical, so auto mode deliberately
+does not infer either source. In that case Shenron reports:
+
+```text
+Could not determine the input format safely.
+Pass --format aws-waf, nginx, apache, or apache-vhost.
+```
+
+Select the source explicitly for standard Combined or when strict parsing is
+desired:
 
 ```bash
 shenron scan --input ./logs --format nginx --rules ./rules

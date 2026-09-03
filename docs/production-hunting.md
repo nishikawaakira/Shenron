@@ -5,7 +5,7 @@ Production hunting is read-only and local. Shenron never modifies source logs, c
 Inspect structure before a hunt. This command reports only counts, timestamps, and field availability; it never prints raw requests.
 
 ```bash
-cargo run --bin shenron -- production inspect --input ./production-waf-logs --format aws-waf --sample 10000
+cargo run --bin shenron -- production inspect --input ./production-waf-logs --sample 10000
 ```
 
 Prepare public Nuclei templates, reputation, and ASN inputs once. This
@@ -19,13 +19,21 @@ The default data directory is `$SHENRON_DATA_DIR` when set, otherwise
 `$XDG_DATA_HOME/shenron` and then `~/.local/share/shenron`. Update writes
 `nuclei-templates/`, `nuclei-report.json`, `reputation.jsonl`,
 `asn-ranges.tsv`, and the bundled Sigma pack under `sigma-rules/shenron-pack/`
-there. A full hunt then needs only the local input and its explicit format:
+there. A full hunt then needs only a safely recognizable local input:
 
 ```bash
 cargo run --bin shenron -- production hunt \
-  --input ./production-waf-logs \
-  --format aws-waf
+  --input ./production-waf-logs
 ```
+
+Log-reading commands default to `--format auto`. Auto mode recognizes AWS WAF
+JSON and vhost-prefixed Apache Combined input. Standard nginx and Apache
+Combined lines are structurally identical, so Shenron does not assign a source
+identity by guessing; pass `--format nginx` or `--format apache` for those
+inputs. `--format apache` accepts both standard and vhost-prefixed lines,
+including a mixture in one run, while `--format apache-vhost` strictly requires
+the vhost prefix. If the format cannot be determined safely, the CLI asks for
+one of those explicit formats.
 
 `--nuclei-templates` and `--nuclei-report` remain available to select an
 explicit frozen checkout/report pair. If neither default input exists, Shenron
@@ -94,6 +102,12 @@ normalized path. The path and peer values remain private in
 `request-concentration.json`; the sanitized report contains only aggregate
 focus counts and rates. This is volume context only, never a DoS, attack,
 abuse, compromise, or attribution determination.
+
+With `--show-source-ips`, the same private focus output also includes derived
+network-prefix groups without replacing the individual peer-IP list. IPv4 uses
+`/24` by default and `--group-prefix` can change it; IPv6 uses `/48` by default
+and `--ipv6-group-prefix` can change it. A shared prefix is not evidence of a
+shared operator, owner, or actor.
 
 ## Temporal comparison and retro-hunting
 

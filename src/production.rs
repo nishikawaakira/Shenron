@@ -19,7 +19,8 @@ use walkdir::WalkDir;
 use crate::{
     access_log::{AccessLogFormat, AccessLogLines},
     concentration::{
-        PrivateRequestConcentrationReport, RequestConcentration, RequestConcentrationSummary,
+        add_focus_prefix_groups, FocusPrefixLengths, PrivateRequestConcentrationReport,
+        RequestConcentration, RequestConcentrationSummary,
     },
     event::{HttpHeader, LogSource, TelemetryProfile, TrustedProxySet, WebEvent},
     nuclei::{
@@ -948,6 +949,7 @@ pub fn concentration(
     telemetry_profile: TelemetryProfile,
     time_range: HuntTimeRange,
     focus_path: Option<&str>,
+    focus_prefix_lengths: FocusPrefixLengths,
 ) -> anyhow::Result<SanitizedConcentrationReport> {
     time_range.validate()?;
     ensure_separate_output(input, output)?;
@@ -1000,7 +1002,11 @@ pub fn concentration(
         })?;
     }
     report.request_concentration = accumulator.summary();
-    write_private_concentration(output, &accumulator.private_report())?;
+    let mut private_report = accumulator.private_report();
+    if let Some(focus) = private_report.focus.as_mut() {
+        add_focus_prefix_groups(focus, focus_prefix_lengths);
+    }
+    write_private_concentration(output, &private_report)?;
     let sanitized_path = output.join("sanitized-research.json");
     serde_json::to_writer_pretty(
         File::create(&sanitized_path)

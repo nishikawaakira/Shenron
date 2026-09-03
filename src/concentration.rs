@@ -5,9 +5,13 @@
 //! retained keys and deliberately stops admitting new keys at fixed caps; every such
 //! omission is reported as a count rather than approximated.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    net::IpAddr,
+};
 
 use chrono::{DateTime, Utc};
+use ipnet::IpNet;
 use serde::{Deserialize, Serialize};
 
 use crate::event::WebEvent;
@@ -18,6 +22,26 @@ pub const DEFAULT_MAX_TRACKED_SOURCE_IPS: usize = 1_000_000;
 /// intentionally independent of the top-level source-IP map so a focus remains
 /// useful even if the general distribution reaches its own admission cap.
 pub const DEFAULT_MAX_FOCUS_SOURCE_IPS: usize = 1_000_000;
+pub const DEFAULT_FOCUS_IPV4_GROUP_PREFIX: u8 = 24;
+pub const DEFAULT_FOCUS_IPV6_GROUP_PREFIX: u8 = 48;
+
+/// Address-prefix sizes used only to derive private focus-path presentation
+/// groups from already retained peer-IP counts. They do not affect streaming
+/// tracking or individual peer-IP output.
+#[derive(Debug, Clone, Copy)]
+pub struct FocusPrefixLengths {
+    pub ipv4: u8,
+    pub ipv6: u8,
+}
+
+impl Default for FocusPrefixLengths {
+    fn default() -> Self {
+        Self {
+            ipv4: DEFAULT_FOCUS_IPV4_GROUP_PREFIX,
+            ipv6: DEFAULT_FOCUS_IPV6_GROUP_PREFIX,
+        }
+    }
+}
 /// A separate cap keeps source-to-path detail bounded even when both top-level
 /// key spaces are within their respective limits.
 pub const DEFAULT_MAX_TRACKED_SOURCE_PATH_PAIRS: usize = 2_000_000;
@@ -126,10 +150,20 @@ pub struct PrivateSourceConcentration {
     pub most_requested_uri_path: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct PrivateFocusSource {
     pub source_ip: String,
     pub requests: u64,
+}
+
+/// A private address-block aggregation of retained focus-path peers. A common
+/// prefix is not evidence of a common owner, operator, or actor.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct PrivateFocusPrefixGroup {
+    pub network_prefix: String,
+    pub requests: u64,
+    pub request_share: f64,
+    pub distinct_source_ips: usize,
 }
 
 /// Private detail for one exact URI-path focus. Connection-peer IPs are not
@@ -144,6 +178,10 @@ pub struct PrivateFocusSummary {
     pub median_requests_per_minute: Option<f64>,
     pub response_status_classes: StatusClassCounts,
     pub sources: Vec<PrivateFocusSource>,
+    /// Derived after streaming from `sources`; omitted from artifacts created
+    /// before prefix grouping support.
+    #[serde(default)]
+    pub network_prefix_groups: Vec<PrivateFocusPrefixGroup>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -389,6 +427,7 @@ impl RequestConcentration {
                 median_requests_per_minute: median,
                 response_status_classes: self.focus_status_classes.clone(),
                 sources,
+                network_prefix_groups: Vec::new(),
             }
         })
     }
@@ -529,6 +568,55 @@ impl RequestConcentration {
             count as f64 / self.total_requests as f64
         }
     }
+}
+
+/// Add deterministic network-prefix aggregations to an already-built private
+/// focus summary. This deliberately derives only from the retained private
+/// source list, so it adds no streaming state and cannot recover peers omitted
+/// by the disclosed focus source-IP cap.
+pub fn add_focus_prefix_groups(focus: &mut PrivateFocusSummary, prefixes: FocusPrefixLengths) {
+    let mut groups = BTreeMap::<String, (u64, BTreeSet<String>)>::new();
+    for source in &focus.sources {
+        let Ok(address) = source.source_ip.parse::<IpAddr>() else {
+            continue;
+        };
+        let prefix = match address {
+            IpAddr::V4(_) => prefixes.ipv4,
+            IpAddr::V6(_) => prefixes.ipv6,
+        };
+        let Ok(network) = IpNet::new(address, prefix) else {
+            // CLI validation prevents this for configured prefix lengths. A
+            // direct library caller with an invalid family-specific length
+            // simply receives no derived group for that malformed setting.
+            continue;
+        };
+        let key = format!("{}/{}", network.network(), prefix);
+        let (requests, source_ips) = groups.entry(key).or_default();
+        *requests += source.requests;
+        source_ips.insert(source.source_ip.clone());
+    }
+    let mut prefix_groups = groups
+        .into_iter()
+        .map(
+            |(network_prefix, (requests, source_ips))| PrivateFocusPrefixGroup {
+                network_prefix,
+                requests,
+                request_share: if focus.total_requests == 0 {
+                    0.0
+                } else {
+                    requests as f64 / focus.total_requests as f64
+                },
+                distinct_source_ips: source_ips.len(),
+            },
+        )
+        .collect::<Vec<_>>();
+    prefix_groups.sort_by(|left, right| {
+        right
+            .requests
+            .cmp(&left.requests)
+            .then_with(|| left.network_prefix.cmp(&right.network_prefix))
+    });
+    focus.network_prefix_groups = prefix_groups;
 }
 
 fn record_status_class(counts: &mut StatusClassCounts, status: Option<u16>) {
@@ -777,5 +865,71 @@ mod tests {
         let focus = concentration.summary().focus.unwrap();
         assert_eq!(focus.distinct_source_ips, 1);
         assert_eq!(focus.source_ips_beyond_cap, 1);
+    }
+
+    #[test]
+    fn groups_retained_focus_sources_by_prefix_without_changing_individual_sources() {
+        let mut concentration = RequestConcentration::new(true);
+        concentration.focus_on_path("/target");
+        for host in 1..=10 {
+            let source = format!("198.51.100.{host}");
+            for _ in 0..100 {
+                concentration.observe(&event(Some("/target"), Some(&source), Some(0)));
+            }
+        }
+        for _ in 0..50 {
+            concentration.observe(&event(Some("/target"), Some("203.0.113.1"), Some(0)));
+        }
+        let mut focus = concentration.private_report().focus.unwrap();
+        let individual_sources = focus.sources.clone();
+        add_focus_prefix_groups(&mut focus, FocusPrefixLengths::default());
+        assert_eq!(focus.network_prefix_groups.len(), 2);
+        let top = &focus.network_prefix_groups[0];
+        assert_eq!(top.network_prefix, "198.51.100.0/24");
+        assert_eq!(top.requests, 1_000);
+        assert_eq!(top.distinct_source_ips, 10);
+        assert_eq!(top.request_share, 1_000.0 / 1_050.0);
+        assert_eq!(focus.sources, individual_sources);
+        let sanitized = serde_json::to_string(&concentration.summary()).unwrap();
+        assert!(!sanitized.contains("198.51.100.0/24"));
+        assert!(!sanitized.contains("198.51.100.1"));
+        assert!(!sanitized.contains("/target"));
+    }
+
+    #[test]
+    fn changing_the_ipv4_prefix_changes_focus_groups() {
+        let mut concentration = RequestConcentration::new(true);
+        concentration.focus_on_path("/target");
+        for source in ["198.51.100.1", "198.51.101.1"] {
+            concentration.observe(&event(Some("/target"), Some(source), Some(0)));
+        }
+        let focus = concentration.private_report().focus.unwrap();
+        let mut by_24 = focus.clone();
+        add_focus_prefix_groups(&mut by_24, FocusPrefixLengths { ipv4: 24, ipv6: 48 });
+        let mut by_16 = focus;
+        add_focus_prefix_groups(&mut by_16, FocusPrefixLengths { ipv4: 16, ipv6: 48 });
+        assert_eq!(by_24.network_prefix_groups.len(), 2);
+        assert_eq!(by_16.network_prefix_groups.len(), 1);
+        assert_eq!(
+            by_16.network_prefix_groups[0].network_prefix,
+            "198.51.0.0/16"
+        );
+    }
+
+    #[test]
+    fn uses_the_default_ipv6_prefix_for_focus_groups() {
+        let mut concentration = RequestConcentration::new(true);
+        concentration.focus_on_path("/target");
+        for source in ["2001:db8:1:1::1", "2001:db8:1:ffff::2"] {
+            concentration.observe(&event(Some("/target"), Some(source), Some(0)));
+        }
+        let mut focus = concentration.private_report().focus.unwrap();
+        add_focus_prefix_groups(&mut focus, FocusPrefixLengths::default());
+        assert_eq!(focus.network_prefix_groups.len(), 1);
+        assert_eq!(
+            focus.network_prefix_groups[0].network_prefix,
+            "2001:db8:1::/48"
+        );
+        assert_eq!(focus.network_prefix_groups[0].distinct_source_ips, 2);
     }
 }

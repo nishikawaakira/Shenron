@@ -58,6 +58,7 @@ Shenron の解析本体 `shenron` は、ターゲットへのスキャン、エ�
 - `production count-hypotheses`：CVE ごとに「広い→狭い」WAF 条件を、ローカルの COUNT シミュレーションとして比較（推奨する条件を自動で選んだり、デプロイしたりはしません）
 - `production concentration`：CTI 入力なしで、固定上限と上限超過件数を明示したリクエスト量分布を集計します。パスと観測した接続ピア IP は private artifact の `request-concentration.json` に分離し、sanitized 側には集計だけを残します。これは DoS・攻撃・悪用・侵害・攻撃者特定の判定ではありません。詳細は [Request concentration](docs/request-concentration.md) を参照してください。
 - `production concentration --path /example/path --show-source-ips`：特定の正規化済みパスに対する観測接続ピアごとのリクエスト件数を private 側で確認できます。これは集中状況の文脈であり、観測 peer は攻撃者特定ではありません。
+- 同じ private フォーカス表示では、IP 単位の行を残したままネットワークプレフィックス単位にも集約します（IPv4 は既定 `/24`、IPv6 は既定 `/48`、`--group-prefix` / `--ipv6-group-prefix` で変更可能）。プレフィックスの共有は所有者・運用主体・行為者の共有を意味しません。
 - `production compare`：2つのローカル凍結 run artifact を差分比較します。`hunt --baseline <prior-run>` では新しい hunt 後に同じ比較を出力します。CVE の差分と集計は sanitized 側、first-seen entity とパス/IP 詳細は private 側に分離されます。first-seen や elevated-volume は悪性・攻撃・侵害・攻撃者特定の判定ではありません。詳細は [Temporal comparison](docs/temporal-comparison.md) を参照してください。
 - `production hunt`：毎回、集計のみの `triage-summary.json` と、優先順付き private `triage-view.json` も出力します。IP 等の private 値を標準出力に表示するには `--show-triage`（必要なら `--limit`）を指定します。この順序は人間が先に確認するためのトリアージであり、脅威の重大度・悪性確率ではありません。first-seen は「新規なので要確認」であって悪性の断定ではありません。
 - `production explain`：CVE / テンプレート / リクエスト証拠の表示。既定では `response-unverified` かつ generic path の低確度ノイズを隠し、`--include-generic` で保存済みの全 finding を表示します。これは**表示フィルタのみ**で、一覧表示を変えるだけであり、トリアージのグルーピングやスコアリングには影響しません（グルーピング/スコアは常に全 finding を対象にします）。そのため、distinctive な探索1件と generic 複数件を混ぜた送信元も breadth 判定に達します。接続元・クライアント IP（`--show-source-ips`）、ローカル ASN データで解決した ASN（`--show-asn`）、JA4 フィンガープリント（`--show-fingerprints`）ごとの breadth/depth/時間窓トリアージと、観測挙動のみから算出する挙動優先度スコアを表示します。スコアは generic path の反復による深さを意図的に抑え、distinctive path の一致へ小さな寄与を与え、合計はその finding のテレメトリ・プロファイルが到達可能な最大値で正規化します（WAF 判定のない combined ログが構造的に低く出るのを防ぎます）。ただし悪性確率・攻撃成立・攻撃者特定の判定ではありません。`shenron-lab reputation update` で準備されたローカル IP/ASN データは既定で自動参照し、明示指定のデータセットは引き続き優先します。レピュテーションは外部照会をせず、第三者の意見として示します。`--output-format json`（任意で `--output <PATH>`）を付けると、スコア・スコア内訳・トリアージ根拠・グルーピングを機械可読の `EXPLAIN_PRIVATE_TRIAGE` レポートとして出力します（テキストと同一の `--show-*` プライバシーゲートを尊重）
@@ -69,7 +70,6 @@ Shenron の解析本体 `shenron` は、ターゲットへのスキャン、エ�
 ```bash
 cargo run --bin shenron -- scan \
   --input ./tests/fixtures/aws-waf/ \
-  --format aws-waf \
   --rules ./tests/fixtures/rules/
 ```
 
@@ -81,12 +81,14 @@ cargo run --bin shenron -- validate-rules --rules ./rules/
 
 ## Production hunt（本番ログのハンティング）
 
-公開 Nuclei テンプレート、IP レピュテーション、ASN データを一度準備すれば、以後はログと形式だけで hunt を実行できます。
+公開 Nuclei テンプレート、IP レピュテーション、ASN データを一度準備すれば、安全に識別できるログは入力だけで hunt を実行できます。
 
 ```bash
 shenron-lab setup
-shenron production hunt --input ./logs --format apache
+shenron production hunt --input ./waf-logs
 ```
+
+ログ入力コマンドの既定は `--format auto` です。AWS WAF JSON と vhost 前置き Apache Combined は自動識別します。標準 nginx Combined と標準 Apache Combined は構造が同一で安全に区別できないため、その場合だけ `--format nginx` または `--format apache` を指定してください。`--format apache` は標準行と vhost 前置き行の両方を受け付け、`--format apache-vhost` は vhost 前置きを厳格に要求します。
 
 `setup` は `SHENRON_DATA_DIR` があればその配下、なければ `$XDG_DATA_HOME/shenron`、さらに無ければ `~/.local/share/shenron` に `nuclei-templates/`、凍結済みの `nuclei-report.json`、任意の `reputation.jsonl` と `asn-ranges.tsv` を保存します。`hunt`、`ablation`、`replay`、`count-hypotheses` は既定でこの場所を参照します。`hunt` の `--output` を省略した場合、`./private-results/hunt-<UTC日時>/` に private artifacts を出力します。従来どおり `--nuclei-templates`、`--nuclei-report`、`--kev-report`、`--output` で明示指定もできます。KEV は任意で、省略時は空集合として扱います。
 

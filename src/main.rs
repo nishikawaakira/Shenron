@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::File,
-    io::{self, Write},
+    io::{self, BufRead, BufReader, Write},
     net::IpAddr,
     path::{Path, PathBuf},
     time::Duration,
@@ -14,7 +14,7 @@ use serde::Serialize;
 use walkdir::WalkDir;
 
 use shenron::{
-    access_log::{AccessLogFormat, AccessLogLines},
+    access_log::{parse_combined_line, AccessLogFormat, AccessLogLines},
     candidate::{
         build_batch_from_findings, compatibility as candidate_compatibility,
         export as export_candidate, load as load_candidate, replay as replay_candidate,
@@ -23,7 +23,7 @@ use shenron::{
     comparison::{
         compare_runs, write_comparison, PrivateTemporalComparison, SanitizedTemporalComparison,
     },
-    concentration::PrivateRequestConcentrationReport,
+    concentration::{FocusPrefixLengths, PrivateRequestConcentrationReport},
     event::{TelemetryCapabilities, TelemetryProfile, TrustedProxy, TrustedProxySet},
     nuclei::{path_distinctiveness, PathDistinctiveness},
     output::{Finding, FindingWriter},
@@ -62,11 +62,11 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Match supported Sigma rules against AWS WAF JSONL logs.
+    /// Match supported Sigma rules against historical web logs.
     Scan {
         #[arg(long)]
         input: PathBuf,
-        #[arg(long, value_enum)]
+        #[arg(long, value_enum, default_value_t = InputFormat::Auto)]
         format: InputFormat,
         #[arg(long)]
         rules: PathBuf,
@@ -81,7 +81,7 @@ enum Command {
         #[arg(long)]
         rules: PathBuf,
     },
-    /// Read-only local inspection and hunting against historical AWS WAF logs.
+    /// Read-only local inspection and hunting against historical web logs.
     Production {
         #[command(subcommand)]
         command: ProductionCommand,
@@ -113,7 +113,7 @@ enum CandidateCommand {
         candidate: PathBuf,
         #[arg(long)]
         input: PathBuf,
-        #[arg(long, value_enum)]
+        #[arg(long, value_enum, default_value_t = InputFormat::Auto)]
         format: InputFormat,
         #[arg(long)]
         output: PathBuf,
@@ -159,7 +159,7 @@ enum ProductionCommand {
     Inspect {
         #[arg(long)]
         input: PathBuf,
-        #[arg(long, value_enum, default_value_t = InputFormat::AwsWaf)]
+        #[arg(long, value_enum, default_value_t = InputFormat::Auto)]
         format: InputFormat,
         #[arg(long, default_value_t = 10_000)]
         sample: usize,
@@ -172,7 +172,7 @@ enum ProductionCommand {
     Hunt {
         #[arg(long)]
         input: PathBuf,
-        #[arg(long, value_enum, default_value_t = InputFormat::AwsWaf)]
+        #[arg(long, value_enum, default_value_t = InputFormat::Auto)]
         format: InputFormat,
         #[arg(long)]
         nuclei_templates: Option<PathBuf>,
@@ -230,7 +230,7 @@ enum ProductionCommand {
     Concentration {
         #[arg(long)]
         input: PathBuf,
-        #[arg(long, value_enum, default_value_t = InputFormat::AwsWaf)]
+        #[arg(long, value_enum, default_value_t = InputFormat::Auto)]
         format: InputFormat,
         /// Directory for the private detail and sanitized aggregate artifacts.
         #[arg(long)]
@@ -238,6 +238,12 @@ enum ProductionCommand {
         /// Focus the private source-IP breakdown on this exact URI path.
         #[arg(long)]
         path: Option<String>,
+        /// IPv4 prefix length for private focus-path address-block aggregation (default: 24).
+        #[arg(long, value_parser = parse_ipv4_prefix_length)]
+        group_prefix: Option<u8>,
+        /// IPv6 prefix length for private focus-path address-block aggregation (default: 48).
+        #[arg(long, value_parser = parse_ipv6_prefix_length)]
+        ipv6_group_prefix: Option<u8>,
         /// Inclusive UTC start time in RFC 3339 format.
         #[arg(long, value_parser = parse_rfc3339_utc)]
         from: Option<DateTime<Utc>>,
@@ -258,7 +264,7 @@ enum ProductionCommand {
     Ablation {
         #[arg(long)]
         input: PathBuf,
-        #[arg(long, value_enum, default_value_t = InputFormat::AwsWaf)]
+        #[arg(long, value_enum, default_value_t = InputFormat::Auto)]
         format: InputFormat,
         #[arg(long)]
         nuclei_templates: Option<PathBuf>,
@@ -280,7 +286,7 @@ enum ProductionCommand {
     CountHypotheses {
         #[arg(long)]
         input: PathBuf,
-        #[arg(long, value_enum, default_value_t = InputFormat::AwsWaf)]
+        #[arg(long, value_enum, default_value_t = InputFormat::Auto)]
         format: InputFormat,
         #[arg(long)]
         nuclei_templates: Option<PathBuf>,
@@ -308,7 +314,7 @@ enum ProductionCommand {
     Replay {
         #[arg(long)]
         input: PathBuf,
-        #[arg(long, value_enum, default_value_t = InputFormat::AwsWaf)]
+        #[arg(long, value_enum, default_value_t = InputFormat::Auto)]
         format: InputFormat,
         #[arg(long)]
         nuclei_templates: Option<PathBuf>,
@@ -395,6 +401,8 @@ enum ExplainOutputFormat {
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum InputFormat {
+    /// Detect AWS WAF or vhost-prefixed Apache logs; ambiguous Combined logs require an explicit format.
+    Auto,
     /// AWS WAF JSON logs.
     AwsWaf,
     /// Standard nginx Combined Log Format.
@@ -451,14 +459,104 @@ impl WafOutcomeFilter {
 }
 
 impl InputFormat {
-    fn telemetry_profile(self) -> TelemetryProfile {
+    fn explicit_telemetry_profile(self) -> Result<TelemetryProfile> {
         match self {
-            Self::AwsWaf => TelemetryProfile::AwsWaf,
-            Self::Nginx => TelemetryProfile::NginxCombined,
-            Self::Apache => TelemetryProfile::ApacheCombined,
-            Self::ApacheVhost => TelemetryProfile::ApacheVhostCombined,
+            Self::Auto => anyhow::bail!(
+                "auto format selection requires an input log path; pass an explicit telemetry format"
+            ),
+            Self::AwsWaf => Ok(TelemetryProfile::AwsWaf),
+            Self::Nginx => Ok(TelemetryProfile::NginxCombined),
+            Self::Apache => Ok(TelemetryProfile::ApacheCombined),
+            Self::ApacheVhost => Ok(TelemetryProfile::ApacheVhostCombined),
         }
     }
+
+    fn telemetry_profile_for_input(self, input: &Path) -> Result<TelemetryProfile> {
+        resolve_input_format(input, self)?.explicit_telemetry_profile()
+    }
+}
+
+const AUTO_DETECTION_RECORD_LIMIT_PER_FILE: usize = 1_000;
+const AUTO_DETECTION_ERROR: &str = "Could not determine the input format safely.\nPass --format aws-waf, nginx, apache, or apache-vhost.";
+
+#[derive(Debug, Default)]
+struct DetectedInputFormats {
+    aws_waf: bool,
+    standard_combined: bool,
+    apache_vhost: bool,
+}
+
+fn resolve_input_format(input: &Path, requested: InputFormat) -> Result<InputFormat> {
+    if !matches!(requested, InputFormat::Auto) {
+        return Ok(requested);
+    }
+
+    let detected = detect_input_formats(input)?;
+    match (
+        detected.aws_waf,
+        detected.standard_combined,
+        detected.apache_vhost,
+    ) {
+        (true, false, false) => Ok(InputFormat::AwsWaf),
+        (false, _, true) => Ok(InputFormat::Apache),
+        _ => anyhow::bail!(AUTO_DETECTION_ERROR),
+    }
+}
+
+fn detect_input_formats(input: &Path) -> Result<DetectedInputFormats> {
+    let mut files = input_files(input)?;
+    files.sort();
+    let mut detected = DetectedInputFormats::default();
+
+    for path in files
+        .into_iter()
+        .filter(|path| is_auto_detection_input_file(path))
+    {
+        let mut records_examined = 0;
+        let compressed = path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("gz"));
+        let reader = maybe_gzip_reader(
+            File::open(&path).with_context(|| format!("opening {}", path.display()))?,
+            compressed,
+        );
+        for line in BufReader::new(reader).lines() {
+            let line = line.with_context(|| format!("reading {}", path.display()))?;
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            records_examined += 1;
+            if is_aws_waf_record(line) {
+                detected.aws_waf = true;
+            } else if parse_combined_line(line, AccessLogFormat::ApacheVhostCombined).is_ok() {
+                detected.apache_vhost = true;
+            } else if parse_combined_line(line, AccessLogFormat::NginxCombined).is_ok() {
+                // Standard nginx and Apache Combined Log Format have the same
+                // shape. Do not assign a source identity without user input.
+                detected.standard_combined = true;
+            }
+            if records_examined >= AUTO_DETECTION_RECORD_LIMIT_PER_FILE {
+                break;
+            }
+        }
+    }
+    Ok(detected)
+}
+
+fn is_auto_detection_input_file(path: &Path) -> bool {
+    matches!(
+        path.extension().and_then(|extension| extension.to_str()),
+        Some("json" | "jsonl" | "log" | "txt" | "gz")
+    )
+}
+
+fn is_aws_waf_record(raw: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(raw)
+        .ok()
+        .and_then(|value| value.get("httpRequest").cloned())
+        .is_some_and(|request| request.is_object())
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -495,7 +593,7 @@ fn main() -> Result<()> {
             } => {
                 print_inspection(&production_inspect(
                     &input,
-                    format.telemetry_profile(),
+                    format.telemetry_profile_for_input(&input)?,
                     sample,
                     &TrustedProxySet::new(trusted_proxy),
                 )?);
@@ -521,13 +619,14 @@ fn main() -> Result<()> {
                     resolve_nuclei_inputs(nuclei_templates, nuclei_report)?;
                 let output = output.unwrap_or_else(default_hunt_output);
                 let sigma_ruleset = resolve_sigma_ruleset(rules, no_sigma);
+                let telemetry_profile = format.telemetry_profile_for_input(&input)?;
                 let report = production_hunt(
                     &input,
                     &nuclei_templates,
                     &nuclei_report,
                     kev_report.as_deref(),
                     &output,
-                    format.telemetry_profile(),
+                    telemetry_profile,
                     HuntOptions {
                         time_range: HuntTimeRange { from, to },
                         trusted_proxies: TrustedProxySet::new(trusted_proxy),
@@ -592,18 +691,29 @@ fn main() -> Result<()> {
                 format,
                 output,
                 path,
+                group_prefix,
+                ipv6_group_prefix,
                 from,
                 to,
                 show_paths,
                 show_source_ips,
                 limit,
             } => {
+                if path.is_none() && (group_prefix.is_some() || ipv6_group_prefix.is_some()) {
+                    anyhow::bail!("--group-prefix and --ipv6-group-prefix require --path");
+                }
+                let default_prefixes = FocusPrefixLengths::default();
+                let focus_prefix_lengths = FocusPrefixLengths {
+                    ipv4: group_prefix.unwrap_or(default_prefixes.ipv4),
+                    ipv6: ipv6_group_prefix.unwrap_or(default_prefixes.ipv6),
+                };
                 let report = production_concentration(
                     &input,
                     &output,
-                    format.telemetry_profile(),
+                    format.telemetry_profile_for_input(&input)?,
                     HuntTimeRange { from, to },
                     path.as_deref(),
+                    focus_prefix_lengths,
                 )?;
                 let private_path = output.join("request-concentration.json");
                 let private = (show_paths || show_source_ips)
@@ -637,7 +747,7 @@ fn main() -> Result<()> {
                     &nuclei_templates,
                     &nuclei_report,
                     kev_report.as_deref(),
-                    format.telemetry_profile(),
+                    format.telemetry_profile_for_input(&input)?,
                     HuntTimeRange { from, to },
                 )?;
                 if let Some(path) = output.as_deref() {
@@ -668,7 +778,7 @@ fn main() -> Result<()> {
                     &nuclei_report,
                     kev_report.as_deref(),
                     &findings,
-                    format.telemetry_profile(),
+                    format.telemetry_profile_for_input(&input)?,
                     HuntTimeRange { from, to },
                 )?;
                 if let Some(path) = output.as_deref() {
@@ -700,7 +810,7 @@ fn main() -> Result<()> {
                     &nuclei_report,
                     kev_report.as_deref(),
                     &findings,
-                    format.telemetry_profile(),
+                    format.telemetry_profile_for_input(&input)?,
                     HuntTimeRange { from, to },
                 )?;
                 if let Some(path) = output.as_deref() {
@@ -865,7 +975,7 @@ fn main() -> Result<()> {
                 let findings = explain_private_findings(&from_findings)?;
                 let (candidates, stats) = build_batch_from_findings(
                     &findings,
-                    telemetry.telemetry_profile(),
+                    telemetry.explicit_telemetry_profile()?,
                     include_response_unverified,
                 );
                 if candidates.is_empty() {
@@ -886,7 +996,7 @@ fn main() -> Result<()> {
                 let candidate = replay_candidate(
                     load_candidate(&candidate)?,
                     &input,
-                    format.telemetry_profile(),
+                    format.telemetry_profile_for_input(&input)?,
                     &output,
                 )?;
                 save_candidate(&candidate, &output)?;
@@ -898,9 +1008,10 @@ fn main() -> Result<()> {
                 telemetry,
             } => {
                 let candidate = load_candidate(&candidate)?;
-                let telemetry = telemetry
-                    .map(InputFormat::telemetry_profile)
-                    .unwrap_or(candidate.telemetry_profile);
+                let telemetry = match telemetry {
+                    Some(telemetry) => telemetry.explicit_telemetry_profile()?,
+                    None => candidate.telemetry_profile,
+                };
                 for backend in [
                     Backend::AwsWafJson,
                     Backend::TerraformAwsWaf,
@@ -930,9 +1041,10 @@ fn main() -> Result<()> {
                 telemetry,
             } => {
                 let candidate = load_candidate(&candidate)?;
-                let telemetry = telemetry
-                    .map(InputFormat::telemetry_profile)
-                    .unwrap_or(candidate.telemetry_profile);
+                let telemetry = match telemetry {
+                    Some(telemetry) => telemetry.explicit_telemetry_profile()?,
+                    None => candidate.telemetry_profile,
+                };
                 println!("Candidate ID: {}\nCVEs: {}\nCISA KEV: {}\nRecommended initial action: COUNT\nReplay completed: {}\nHistorical requests evaluated: {}\nKnown threat findings: {}\nKnown threat findings matched: {}\nKnown threat findings missed: {}\nOther historical matches: {}\nThreat coverage: {:?}\nTelemetry source: {:?}\nConditions:\n{:#?}\n\nBackend compatibility:", candidate.id, candidate.cves.join(", "), candidate.kev, candidate.evidence.replay_completed, candidate.evidence.historical_requests_evaluated, candidate.evidence.known_threat_findings, candidate.evidence.known_threat_findings_matched, candidate.evidence.known_threat_findings_missed, candidate.evidence.other_historical_matches, candidate.evidence.threat_coverage, candidate.telemetry_profile, candidate.conditions);
                 for backend in [
                     Backend::AwsWafJson,
@@ -956,9 +1068,10 @@ fn main() -> Result<()> {
                 ossec_rule_id,
             } => {
                 let candidate = load_candidate(&candidate)?;
-                let telemetry = telemetry
-                    .map(InputFormat::telemetry_profile)
-                    .unwrap_or(candidate.telemetry_profile);
+                let telemetry = match telemetry {
+                    Some(telemetry) => telemetry.explicit_telemetry_profile()?,
+                    None => candidate.telemetry_profile,
+                };
                 let report = export_candidate(
                     &candidate,
                     backend.backend(),
@@ -1189,6 +1302,22 @@ fn parse_positive_usize(value: &str) -> std::result::Result<usize, String> {
         .ok_or_else(|| format!("expected a positive integer, got {value:?}"))
 }
 
+fn parse_ipv4_prefix_length(value: &str) -> std::result::Result<u8, String> {
+    value
+        .parse::<u8>()
+        .ok()
+        .filter(|prefix| *prefix <= 32)
+        .ok_or_else(|| format!("invalid IPv4 group prefix {value:?}; expected 0 through 32"))
+}
+
+fn parse_ipv6_prefix_length(value: &str) -> std::result::Result<u8, String> {
+    value
+        .parse::<u8>()
+        .ok()
+        .filter(|prefix| *prefix <= 128)
+        .ok_or_else(|| format!("invalid IPv6 group prefix {value:?}; expected 0 through 128"))
+}
+
 fn parse_triage_duration(value: &str) -> std::result::Result<Duration, String> {
     if value.len() < 2 {
         return Err(triage_duration_error(value));
@@ -1370,6 +1499,33 @@ fn print_concentration(
                     println!(
                         "  Focused source IP observations beyond tracking cap: {}",
                         focus.source_ips_beyond_cap
+                    );
+                }
+                if !focus.network_prefix_groups.is_empty() {
+                    println!(
+                        "\nPrivate address-block aggregation for the focused path (network prefix only; not evidence of a shared operator, owner, or actor):"
+                    );
+                    for group in focus
+                        .network_prefix_groups
+                        .iter()
+                        .take(display_limit(limit))
+                    {
+                        println!(
+                            "  {}\n    Requests: {} ({:.1}%)\n    Distinct observed peer IPs: {}",
+                            terminal_safe(&group.network_prefix),
+                            group.requests,
+                            group.request_share * 100.0,
+                            group.distinct_source_ips,
+                        );
+                    }
+                    if focus.network_prefix_groups.len() > display_limit(limit) {
+                        println!(
+                            "  {} address-block groups omitted. Pass --limit 0 to display all.",
+                            focus.network_prefix_groups.len() - display_limit(limit)
+                        );
+                    }
+                    println!(
+                        "  Shared prefixes can span tenants, and one operator can span many prefixes; this is observed request-volume aggregation only, not attribution or a DoS/attack/abuse determination."
                     );
                 }
             }
@@ -2777,6 +2933,7 @@ fn scan(
     output_format: OutputFormat,
     input_format: InputFormat,
 ) -> Result<()> {
+    let input_format = resolve_input_format(input, input_format)?;
     let ruleset = load_rules(rules_path);
     let destination: Box<dyn Write> = match output {
         Some(path) => {
@@ -2801,6 +2958,7 @@ fn scan(
             compressed,
         );
         match input_format {
+            InputFormat::Auto => unreachable!("auto input format is resolved before scanning"),
             InputFormat::AwsWaf => scan_events(
                 WafLines::new(reader),
                 &path,

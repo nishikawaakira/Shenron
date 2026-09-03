@@ -96,6 +96,7 @@ fn concentration_writes_private_detail_without_leaking_it_to_sanitized_or_defaul
         TelemetryProfile::ApacheCombined,
         HuntTimeRange::default(),
         None,
+        shenron::concentration::FocusPrefixLengths::default(),
     )
     .unwrap();
     assert_eq!(report.report_kind, "SANITIZED_REQUEST_CONCENTRATION");
@@ -175,14 +176,17 @@ fn concentration_path_focus_keeps_sources_private_until_explicitly_requested() {
         .assert()
         .success()
         .stdout(contains("Focus path: /vulnerable/execute"))
-        .stdout(contains("198.51.100.1").not());
+        .stdout(contains("198.51.100.1").not())
+        .stdout(contains("198.51.100.0/24").not());
     let sanitized = fs::read_to_string(output.join("sanitized-research.json")).unwrap();
     assert!(!sanitized.contains("/vulnerable/execute"));
     assert!(!sanitized.contains("198.51.100.1"));
+    assert!(!sanitized.contains("198.51.100.0/24"));
     let private = fs::read_to_string(output.join("request-concentration.json")).unwrap();
     assert!(private.contains("\"focus\""));
     assert!(private.contains("/vulnerable/execute"));
     assert!(private.contains("198.51.100.1"));
+    assert!(private.contains("198.51.100.0/24"));
 
     Command::cargo_bin("shenron")
         .unwrap()
@@ -197,6 +201,8 @@ fn concentration_path_focus_keeps_sources_private_until_explicitly_requested() {
             directory.path().join("shown-focused").to_str().unwrap(),
             "--path",
             "/vulnerable/execute",
+            "--group-prefix",
+            "16",
             "--show-source-ips",
         ])
         .assert()
@@ -204,7 +210,11 @@ fn concentration_path_focus_keeps_sources_private_until_explicitly_requested() {
         .stdout(contains(
             "Private observed connection-peer IPs requesting the focused path",
         ))
-        .stdout(contains("198.51.100.1"));
+        .stdout(contains("198.51.100.1"))
+        .stdout(contains(
+            "Private address-block aggregation for the focused path",
+        ))
+        .stdout(contains("198.51.0.0/16"));
 }
 
 #[test]
@@ -840,14 +850,7 @@ fn hunt_uses_prepared_default_inputs_and_output_without_kev() {
     command
         .current_dir(directory.path())
         .env("SHENRON_DATA_DIR", &data_dir)
-        .args([
-            "production",
-            "hunt",
-            "--input",
-            input.to_str().unwrap(),
-            "--format",
-            "aws-waf",
-        ])
+        .args(["production", "hunt", "--input", input.to_str().unwrap()])
         .assert()
         .success();
 
@@ -893,6 +896,70 @@ fn hunt_uses_prepared_default_inputs_and_output_without_kev() {
     )
     .unwrap();
     assert_eq!(default_report, explicit_report);
+}
+
+#[test]
+fn auto_format_detects_waf_and_apache_vhost_but_rejects_ambiguous_combined() {
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "production",
+            "inspect",
+            "--input",
+            "tests/fixtures/production/waf.jsonl",
+        ])
+        .assert()
+        .success()
+        .stdout(contains("Telemetry profile:          AwsWaf"));
+
+    let directory = tempdir().unwrap();
+    let vhost = directory.path().join("other_vhosts_access.log");
+    fs::write(
+        &vhost,
+        r#"example.test:443 198.51.100.9 - - [24/Aug/2026:11:20:30 +0000] "GET / HTTP/1.1" 200 12 "-" "fixture-agent""#,
+    )
+    .unwrap();
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .args(["production", "inspect", "--input", vhost.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(contains("Telemetry profile:          ApacheCombined"));
+
+    let combined = directory.path().join("access.log");
+    fs::write(
+        &combined,
+        r#"198.51.100.9 - - [24/Aug/2026:11:20:30 +0000] "GET / HTTP/1.1" 200 12 "-" "fixture-agent""#,
+    )
+    .unwrap();
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "production",
+            "inspect",
+            "--input",
+            combined.to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .stderr(contains("Could not determine the input format safely."))
+        .stderr(contains(
+            "Pass --format aws-waf, nginx, apache, or apache-vhost.",
+        ));
+
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "production",
+            "inspect",
+            "--input",
+            combined.to_str().unwrap(),
+            "--format",
+            "apache",
+        ])
+        .assert()
+        .success()
+        .stdout(contains("Telemetry profile:          ApacheCombined"));
 }
 
 fn copy_tree(source: &Path, destination: &Path) {

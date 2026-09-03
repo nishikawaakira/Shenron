@@ -51,6 +51,32 @@ focus counts and never contains the path or an IP address. Focused source-IP
 tracking has its own fixed cap, and the output discloses observations from new
 peers that could not be retained after that cap.
 
+When `--show-source-ips` is enabled, Shenron retains the individual peer-IP
+list and also prints a derived address-block aggregation. IPv4 sources default
+to `/24` groups; IPv6 sources default to `/48` groups. Use
+`--group-prefix <0..32>` to choose the IPv4 prefix length and
+`--ipv6-group-prefix <0..128>` to choose the IPv6 length. The private focus
+section of `request-concentration.json` contains each prefix, its request
+count and share within the focused path, and its distinct retained peer-IP
+count. Prefix strings are never added to the sanitized report.
+
+Addresses are grouped by network prefix only. A shared prefix is not evidence
+of a shared operator, owner, or actor: allocations can be split across tenants
+and one operator can span many prefixes. This is an address-block aggregation
+of observed request volume, not an attribution or a determination of a
+denial-of-service attempt, attack, or abuse.
+
+### Relationship to ASN enrichment
+
+ASN is the semantically appropriate unit when the question concerns a possible
+shared network operator. Shenron already supports this separately through
+`AsnDatabase` and `production explain --show-asn --asn-dataset`. Prefix
+aggregation is a local-dataset-free alternative for `production concentration`:
+it keeps the command usable without CTI inputs or an ownership lookup. When a
+local ASN dataset is available, ASN grouping is the more accurate choice for
+operator-oriented analysis; prefix groups remain only address-block volume
+aggregation.
+
 A focused peer is only the observed direct connection address. It may be a CDN,
 load balancer, NAT, proxy, or other intermediary, and concentration on a path
 does not determine a denial-of-service attempt, attack, abuse, exploitation,

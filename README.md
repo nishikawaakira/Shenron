@@ -56,20 +56,21 @@ Read-only local AWS WAF production inspection and validated Nuclei hunting are a
 
 Use `production concentration --path /example/path --show-source-ips` to review private, deterministic request counts for observed connection peers on one exact path. This is concentration context only; observed peers are not attacker attribution.
 
+The same private focus view also aggregates retained peer addresses by network prefix (`/24` IPv4 and `/48` IPv6 by default; configurable with `--group-prefix` and `--ipv6-group-prefix`) without replacing IP-level rows. Prefixes are address blocks, not evidence of a shared owner or actor.
+
 `shenron production compare` diffs two local frozen run artifacts, while `hunt --baseline <prior-run>` writes the same temporal comparison after a new hunt. CVE changes and aggregate counts are sanitized; first-seen entities and path/IP detail remain private. Neither first-seen nor elevated-volume labels determine maliciousness, attack, compromise, or attribution; see [temporal comparison](docs/temporal-comparison.md).
 
 Every `production hunt` also writes an aggregate-only `triage-summary.json` and a private ranked `triage-view.json`; pass `--show-triage` (and optionally `--limit`) to display private entries. This order is for human triage, not threat severity or probability of malice; first-seen means review, never malicious.
 
 Defensive candidates can be built from private hunt findings, replayed locally, reviewed for backend compatibility, and exported as COUNT-only AWS WAF JSON, Terraform rule fragments, or OSSEC detection XML. Export never deploys a control and refuses non-faithful translations. See the [candidate model](docs/waf-candidate-model.md).
 
-The same passive scanner supports explicit `--format nginx` parsing for standard combined logs. `--format apache` automatically accepts both standard Combined and vhost-prefixed Combined logs per line; `--format apache-vhost` remains available when a vhost prefix must be required. Source capabilities remain explicit; see [telemetry capabilities](docs/telemetry-capabilities.md).
+Log-reading commands default to `--format auto`. Auto mode safely recognizes AWS WAF JSON and vhost-prefixed Apache Combined logs. Standard nginx and Apache Combined logs have the same shape, so Shenron does not guess between them: pass `--format nginx` or `--format apache`. The Apache mode accepts both standard and vhost-prefixed Combined lines; `--format apache-vhost` remains available when a vhost prefix must be required. See [telemetry capabilities](docs/telemetry-capabilities.md).
 
 ## Quick start
 
 ```bash
 cargo run --bin shenron -- scan \
   --input ./tests/fixtures/aws-waf/ \
-  --format aws-waf \
   --rules ./tests/fixtures/rules/
 ```
 
@@ -81,13 +82,18 @@ cargo run --bin shenron -- validate-rules --rules ./rules/
 
 ## Quick production hunt
 
-Prepare public Nuclei, reputation, and ASN intelligence once, then hunt local
-logs with only an input and its format:
+Prepare public Nuclei, reputation, and ASN intelligence once, then hunt a
+safely recognizable local log input without a format option:
 
 ```bash
 shenron-lab setup
-shenron production hunt --input ./logs --format apache
+shenron production hunt --input ./waf-logs
 ```
+
+AWS WAF JSON and vhost-prefixed Apache Combined logs are recognized
+automatically. Because standard nginx and Apache Combined lines are
+structurally identical, select those explicitly with `--format nginx` or
+`--format apache`.
 
 `setup` stores its Nuclei checkout in `$SHENRON_DATA_DIR/nuclei-templates`
 and its reputation/ASN inputs in the same data directory when
