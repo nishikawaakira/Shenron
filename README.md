@@ -68,6 +68,23 @@ Defensive candidates can be built from private hunt findings, replayed locally, 
 
 Log-reading commands default to `--format auto`. Auto mode safely recognizes AWS WAF JSON and vhost-prefixed Apache Combined logs. Standard nginx and Apache Combined logs have the same shape, so Shenron does not guess between them: pass `--format nginx` or `--format apache`. The Apache mode accepts both standard and vhost-prefixed Combined lines; `--format apache-vhost` remains available when a vhost prefix must be required. See [telemetry capabilities](docs/telemetry-capabilities.md).
 
+## Prebuilt binaries
+
+Tagged releases ship `shenron` and `shenron-lab` binaries for Linux
+(`x86_64`/`aarch64`, glibc and static musl), macOS (Intel and Apple Silicon),
+and Windows (`x86_64`) on the [Releases](../../releases) page. Each archive
+carries a `.sha256` checksum and bundles the license and READMEs. To cut a
+release, push a version tag and the `Release` workflow builds and attaches the
+assets:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+Building from source needs a stable Rust toolchain; a release build is
+`cargo build --release --bin shenron --bin shenron-lab`.
+
 ## Quick start
 
 ```bash

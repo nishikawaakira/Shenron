@@ -66,6 +66,23 @@ Shenron の解析本体 `shenron` は、ターゲットへのスキャン、エ�
 - 防御候補（candidate）の作成、履歴での replay、バックエンド互換性の確認
 - COUNT 固定の AWS WAF JSON / Terraform ルール断片、または OSSEC 検知 XML の出力
 
+## ビルド済みバイナリ
+
+タグ付きリリースでは、Linux（`x86_64`/`aarch64`、glibc および静的 musl）、macOS
+（Intel / Apple Silicon）、Windows（`x86_64`）向けの `shenron` と `shenron-lab`
+バイナリを [Releases](../../releases) ページで配布します。各アーカイブには
+`.sha256` チェックサムが付き、ライセンスと README を同梱します。リリースを作成
+するには、バージョンタグを push すると `Release` ワークフローがビルドして成果物を
+添付します:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+ソースからのビルドには stable の Rust ツールチェインが必要です。リリースビルドは
+`cargo build --release --bin shenron --bin shenron-lab` です。
+
 ## クイックスタート
 
 ```bash

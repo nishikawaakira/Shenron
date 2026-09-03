@@ -1,0 +1,60 @@
+name: Release
+
+# Build the shenron and shenron-lab binaries for every supported platform
+# and attach them to the GitHub Release for a pushed version tag. The build
+# itself is offline once dependencies are fetched; it never contacts a target,
+# an AWS API, or any customer system. Cutting a release is manual: push a tag.
+#
+#   git tag v0.1.0
+#   git push origin v0.1.0
+#
+# A pre-release dry run is safe with a suffixed tag such as v0.0.0-rc1.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+          - target: x86_64-apple-darwin
+            os: macos-13
+          - target: aarch64-apple-darwin
+            os: macos-14
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      # Builds both binaries for the target (using cross when the target needs
+      # it), packages them into one archive with the license and READMEs, emits
+      # a SHA-256 checksum, and uploads everything to the tag's release,
+      # creating the release if it does not exist yet.
+      - uses: taiki-e/upload-rust-binary-action@v1
+        with:
+          bin: shenron,shenron-lab
+          target: ${{ matrix.target }}
+          archive: shenron-$tag-$target
+          include: LICENSE,README.md,README.ja.md
+          leading-dir: true
+          checksum: sha256
+          token: ${{ secrets.GITHUB_TOKEN }}
