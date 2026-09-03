@@ -10,7 +10,7 @@ use std::{
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use clap::{Parser, Subcommand, ValueEnum};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use walkdir::WalkDir;
 
 use shenron::{
@@ -39,10 +39,13 @@ use shenron::{
         historical_replay_with_optional_kev as production_historical_replay,
         hunt_with_options as production_hunt, inspect_with_trusted_proxies as production_inspect,
         load_private_concentration, terminal_safe, AblationReport, CountHypothesisReport,
-        HistoricalReplayReport, HuntOptions, HuntTimeRange, HuntTriagePolicy, InspectionReport,
-        SanitizedConcentrationReport, SanitizedHuntReport,
+        FindingSource, HistoricalReplayReport, HuntOptions, HuntTimeRange, HuntTriagePolicy,
+        InspectionReport, SanitizedConcentrationReport, SanitizedHuntReport,
+        SENSITIVE_CONFIG_PROBE_RULE_ID,
     },
-    report::{render_report, ReportArtifacts, ReportLanguage, ReportTriageView},
+    report::{
+        render_report, ReportArtifacts, ReportLanguage, ReportTriageView, SensitiveSuccessFinding,
+    },
     reputation::{load_asn_database, load_reputation_database, AsnDatabase, ReputationDatabase},
     sigma::load_rules,
     triage::{asn_entity_groups, entity_groups, EntityDimension, TriagePolicy},
@@ -1315,7 +1318,68 @@ fn load_report_artifacts(input: &Path) -> Result<ReportArtifacts> {
             .then(|| load_private_concentration(&concentration_path))
             .transpose()?,
         triage: read_optional_json::<ReportTriageView>(&input.join("triage-view.json"))?,
+        sensitive_success_findings: load_sensitive_success_findings(
+            &input.join("private-findings.jsonl"),
+        )?,
     })
+}
+
+#[derive(Deserialize)]
+struct ReportPrivateFinding {
+    #[serde(default)]
+    source: FindingSource,
+    template_id: String,
+    #[serde(default)]
+    response_status: Option<u16>,
+    #[serde(default)]
+    uri_path: Option<String>,
+    #[serde(default)]
+    source_ip: Option<String>,
+    #[serde(default)]
+    timestamp: Option<String>,
+}
+
+/// Stream the private findings artifact and retain only the response-status
+/// review context needed by the private HTML report. A 2xx is not interpreted
+/// as content disclosure, exploitation, or compromise.
+fn load_sensitive_success_findings(path: &Path) -> Result<Vec<SensitiveSuccessFinding>> {
+    if !path.is_file() {
+        return Ok(Vec::new());
+    }
+
+    let file = File::open(path).with_context(|| format!("opening {}", path.display()))?;
+    let mut findings = Vec::new();
+    for (index, line) in BufReader::new(file).lines().enumerate() {
+        let line =
+            line.with_context(|| format!("reading {} line {}", path.display(), index + 1))?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let finding: ReportPrivateFinding = serde_json::from_str(&line)
+            .with_context(|| format!("parsing {} line {}", path.display(), index + 1))?;
+        let Some(response_status @ 200..=299) = finding.response_status else {
+            continue;
+        };
+        if finding.source != FindingSource::Sigma
+            || finding.template_id != SENSITIVE_CONFIG_PROBE_RULE_ID
+        {
+            continue;
+        }
+        findings.push(SensitiveSuccessFinding {
+            uri_path: finding.uri_path,
+            source_ip: finding.source_ip,
+            response_status,
+            timestamp: finding.timestamp,
+        });
+    }
+    findings.sort_by(|left, right| {
+        left.timestamp
+            .cmp(&right.timestamp)
+            .then_with(|| left.uri_path.cmp(&right.uri_path))
+            .then_with(|| left.source_ip.cmp(&right.source_ip))
+            .then_with(|| left.response_status.cmp(&right.response_status))
+    });
+    Ok(findings)
 }
 
 fn read_optional_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<Option<T>> {
@@ -1586,6 +1650,20 @@ fn print_hunt(report: &SanitizedHuntReport, sanitized_path: &Path) {
         metrics.sigma_rule_matches,
         metrics.distinct_sigma_rules,
     );
+    if metrics.sensitive_config_probe_matches != 0 {
+        println!(
+            "\nSensitive file/config probe review context:\n  Matching requests:         {}\n  2xx responses:             {}\n  Status unavailable:        {}",
+            metrics.sensitive_config_probe_matches,
+            metrics.sensitive_config_probe_success_responses,
+            metrics.sensitive_config_probe_status_unavailable,
+        );
+        if metrics.sensitive_config_probe_success_responses != 0 {
+            println!(
+                "Sensitive file/config probes returning a 2xx (success) response: {} — highest review priority. A 2xx is the response status only, not confirmation that file contents were disclosed or that exploitation or compromise occurred.",
+                metrics.sensitive_config_probe_success_responses,
+            );
+        }
+    }
     if let Some(concentration) = &metrics.request_concentration {
         print_request_concentration_summary(concentration, "request-concentration.json");
     }

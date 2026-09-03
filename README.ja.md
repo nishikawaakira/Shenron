@@ -114,6 +114,8 @@ shenron hunt --input ./waf-logs
 
 `hunt` は CVE 主体の Nuclei パスに加えて、汎用的な **Sigma** 検出パスを**既定で ON**にして同一ストリームで実行します。CVE テンプレートに対応しない汎用 TTP（例：`.env` などの機密ファイル探索）を拾えます。ルールは `--rules <DIR>` か準備済みの `<data-dir>/sigma-rules` から読み込み、`--no-sigma` で無効化できます。`shenron-lab setup` が Shenron 対応の同梱パックをそこへ配置するので、追加設定なしで動きます。さらに `setup --sigma-source <git-url>` で外部ソース（例：SigmaHQ）の `rules/web` も取得できます。Sigma の finding は `source` フィールドを持ち、CVE 指標とは別に集計され、`candidate build` には入りません（候補は CVE / Nuclei-IR 主体のまま）。詳細は [Sigma detection inside hunt](docs/sigma-in-hunt.md) を参照。
 
+同梱の秘密・設定ファイル探索ルールでは、記録された応答が 2xx の一致を人手確認の最優先として強調し、private HTML レポートに証跡を一覧表示します。他の一致を除外するものではなく、2xx はファイル内容の開示・攻撃・悪用・侵害を証明しません。ステータスが取得できない場合は確認不可のままで、成功扱いにはしません。
+
 `hunt` は、機微なリクエスト値を含む **private findings** と、それを含まない **sanitized（無害化済み）レポート**を分離して出力します。AWS WAF の検出結果は `explain` で `BLOCK` / `not-blocked` を絞り込めます。
 
 ```bash

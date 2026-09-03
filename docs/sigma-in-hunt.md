@@ -81,6 +81,22 @@ Two fields are deliberately **not** borrowed from the Nuclei model:
   the low-confidence display filter treats Sigma matches by the same
   request-specificity/path-distinctiveness rule as Nuclei matches.
 
+## Highest-priority review for 2xx sensitive/config-file probes
+
+For the bundled `shenron-secret-config-file-probe` rule, `hunt` records the
+observed HTTP response status in each private finding. The sanitized metrics
+separately count all matching requests, those with a 2xx response, and those
+whose telemetry did not provide a status. A missing status is always reported
+as unavailable and is never treated as 2xx. No match is removed by this label.
+
+When at least one matching request received a 2xx response, the CLI marks that
+count as the highest priority for human review. A generated private HTML report
+also lists the matching request path, observed connection peer, status, and
+timestamp in a prominent private section. A 2xx is only the recorded response
+outcome: it does not confirm that file contents were disclosed or that an
+attack, exploitation, or compromise occurred. The observed peer may be a CDN,
+load balancer, NAT, or proxy and is not attacker attribution.
+
 ## Candidate eligibility
 
 Sigma findings do **not** feed `candidate build`. Defensive candidates stay

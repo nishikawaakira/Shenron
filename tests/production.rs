@@ -1294,6 +1294,49 @@ fn hunt_writes_and_rerenders_private_offline_html() {
 }
 
 #[test]
+fn report_rerender_streams_only_sensitive_sigma_findings_with_2xx_status() {
+    let directory = tempdir().unwrap();
+    let run_dir = directory.path().join("run");
+    fs::create_dir(&run_dir).unwrap();
+    fs::write(
+        run_dir.join("private-findings.jsonl"),
+        concat!(
+            r#"{"source":"sigma","template_id":"shenron-secret-config-file-probe","response_status":200,"uri_path":"/.env?<script>","source_ip":"198.51.100.20","timestamp":"2026-09-04T00:00:00Z"}"#,
+            "\n",
+            r#"{"source":"sigma","template_id":"shenron-secret-config-file-probe","response_status":404,"uri_path":"/.git/config-404","source_ip":"198.51.100.21","timestamp":"2026-09-04T00:01:00Z"}"#,
+            "\n",
+            r#"{"source":"nuclei","template_id":"shenron-secret-config-file-probe","response_status":200,"uri_path":"/not-sigma","source_ip":"198.51.100.22","timestamp":"2026-09-04T00:02:00Z"}"#,
+            "\n",
+        ),
+    )
+    .unwrap();
+
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "hunt",
+            "--results-dir",
+            run_dir.to_str().unwrap(),
+            "--report-lang",
+            "ja",
+        ])
+        .assert()
+        .success();
+
+    let html = fs::read_to_string(run_dir.join("report.html")).unwrap();
+    assert!(html.contains("成功応答を返した秘密・設定ファイルアクセス"));
+    assert!(html.contains("/.env?&lt;script&gt;"));
+    assert!(html.contains("198.51.100.20"));
+    assert!(!html.contains("/.git/config-404"));
+    assert!(!html.contains("198.51.100.21"));
+    assert!(!html.contains("/not-sigma"));
+    assert!(!html.contains("198.51.100.22"));
+    for forbidden in ["http://", "https://", "src=", "<script src"] {
+        assert!(!html.contains(forbidden));
+    }
+}
+
+#[test]
 fn hunt_requires_exactly_one_input_mode_and_rejects_hunt_options_for_results() {
     Command::cargo_bin("shenron")
         .unwrap()
@@ -2164,6 +2207,103 @@ fn hunt_runs_the_sigma_pass_and_keeps_it_distinct_from_cve_findings() {
         stats.excluded_sigma_findings,
         report.metrics.sigma_rule_matches
     );
+}
+
+#[test]
+fn hunt_counts_sensitive_config_probe_response_outcomes_without_inferring_success() {
+    let directory = tempdir().unwrap();
+    let input = directory.path().join("sensitive-probes.jsonl");
+    fs::write(
+        &input,
+        concat!(
+            r#"{"timestamp":1788480000000,"action":"ALLOW","responseCodeSent":200,"httpRequest":{"clientIp":"198.51.100.10","headers":[],"uri":"/.env","args":"","httpMethod":"GET","requestId":"sensitive-200"}}"#,
+            "\n",
+            r#"{"timestamp":1788480060000,"action":"ALLOW","responseCodeSent":404,"httpRequest":{"clientIp":"198.51.100.11","headers":[],"uri":"/.env","args":"","httpMethod":"GET","requestId":"sensitive-404"}}"#,
+            "\n",
+            r#"{"timestamp":1788480120000,"action":"ALLOW","httpRequest":{"clientIp":"198.51.100.12","headers":[],"uri":"/.env","args":"","httpMethod":"GET","requestId":"sensitive-unavailable"}}"#,
+            "\n",
+        ),
+    )
+    .unwrap();
+    let ruleset = shenron::sigma::load_rules(Path::new("sigma-rules"));
+    assert!(ruleset
+        .supported
+        .iter()
+        .any(|rule| rule.id == "shenron-secret-config-file-probe"));
+
+    let output = directory.path().join("out");
+    let report = hunt_with_options(
+        &input,
+        Path::new("tests/fixtures/nuclei"),
+        Path::new("tests/fixtures/production/nuclei-report.json"),
+        Some(Path::new("tests/fixtures/production/kev-report.json")),
+        &output,
+        TelemetryProfile::AwsWaf,
+        HuntOptions {
+            sigma_ruleset: Some(ruleset),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(report.metrics.sensitive_config_probe_matches, 3);
+    assert_eq!(report.metrics.sensitive_config_probe_success_responses, 1);
+    assert_eq!(report.metrics.sensitive_config_probe_status_unavailable, 1);
+
+    let private = fs::read_to_string(output.join("private-findings.jsonl")).unwrap();
+    let sensitive = private
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .filter(|finding| {
+            finding["source"] == "sigma"
+                && finding["template_id"] == "shenron-secret-config-file-probe"
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(sensitive.len(), 3);
+    assert!(sensitive
+        .iter()
+        .any(|finding| finding["response_status"] == 200));
+    assert!(sensitive
+        .iter()
+        .any(|finding| finding["response_status"] == 404));
+    assert!(sensitive
+        .iter()
+        .any(|finding| finding["response_status"].is_null()));
+
+    let sanitized = serde_json::to_string(&report).unwrap();
+    assert!(sanitized.contains("\"sensitive_config_probe_matches\":3"));
+    assert!(sanitized.contains("\"sensitive_config_probe_success_responses\":1"));
+    assert!(sanitized.contains("\"sensitive_config_probe_status_unavailable\":1"));
+    assert!(!sanitized.contains("/.env"));
+    assert!(!sanitized.contains("198.51.100.10"));
+
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "hunt",
+            "--input",
+            input.to_str().unwrap(),
+            "--format",
+            "aws-waf",
+            "--nuclei-templates",
+            "tests/fixtures/nuclei",
+            "--nuclei-report",
+            "tests/fixtures/production/nuclei-report.json",
+            "--kev-report",
+            "tests/fixtures/production/kev-report.json",
+            "--rules",
+            "sigma-rules",
+            "--output",
+            directory.path().join("cli-out").to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(contains("Sensitive file/config probe review context:"))
+        .stdout(contains("2xx responses:"))
+        .stdout(contains("Status unavailable:"))
+        .stdout(contains("highest review priority"))
+        .stdout(contains(
+            "not confirmation that file contents were disclosed",
+        ));
 }
 
 #[test]

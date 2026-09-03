@@ -63,6 +63,15 @@ The series contains aggregate counts only and is stored only in the private
 response classes are context, not a determination of attack, exploitation, or
 compromise. Other or unavailable status values are not plotted.
 
+For hunt runs, a prominent section appears immediately after the aggregate
+summary when the bundled `shenron-secret-config-file-probe` Sigma rule matched
+a request whose recorded response status was 2xx. It lists the private request
+path, observed connection peer, status, and timestamp, subject to the report
+limit. Missing statuses are not treated as success responses. This is a
+highest-priority human-review label only: 2xx does not confirm file-content
+disclosure, attack, exploitation, or compromise, and an observed peer is not
+attacker attribution.
+
 Timeline columns contain visible CSS-only hover readouts showing the UTC minute
 and request count; native SVG `<title>` elements remain as a fallback. Hovering
 a bar likewise exposes the full path or peer address with its count. These

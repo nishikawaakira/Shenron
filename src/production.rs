@@ -30,6 +30,10 @@ use crate::{
     waf::{maybe_gzip_reader, WafLines},
 };
 
+/// Bundled Sigma rule whose matches receive response-status review context.
+/// This remains a request-pattern label, never an exploitation determination.
+pub const SENSITIVE_CONFIG_PROBE_RULE_ID: &str = "shenron-secret-config-file-probe";
+
 #[derive(Debug, Default, Serialize)]
 pub struct FieldAvailability {
     pub client_ip: usize,
@@ -113,6 +117,15 @@ pub struct HuntMetrics {
     pub sigma_rule_matches: usize,
     /// Distinct Sigma rules that matched at least one event.
     pub distinct_sigma_rules: usize,
+    /// Distinct requests matching the sensitive/config-file probe rule. These
+    /// are retained regardless of response status and do not assert attack.
+    pub sensitive_config_probe_matches: usize,
+    /// Matching requests whose observed response status was in 200..=299.
+    /// This is a review-priority signal, not evidence of content disclosure.
+    pub sensitive_config_probe_success_responses: usize,
+    /// Matching requests whose telemetry did not expose a response status.
+    /// Missing status is never treated as a success response.
+    pub sensitive_config_probe_status_unavailable: usize,
     /// Aggregate request-volume distribution only. This is separate from CVE
     /// metrics and does not determine attack, abuse, or compromise.
     pub request_concentration: Option<RequestConcentrationSummary>,
@@ -524,6 +537,10 @@ struct PrivateFinding {
     /// Sigma rule level, for `source = sigma` findings only.
     #[serde(default)]
     sigma_level: Option<String>,
+    /// Observed HTTP response status when the telemetry source records it.
+    /// Missing status remains `None` and is never inferred.
+    #[serde(default)]
+    response_status: Option<u16>,
 }
 
 /// A terminal-safe view of private hunt evidence. The CLI keeps private
@@ -812,6 +829,17 @@ pub fn hunt_with_options(
             }
             if !sigma_matches.is_empty() {
                 metrics.sigma_matched_requests += 1;
+            }
+            if sigma_matches
+                .iter()
+                .any(|rule| rule.id == SENSITIVE_CONFIG_PROBE_RULE_ID)
+            {
+                metrics.sensitive_config_probe_matches += 1;
+                match event.status {
+                    Some(200..=299) => metrics.sensitive_config_probe_success_responses += 1,
+                    None => metrics.sensitive_config_probe_status_unavailable += 1,
+                    Some(_) => {}
+                }
             }
             for rule in &sigma_matches {
                 serde_json::to_writer(&mut private, &sigma_finding(rule, &event))?;
@@ -1786,6 +1814,7 @@ fn private_finding(detection: &ValidatedNucleiDetection, event: &WebEvent) -> Pr
         log_source: Some(event.log_source),
         rule_title: None,
         sigma_level: None,
+        response_status: event.status,
     }
 }
 
@@ -1819,6 +1848,7 @@ fn sigma_finding(rule: &crate::sigma::CompiledRule, event: &WebEvent) -> Private
         log_source: Some(event.log_source),
         rule_title: Some(rule.title.clone()),
         sigma_level: rule.level.clone(),
+        response_status: event.status,
     }
 }
 

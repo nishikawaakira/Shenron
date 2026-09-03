@@ -141,6 +141,12 @@ additionally fetch an external source's `rules/web` (e.g. SigmaHQ). Sigma findin
 carry a `source` field, are counted separately from the CVE metrics, and never
 feed `candidate build`. See [Sigma detection inside hunt](docs/sigma-in-hunt.md).
 
+For the bundled sensitive/config-file probe rule, `hunt` highlights recorded
+2xx responses as the highest priority for human review and lists their private
+evidence in the HTML report. This does not filter other matches or confirm
+content disclosure, attack, exploitation, or compromise; missing status stays
+unavailable rather than being treated as success.
+
 ## Sigma and log limits
 
 See [supported aliases and syntax](docs/sigma-support.md). Unsupported rules are reported and skipped; nothing is matched with silently weakened logic. This MVP expects newline-delimited AWS WAF JSON records, not a complete JSON array or Firehose envelope.

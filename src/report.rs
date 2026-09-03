@@ -71,6 +71,13 @@ struct Labels {
     distinct_paths: &'static str,
     distinct_peers: &'static str,
     observed_cves: &'static str,
+    sensitive_success_heading: &'static str,
+    sensitive_success_note: &'static str,
+    sensitive_path: &'static str,
+    sensitive_observed_peer: &'static str,
+    sensitive_response_status: &'static str,
+    sensitive_timestamp: &'static str,
+    sensitive_records: &'static str,
     cve_list_heading: &'static str,
     cve_list_note: &'static str,
     cve_id: &'static str,
@@ -176,6 +183,13 @@ const EN_LABELS: Labels = Labels {
     distinct_paths: "Distinct paths",
     distinct_peers: "Distinct observed peers",
     observed_cves: "Observed CVEs",
+    sensitive_success_heading: "Sensitive file/config access with a success response",
+    sensitive_success_note: "A 2xx is the response status only; it does not confirm that file contents were disclosed or that attack, exploitation, or compromise occurred. Review these records with highest priority. An observed peer may be a CDN, load balancer, NAT, or proxy and is not attacker attribution.",
+    sensitive_path: "Request path",
+    sensitive_observed_peer: "Observed connection peer",
+    sensitive_response_status: "Response status",
+    sensitive_timestamp: "Timestamp",
+    sensitive_records: "sensitive file/config 2xx records",
     cve_list_heading: "Observed CVEs",
     cve_list_note: "Nuclei template IDs are public CTI metadata. Template IDs, KEV membership, and detectability are catalog facts, not an exploitation, compromise, or attacker-identity determination. Request counts are observed matcher volume, not proof of exploitation.",
     cve_id: "CVE ID",
@@ -281,6 +295,13 @@ const JA_LABELS: Labels = Labels {
     distinct_paths: "異なるパス数",
     distinct_peers: "異なる観測接続ピア数",
     observed_cves: "観測された CVE 数",
+    sensitive_success_heading: "成功応答を返した秘密・設定ファイルアクセス",
+    sensitive_success_note: "2xx は応答ステータスのみを示し、ファイル内容の開示や攻撃・悪用・侵害を断定するものではありません。最優先で人手確認してください。観測接続ピアは CDN・ロードバランサ・NAT・プロキシの場合があり、攻撃者帰属ではありません。",
+    sensitive_path: "リクエストパス",
+    sensitive_observed_peer: "観測接続ピア",
+    sensitive_response_status: "応答ステータス",
+    sensitive_timestamp: "時刻",
+    sensitive_records: "秘密・設定ファイルの 2xx レコード",
     cve_list_heading: "観測された CVE",
     cve_list_note: "Nuclei テンプレート ID は公開 CTI メタデータです。テンプレート ID・KEV 該否・detectability はカタログ上の情報であり、悪用・侵害・攻撃者特定の判定ではありません。リクエスト件数は観測されたマッチ量であり、悪用の証明ではありません。",
     cve_id: "CVE ID",
@@ -378,6 +399,20 @@ pub struct ReportArtifacts {
     pub manifest: Option<Value>,
     pub concentration: Option<PrivateRequestConcentrationReport>,
     pub triage: Option<ReportTriageView>,
+    /// Private 2xx findings for the bundled sensitive/config-file Sigma rule.
+    /// These are selected while streaming the JSONL artifact and remain review
+    /// context rather than evidence of disclosure or compromise.
+    pub sensitive_success_findings: Vec<SensitiveSuccessFinding>,
+}
+
+/// Minimal private view retained for the highest-priority response-status
+/// review section. Every string is escaped by the renderer.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SensitiveSuccessFinding {
+    pub uri_path: Option<String>,
+    pub source_ip: Option<String>,
+    pub response_status: u16,
+    pub timestamp: Option<String>,
 }
 
 /// Deserialization view of `triage-view.json`. It remains separate from the
@@ -535,7 +570,7 @@ pub fn render_report(
 
     let mut html = format!(
         "<!doctype html><html lang=\"{}\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>{}</title><style>\
-        :root{{color-scheme:dark;--bg:#0b1020;--panel:#151d31;--muted:#a8b3c7;--text:#f4f7fb;--accent:#66d9c2;--warn:#ffcf66;--danger:#ff6b78;--line:#33415f}}*{{box-sizing:border-box}}body{{margin:0;overflow-x:hidden;background:var(--bg);color:var(--text);font:14px/1.5 system-ui,sans-serif}}main{{max-width:1240px;margin:auto;padding:24px;min-width:0}}a{{color:var(--accent)}}.private{{background:#6b1320;border:2px solid var(--danger);padding:16px;font-size:18px;font-weight:800;overflow-wrap:anywhere;word-break:break-word}}.note,.unavailable,.cap{{color:var(--muted)}}.note{{border-left:3px solid var(--warn);padding-left:12px}}.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;min-width:0}}.card,section{{background:var(--panel);border:1px solid var(--line);border-radius:10px;min-width:0}}.card{{padding:14px;overflow:hidden}}.card span,.card b{{overflow-wrap:anywhere;word-break:break-word}}.card b{{display:block;font-size:24px}}.badge{{display:inline-block;padding:1px 7px;border:1px solid var(--warn);border-radius:999px;color:var(--warn);font-weight:700}}section{{margin-top:18px;padding:18px;overflow:hidden}}h1,h2,h3{{margin-top:0;overflow-wrap:anywhere;word-break:break-word}}.chart-scroll,.table-scroll{{max-width:100%;overflow:auto;max-height:70vh}}svg{{width:100%;height:auto;background:#10172a;border-radius:8px}}.chart-scroll svg{{display:block;min-width:1000px}}.bar{{fill:var(--accent)}}.axis{{stroke:var(--line);stroke-width:1}}.timeline{{fill:none;stroke:var(--accent);stroke-width:3}}.timeline-area{{fill:#66d9c226;stroke:none}}.timeline-dot{{fill:var(--accent)}}.status-line{{fill:none;stroke-width:2.5}}.status-line.s1xx{{stroke:#c084fc}}.status-line.s2xx{{stroke:#4ade80}}.status-line.s3xx{{stroke:#38bdf8}}.status-line.s4xx{{stroke:#facc15}}.status-line.s5xx{{stroke:#fb7185}}.status-key.s1xx{{fill:#c084fc}}.status-key.s2xx{{fill:#4ade80}}.status-key.s3xx{{fill:#38bdf8}}.status-key.s4xx{{fill:#facc15}}.status-key.s5xx{{fill:#fb7185}}.col{{cursor:crosshair}}.hit{{fill:transparent;pointer-events:all}}.col:hover .hit{{fill:#66d9c22e}}.tip{{visibility:hidden;pointer-events:none}}.col:hover .tip{{visibility:visible}}.tip-bg{{fill:#070b14;stroke:var(--accent);stroke-width:1}}.tip-label{{fill:#fff;font-weight:700}}svg text{{fill:var(--text);font:12px system-ui,sans-serif}}table{{width:100%;min-width:1000px;border-collapse:collapse}}th,td{{padding:9px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top;white-space:nowrap}}.score{{width:120px;background:#26334f;border-radius:9px;overflow:hidden}}.score span{{display:block;height:10px;background:var(--accent)}}code{{color:#b9f4e8;overflow-wrap:anywhere;word-break:break-word}}.small{{font-size:12px;color:var(--muted)}}</style></head><body><main>",
+        :root{{color-scheme:dark;--bg:#0b1020;--panel:#151d31;--muted:#a8b3c7;--text:#f4f7fb;--accent:#66d9c2;--warn:#ffcf66;--danger:#ff6b78;--line:#33415f}}*{{box-sizing:border-box}}body{{margin:0;overflow-x:hidden;background:var(--bg);color:var(--text);font:14px/1.5 system-ui,sans-serif}}main{{max-width:1240px;margin:auto;padding:24px;min-width:0}}a{{color:var(--accent)}}.private{{background:#6b1320;border:2px solid var(--danger);padding:16px;font-size:18px;font-weight:800;overflow-wrap:anywhere;word-break:break-word}}.note,.unavailable,.cap{{color:var(--muted)}}.note{{border-left:3px solid var(--warn);padding-left:12px}}.priority{{border:2px solid var(--danger);box-shadow:0 0 0 2px #ff6b7826}}.priority h2{{color:#ff9aa4}}.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;min-width:0}}.card,section{{background:var(--panel);border:1px solid var(--line);border-radius:10px;min-width:0}}.card{{padding:14px;overflow:hidden}}.card span,.card b{{overflow-wrap:anywhere;word-break:break-word}}.card b{{display:block;font-size:24px}}.badge{{display:inline-block;padding:1px 7px;border:1px solid var(--warn);border-radius:999px;color:var(--warn);font-weight:700}}section{{margin-top:18px;padding:18px;overflow:hidden}}h1,h2,h3{{margin-top:0;overflow-wrap:anywhere;word-break:break-word}}.chart-scroll,.table-scroll{{max-width:100%;overflow:auto;max-height:70vh}}svg{{width:100%;height:auto;background:#10172a;border-radius:8px}}.chart-scroll svg{{display:block;min-width:1000px}}.bar{{fill:var(--accent)}}.axis{{stroke:var(--line);stroke-width:1}}.timeline{{fill:none;stroke:var(--accent);stroke-width:3}}.timeline-area{{fill:#66d9c226;stroke:none}}.timeline-dot{{fill:var(--accent)}}.status-line{{fill:none;stroke-width:2.5}}.status-line.s1xx{{stroke:#c084fc}}.status-line.s2xx{{stroke:#4ade80}}.status-line.s3xx{{stroke:#38bdf8}}.status-line.s4xx{{stroke:#facc15}}.status-line.s5xx{{stroke:#fb7185}}.status-key.s1xx{{fill:#c084fc}}.status-key.s2xx{{fill:#4ade80}}.status-key.s3xx{{fill:#38bdf8}}.status-key.s4xx{{fill:#facc15}}.status-key.s5xx{{fill:#fb7185}}.col{{cursor:crosshair}}.hit{{fill:transparent;pointer-events:all}}.col:hover .hit{{fill:#66d9c22e}}.tip{{visibility:hidden;pointer-events:none}}.col:hover .tip{{visibility:visible}}.tip-bg{{fill:#070b14;stroke:var(--accent);stroke-width:1}}.tip-label{{fill:#fff;font-weight:700}}svg text{{fill:var(--text);font:12px system-ui,sans-serif}}table{{width:100%;min-width:1000px;border-collapse:collapse}}th,td{{padding:9px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top;white-space:nowrap}}.score{{width:120px;background:#26334f;border-radius:9px;overflow:hidden}}.score span{{display:block;height:10px;background:var(--accent)}}code{{color:#b9f4e8;overflow-wrap:anywhere;word-break:break-word}}.small{{font-size:12px;color:var(--muted)}}</style></head><body><main>",
         language.html_lang(),
         html_escape(labels.title),
     );
@@ -564,6 +599,7 @@ pub fn render_report(
     ));
 
     render_summary(&mut html, artifacts, language);
+    render_sensitive_success_findings(&mut html, artifacts, limit, language);
     render_concentration(
         &mut html,
         artifacts.concentration.as_ref(),
@@ -662,6 +698,51 @@ fn render_summary(html: &mut String, artifacts: &ReportArtifacts, language: Repo
             group_thousands(tiers.get("high").copied().unwrap_or_default() as u64),
         ));
     }
+    html.push_str("</section>");
+}
+
+fn render_sensitive_success_findings(
+    html: &mut String,
+    artifacts: &ReportArtifacts,
+    limit: usize,
+    language: ReportLanguage,
+) {
+    let findings = &artifacts.sensitive_success_findings;
+    if findings.is_empty() {
+        return;
+    }
+
+    let labels = language.labels();
+    let visible = limited(findings, limit);
+    html.push_str(&format!(
+        "<section class=\"priority\"><h2>{}</h2><p class=\"note\">{}</p><div class=\"table-scroll\"><table><thead><tr><th>{}</th><th>{}</th><th>{}</th><th>{}</th></tr></thead><tbody>",
+        html_escape(labels.sensitive_success_heading),
+        html_escape(labels.sensitive_success_note),
+        html_escape(labels.sensitive_path),
+        html_escape(labels.sensitive_observed_peer),
+        html_escape(labels.sensitive_response_status),
+        html_escape(labels.sensitive_timestamp),
+    ));
+    for finding in visible {
+        let path = finding.uri_path.as_deref().unwrap_or(labels.unavailable);
+        let source_ip = finding.source_ip.as_deref().unwrap_or(labels.unavailable);
+        let timestamp = finding.timestamp.as_deref().unwrap_or(labels.unavailable);
+        html.push_str(&format!(
+            "<tr><td><code>{}</code></td><td><code>{}</code></td><td>{}</td><td>{}</td></tr>",
+            html_escape(path),
+            html_escape(source_ip),
+            group_thousands(u64::from(finding.response_status)),
+            html_escape(timestamp),
+        ));
+    }
+    html.push_str("</tbody></table></div>");
+    omitted(
+        html,
+        findings.len(),
+        visible.len(),
+        labels.sensitive_records,
+        language,
+    );
     html.push_str("</section>");
 }
 
@@ -1878,6 +1959,7 @@ mod tests {
                     ..ReportTriageEntity::default()
                 }],
             }),
+            sensitive_success_findings: Vec::new(),
         };
         let html = render_report(&artifacts, 20, 240, ReportLanguage::En);
         for section in [
@@ -2025,6 +2107,43 @@ mod tests {
     }
 
     #[test]
+    fn sensitive_success_findings_render_as_an_escaped_priority_review_section() {
+        let artifacts = ReportArtifacts {
+            sensitive_success_findings: vec![SensitiveSuccessFinding {
+                uri_path: Some("/.env?<script>alert(1)</script>".to_owned()),
+                source_ip: Some("198.51.100.1<&".to_owned()),
+                response_status: 200,
+                timestamp: Some("2026-09-04T00:00:00+00:00".to_owned()),
+            }],
+            ..ReportArtifacts::default()
+        };
+        let html = render_report(&artifacts, 20, 240, ReportLanguage::En);
+        for expected in [
+            "Sensitive file/config access with a success response",
+            "/.env?&lt;script&gt;alert(1)&lt;/script&gt;",
+            "198.51.100.1&lt;&amp;",
+            ">200<",
+            "Review these records with highest priority",
+            "does not confirm that file contents were disclosed",
+        ] {
+            assert!(html.contains(expected), "missing {expected}");
+        }
+        assert!(!html.contains("<script>alert(1)</script>"));
+        for forbidden in ["http://", "https://", "src=", "<script src"] {
+            assert!(!html.contains(forbidden));
+        }
+
+        let japanese = render_report(&artifacts, 20, 240, ReportLanguage::Ja);
+        assert!(japanese.contains("成功応答を返した秘密・設定ファイルアクセス"));
+        assert!(
+            japanese.contains("ファイル内容の開示や攻撃・悪用・侵害を断定するものではありません")
+        );
+
+        let empty = render_report(&ReportArtifacts::default(), 20, 240, ReportLanguage::En);
+        assert!(!empty.contains("Sensitive file/config access with a success response"));
+    }
+
+    #[test]
     fn downsampling_is_bounded_and_sums_equal_width_minute_spans() {
         let series = (0..10)
             .map(|minute_epoch| MinuteRequestCount {
@@ -2129,6 +2248,7 @@ mod tests {
             manifest: None,
             concentration: Some(concentration),
             triage: None,
+            sensitive_success_findings: Vec::new(),
         };
         let html = render_report(&artifacts, 20, 240, ReportLanguage::En);
         assert!(!html.contains("Requests per minute by HTTP status class"));
@@ -2143,6 +2263,7 @@ mod tests {
             manifest: None,
             concentration: Some(unavailable_only),
             triage: None,
+            sensitive_success_findings: Vec::new(),
         };
         let html = render_report(&artifacts, 20, 240, ReportLanguage::En);
         assert!(!html.contains("Requests per minute by HTTP status class"));
@@ -2176,6 +2297,7 @@ mod tests {
             manifest: None,
             concentration: Some(synthetic_concentration("/a")),
             triage: None,
+            sensitive_success_findings: Vec::new(),
         };
         let html = render_report(&artifacts, 20, 240, ReportLanguage::En);
         // Time range is derived from the observed minute series (epoch minutes 0..1).
@@ -2259,6 +2381,7 @@ mod tests {
             manifest: None,
             concentration: Some(concentration),
             triage: None,
+            sensitive_success_findings: Vec::new(),
         };
         let html = render_report(&artifacts, 20, 240, ReportLanguage::En);
         assert!(html.contains("Focused source IP"));
@@ -2290,6 +2413,7 @@ mod tests {
             manifest: None,
             concentration: Some(concentration),
             triage: None,
+            sensitive_success_findings: Vec::new(),
         };
         let html = render_report(&artifacts, 20, 240, ReportLanguage::En);
         assert!(html.contains("Focused source IP"));

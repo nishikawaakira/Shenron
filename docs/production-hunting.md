@@ -88,6 +88,16 @@ cargo run --bin shenron -- hunt \
 
 Alongside the CVE-anchored Nuclei pass, `hunt` runs a generic **Sigma** detection pass **on by default**, in the same single stream over the corpus. It loads supported Sigma rules from `--rules <DIR>`, or from the prepared `<data-dir>/sigma-rules` when present; a missing rules directory is not an error (the hunt continues with Nuclei only), and `--no-sigma` disables the pass. Sigma covers generic request-pattern TTPs — for example secret-file path enumeration (`.env`, `/.aws/credentials`, `/.git/config`) — that map to no CVE template and are otherwise invisible to a CVE-only hunt. Sigma findings are kept fully distinct from the CVE track: every finding carries a `source` (`nuclei` or `sigma`), the sanitized report counts `sigma_matched_requests` (distinct requests with a Sigma detection), `sigma_rule_matches` (rule matches, which can exceed the request count because one request can match several rules), `distinct_sigma_rules`, and `sigma_rules_evaluated` separately from the CVE metrics, and Sigma findings never feed `candidate build` (candidates stay CVE- and Nuclei-IR-anchored). See [Sigma detection inside hunt](sigma-in-hunt.md).
 
+For the bundled `shenron-secret-config-file-probe` rule, `hunt` additionally
+labels matching requests by their observed response outcome. Sanitized metrics
+contain only aggregate counts for all matches, 2xx responses, and unavailable
+statuses; paths and peer IPs remain private. A 2xx match is highlighted as the
+highest priority for human review in stdout and the private HTML report, but it
+is not a hard filter and all matches remain stored and counted. A 2xx is only a
+response status, not confirmation of file-content disclosure, attack,
+exploitation, or compromise. An absent status remains unavailable and is never
+treated as success.
+
 Every hunt also measures [request concentration](request-concentration.md) in the
 same stream, independently of Nuclei and Sigma. The sanitized report receives
 counts and ratios only, while `request-concentration.json` is a private artifact
