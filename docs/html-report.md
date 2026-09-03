@@ -73,9 +73,11 @@ disclosure, attack, exploitation, or compromise, and an observed peer is not
 attacker attribution.
 
 Timeline columns contain visible CSS-only hover readouts showing the UTC minute
-and request count; native SVG `<title>` elements remain as a fallback. Hovering
-a bar likewise exposes the full path or peer address with its count. These
-interactions use no JavaScript. Long provenance labels and values wrap inside
+and request count. The HTTP status-class timeline uses the same interaction and
+shows the UTC minute plus the 1xx, 2xx, 3xx, 4xx, and 5xx counts. Native SVG
+`<title>` elements remain as a fallback. Hovering a bar likewise exposes the
+full path or peer address with its count. These interactions use no JavaScript.
+Long provenance labels and values wrap inside
 their cards. Charts and triage tables are placed in independent horizontal and
 bounded vertical scroll containers, so wide labels and high row counts do not
 force page-level horizontal scrolling or become unreachable. When a run
@@ -103,10 +105,14 @@ or one of the source artifacts it reads. In raw `--input` mode the report also
 remains separate from the raw-input tree.
 
 The document contains inline CSS and server-side generated inline SVG only. It
-has no JavaScript, external CSS, fonts, images, CDN links, fetches, or other
-network references, so opening it performs no external communication. Every
-artifact-derived string is escaped for HTML/SVG (`&`, `<`, `>`, quotes, and
-apostrophes) before rendering to prevent log-derived markup injection.
+has no JavaScript, external CSS, fonts, images, CDN resources, or fetches, so
+opening it performs no external communication. Nuclei template IDs in the
+observed-CVE table are ordinary links to public GitHub code searches. They are
+contacted only when an analyst clicks a link, and the query contains only the
+public template ID, never a private request, path, IP address, or local file
+location. Every artifact-derived string is escaped for HTML/SVG (`&`, `<`, `>`,
+quotes, and apostrophes) before rendering to prevent log-derived markup
+injection.
 
 The visualizations state observed counts and concentration only. They do not
 determine a denial-of-service attempt, attack, exploitation, abuse, compromise,

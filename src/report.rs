@@ -191,7 +191,7 @@ const EN_LABELS: Labels = Labels {
     sensitive_timestamp: "Timestamp",
     sensitive_records: "sensitive file/config 2xx records",
     cve_list_heading: "Observed CVEs",
-    cve_list_note: "Nuclei template IDs are public CTI metadata. Template IDs, KEV membership, and detectability are catalog facts, not an exploitation, compromise, or attacker-identity determination. Request counts are observed matcher volume, not proof of exploitation.",
+    cve_list_note: "Nuclei template IDs are public CTI metadata. Each template ID links to a public GitHub code search. Opening this report causes no external communication; following a link sends only the public template ID to GitHub, never private values. Template IDs, KEV membership, and detectability are catalog facts, not an exploitation, compromise, or attacker-identity determination. Request counts are observed matcher volume, not proof of exploitation.",
     cve_id: "CVE ID",
     cve_templates: "Templates",
     kev_membership: "CISA KEV",
@@ -303,7 +303,7 @@ const JA_LABELS: Labels = Labels {
     sensitive_timestamp: "時刻",
     sensitive_records: "秘密・設定ファイルの 2xx レコード",
     cve_list_heading: "観測された CVE",
-    cve_list_note: "Nuclei テンプレート ID は公開 CTI メタデータです。テンプレート ID・KEV 該否・detectability はカタログ上の情報であり、悪用・侵害・攻撃者特定の判定ではありません。リクエスト件数は観測されたマッチ量であり、悪用の証明ではありません。",
+    cve_list_note: "Nuclei テンプレート ID は公開 CTI メタデータで、公開 GitHub コード検索へのリンクです。このレポートを開くだけでは外部通信は発生せず、リンクを辿った場合も公開テンプレート ID だけが GitHub に送られ、private 値は送信されません。テンプレート ID・KEV 該否・detectability はカタログ上の情報であり、悪用・侵害・攻撃者特定の判定ではありません。リクエスト件数は観測されたマッチ量であり、悪用の証明ではありません。",
     cve_id: "CVE ID",
     cve_templates: "テンプレート",
     kev_membership: "CISA KEV",
@@ -1168,13 +1168,36 @@ fn cve_template_ids(finding: &Value) -> String {
         .into_iter()
         .flatten()
         .filter_map(Value::as_str)
-        .map(html_escape)
+        .map(|template_id| {
+            let href = format!(
+                "https://github.com/search?q=repo:projectdiscovery/nuclei-templates+{}&type=code",
+                percent_encode_template_id(template_id),
+            );
+            format!(
+                "<a href=\"{}\" rel=\"noreferrer noopener\" target=\"_blank\">{}</a>",
+                html_escape(&href),
+                html_escape(template_id),
+            )
+        })
         .collect::<Vec<_>>();
     if template_ids.is_empty() {
         "—".to_owned()
     } else {
         template_ids.join(", ")
     }
+}
+
+fn percent_encode_template_id(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.') {
+            encoded.push(char::from(byte));
+        } else {
+            use std::fmt::Write as _;
+            write!(&mut encoded, "%{byte:02X}").expect("writing to a String cannot fail");
+        }
+    }
+    encoded
 }
 
 fn observed_cve_findings(artifacts: &ReportArtifacts) -> Option<&[Value]> {
@@ -1418,11 +1441,61 @@ fn status_class_timeline_chart(
             html_escape(class_label),
         ));
     }
+    // Non-overlapping midpoint columns mirror the aggregate timeline. They
+    // expose all five status-class counts through CSS only; the native SVG
+    // title remains a fallback for viewers without hover-style support.
+    let mut markers = String::new();
+    for (index, point) in points.iter().enumerate() {
+        let x = point_x(point.minute_epoch);
+        let hit_x = if index == 0 {
+            60.0
+        } else {
+            (point_x(points[index - 1].minute_epoch) + x) / 2.0
+        };
+        let hit_right = if index + 1 == points.len() {
+            940.0
+        } else {
+            (x + point_x(points[index + 1].minute_epoch)) / 2.0
+        };
+        let hit_width = (hit_right - hit_x).max(0.5);
+        let tip_time = minute_label(point.minute_epoch, language);
+        let tip_first_classes = format!(
+            "1xx {} · 2xx {} · 3xx {}",
+            group_thousands(point.informational),
+            group_thousands(point.success),
+            group_thousands(point.redirection),
+        );
+        let tip_last_classes = format!(
+            "4xx {} · 5xx {}",
+            group_thousands(point.client_error),
+            group_thousands(point.server_error),
+        );
+        let tip = format!("{tip_time} · {tip_first_classes} · {tip_last_classes}");
+        let longest_line = tip_time
+            .chars()
+            .count()
+            .max(tip_first_classes.chars().count())
+            .max(tip_last_classes.chars().count());
+        let tip_width = ((longest_line as f64 * 7.0) + 16.0).clamp(300.0, 820.0);
+        let tip_x = (x - tip_width / 2.0).clamp(62.0, 938.0 - tip_width);
+        markers.push_str(&format!(
+            "<g class=\"col\"><rect class=\"hit\" x=\"{hit_x:.2}\" y=\"35\" width=\"{hit_width:.2}\" height=\"145\"><title>{}</title></rect><g class=\"tip\"><rect class=\"tip-bg\" x=\"{tip_x:.2}\" y=\"40\" width=\"{tip_width:.2}\" height=\"62\" rx=\"4\"></rect><text class=\"tip-label\" x=\"{:.2}\" y=\"57\"><tspan x=\"{:.2}\">{}</tspan><tspan x=\"{:.2}\" dy=\"17\">{}</tspan><tspan x=\"{:.2}\" dy=\"17\">{}</tspan></text></g></g>",
+            html_escape(&tip),
+            tip_x + 8.0,
+            tip_x + 8.0,
+            html_escape(&tip_time),
+            tip_x + 8.0,
+            html_escape(&tip_first_classes),
+            tip_x + 8.0,
+            html_escape(&tip_last_classes),
+        ));
+    }
     format!(
-        "<div class=\"chart-scroll\"><svg width=\"1000\" height=\"220\" viewBox=\"0 0 1000 220\" role=\"img\" aria-label=\"{}\">{}<line class=\"axis\" x1=\"60\" y1=\"180\" x2=\"940\" y2=\"180\"></line><line class=\"axis\" x1=\"60\" y1=\"35\" x2=\"60\" y2=\"180\"></line>{}<text x=\"60\" y=\"205\">{}</text><text x=\"760\" y=\"205\">{}</text></svg></div><p class=\"small\">{} {} · {} {}.</p>",
+        "<div class=\"chart-scroll\"><svg width=\"1000\" height=\"220\" viewBox=\"0 0 1000 220\" role=\"img\" aria-label=\"{}\">{}<line class=\"axis\" x1=\"60\" y1=\"180\" x2=\"940\" y2=\"180\"></line><line class=\"axis\" x1=\"60\" y1=\"35\" x2=\"60\" y2=\"180\"></line>{}{}<text x=\"60\" y=\"205\">{}</text><text x=\"760\" y=\"205\">{}</text></svg></div><p class=\"small\">{} {} · {} {}.</p>",
         html_escape(title),
         legend,
         polylines,
+        markers,
         html_escape(&minute_label(first, language)),
         html_escape(&minute_label(last, language)),
         group_thousands(points.len() as u64),
@@ -1812,6 +1885,36 @@ mod tests {
         SanitizedFocusSummary,
     };
 
+    const GITHUB_TEMPLATE_SEARCH_PREFIX: &str =
+        "https://github.com/search?q=repo:projectdiscovery/nuclei-templates";
+
+    fn assert_external_reference_policy(html: &str) {
+        for forbidden in [
+            "http://",
+            "src=",
+            "<script",
+            "<iframe",
+            "<link",
+            "srcset",
+            "background:url(",
+            "@import",
+        ] {
+            assert!(
+                !html.contains(forbidden),
+                "found prohibited external-reference marker {forbidden}"
+            );
+        }
+        let mut remaining = html;
+        while let Some(index) = remaining.find("https://") {
+            let candidate = &remaining[index..];
+            assert!(
+                candidate.starts_with(GITHUB_TEMPLATE_SEARCH_PREFIX),
+                "found non-template-search HTTPS reference"
+            );
+            remaining = &candidate["https://".len()..];
+        }
+    }
+
     fn synthetic_concentration(path: &str) -> PrivateRequestConcentrationReport {
         let status = StatusClassCounts {
             success: 2,
@@ -1979,12 +2082,7 @@ mod tests {
         assert!(html.contains("body{margin:0;overflow-x:hidden"));
         assert!(html.contains("<div class=\"chart-scroll\"><svg"));
         assert!(html.contains("<div class=\"table-scroll\"><table"));
-        for forbidden in ["http://", "https://", "src=", "<script src"] {
-            assert!(
-                !html.contains(forbidden),
-                "found external reference marker {forbidden}"
-            );
-        }
+        assert_external_reference_policy(&html);
     }
 
     #[test]
@@ -2069,7 +2167,11 @@ mod tests {
             "<section id=\"observed-cves\">",
             "CVE-2026-10001",
             "Templates",
-            "nuclei-template-a, nuclei-template-b, nuclei-template-&lt;escaped&gt;",
+            "https://github.com/search?q=repo:projectdiscovery/nuclei-templates+nuclei-template-a&amp;type=code",
+            "rel=\"noreferrer noopener\" target=\"_blank\">nuclei-template-a</a>",
+            "nuclei-template-&lt;escaped&gt;</a>",
+            "nuclei-template-%3Cescaped%3E&amp;type=code",
+            "Opening this report causes no external communication",
             "<span class=\"badge\">KEV</span>",
             "Distinctive-path matches",
             "Generic-path matches",
@@ -2087,9 +2189,9 @@ mod tests {
             cve_template_ids(&serde_json::json!({"template_ids": []})),
             "—"
         );
-        for forbidden in ["http://", "https://", "src=", "<script"] {
-            assert!(!html.contains(forbidden));
-        }
+        assert_eq!(percent_encode_template_id("safe-ID_1.2"), "safe-ID_1.2");
+        assert_eq!(percent_encode_template_id("a b/<"), "a%20b%2F%3C");
+        assert_external_reference_policy(&html);
 
         let japanese = render_report(&artifacts, 20, 240, ReportLanguage::Ja);
         assert!(japanese.contains("観測された CVE 数"));
@@ -2129,9 +2231,7 @@ mod tests {
             assert!(html.contains(expected), "missing {expected}");
         }
         assert!(!html.contains("<script>alert(1)</script>"));
-        for forbidden in ["http://", "https://", "src=", "<script src"] {
-            assert!(!html.contains(forbidden));
-        }
+        assert_external_reference_policy(&html);
 
         let japanese = render_report(&artifacts, 20, 240, ReportLanguage::Ja);
         assert!(japanese.contains("成功応答を返した秘密・設定ファイルアクセス"));
@@ -2228,13 +2328,16 @@ mod tests {
             "4xx Client error",
             "5xx Server error",
             "1,234",
+            "<g class=\"col\">",
+            "<g class=\"tip\">",
+            "1970-01-01 00:00</tspan>",
+            "1xx 1 · 2xx 1,234 · 3xx 2</tspan>",
+            "4xx 3 · 5xx 4</tspan>",
         ] {
             assert!(html.contains(expected));
         }
         assert!(html.contains("width=\"1000\" height=\"220\""));
-        for forbidden in ["http://", "https://", "src=", "<script"] {
-            assert!(!html.contains(forbidden));
-        }
+        assert_external_reference_policy(&html);
     }
 
     #[test]
@@ -2281,9 +2384,7 @@ mod tests {
         assert!(html.contains("HTTP ステータスクラス別 1分ごとのリクエスト数"));
         assert!(html.contains("1xx 情報"));
         assert!(html.contains("DoS・攻撃・悪用・侵害・悪性確率・攻撃者特定の判定ではありません"));
-        for forbidden in ["http://", "https://", "src=", "<script src"] {
-            assert!(!html.contains(forbidden));
-        }
+        assert_external_reference_policy(&html);
     }
 
     #[test]
@@ -2328,9 +2429,7 @@ mod tests {
         assert!(html.contains("<title>"));
         assert!(html.contains("class=\"timeline-dot\""));
         assert!(html.contains("<svg width=\"1000\" height=\"220\""));
-        for forbidden in ["http://", "https://", "src=", "<script"] {
-            assert!(!html.contains(forbidden));
-        }
+        assert_external_reference_policy(&html);
     }
 
     #[test]

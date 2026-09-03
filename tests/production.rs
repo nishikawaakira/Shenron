@@ -15,6 +15,36 @@ use shenron::production::{
 use tempfile::tempdir;
 use walkdir::WalkDir;
 
+const GITHUB_TEMPLATE_SEARCH_PREFIX: &str =
+    "https://github.com/search?q=repo:projectdiscovery/nuclei-templates";
+
+fn assert_report_external_reference_policy(html: &str) {
+    for forbidden in [
+        "http://",
+        "src=",
+        "<script",
+        "<iframe",
+        "<link",
+        "srcset",
+        "background:url(",
+        "@import",
+    ] {
+        assert!(
+            !html.contains(forbidden),
+            "found prohibited external-reference marker {forbidden}"
+        );
+    }
+    let mut remaining = html;
+    while let Some(index) = remaining.find("https://") {
+        let candidate = &remaining[index..];
+        assert!(
+            candidate.starts_with(GITHUB_TEMPLATE_SEARCH_PREFIX),
+            "found non-template-search HTTPS reference"
+        );
+        remaining = &candidate["https://".len()..];
+    }
+}
+
 #[test]
 fn ablation_compares_aggregate_match_volume_without_private_values() {
     let report = ablation(
@@ -1223,6 +1253,7 @@ fn hunt_writes_and_rerenders_private_offline_html() {
         "CVE-2024-10001",
         "テンプレート",
         "synthetic-cve-2024-10001",
+        "href=\"https://github.com/search?q=repo:projectdiscovery/nuclei-templates+synthetic-cve-2024-10001&amp;type=code\" rel=\"noreferrer noopener\" target=\"_blank\"",
         "hunt トリアージビュー",
         "/vulnerable/execute",
         "198.51.100.1",
@@ -1232,9 +1263,7 @@ fn hunt_writes_and_rerenders_private_offline_html() {
     assert!(!html.contains("トリアージを利用できません"));
     assert!(!html.contains("レピュテーション意見"));
     assert!(!html.contains("解決された ASN"));
-    for forbidden in ["http://", "https://", "src=", "<script src"] {
-        assert!(!html.contains(forbidden));
-    }
+    assert_report_external_reference_policy(&html);
 
     let findings_before = fs::read(hunt_output.join("private-findings.jsonl")).unwrap();
     fs::remove_file(&html_path).unwrap();
@@ -1257,9 +1286,7 @@ fn hunt_writes_and_rerenders_private_offline_html() {
         fs::read(hunt_output.join("private-findings.jsonl")).unwrap(),
         findings_before
     );
-    for forbidden in ["http://", "https://", "src=", "<script src"] {
-        assert!(!rerendered_html.contains(forbidden));
-    }
+    assert_report_external_reference_policy(&rerendered_html);
 
     let custom_report = directory.path().join("custom-report.html");
     Command::cargo_bin("shenron")
@@ -1331,9 +1358,7 @@ fn report_rerender_streams_only_sensitive_sigma_findings_with_2xx_status() {
     assert!(!html.contains("198.51.100.21"));
     assert!(!html.contains("/not-sigma"));
     assert!(!html.contains("198.51.100.22"));
-    for forbidden in ["http://", "https://", "src=", "<script src"] {
-        assert!(!html.contains(forbidden));
-    }
+    assert_report_external_reference_policy(&html);
 }
 
 #[test]
