@@ -19,8 +19,27 @@ permissions:
   contents: write
 
 jobs:
+  # Create the release once, up front. The upload action below attaches assets
+  # to an existing release and does not create one, so the matrix jobs would
+  # otherwise all fail with "release not found".
+  create-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create the release if it does not exist
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release create "$GITHUB_REF_NAME" \
+              --title "$GITHUB_REF_NAME" \
+              --verify-tag \
+              --generate-notes
+          fi
+
   build:
     name: ${{ matrix.target }}
+    needs: create-release
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -47,8 +66,7 @@ jobs:
           targets: ${{ matrix.target }}
       # Builds both binaries for the target (using cross when the target needs
       # it), packages them into one archive with the license and READMEs, emits
-      # a SHA-256 checksum, and uploads everything to the tag's release,
-      # creating the release if it does not exist yet.
+      # a SHA-256 checksum, and uploads everything to the release created above.
       - uses: taiki-e/upload-rust-binary-action@v1
         with:
           bin: shenron,shenron-lab
