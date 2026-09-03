@@ -263,13 +263,101 @@ fn concentration_path_prefix_and_source_ip_focuses_keep_raw_values_private() {
         .assert()
         .success()
         .stdout(contains("Source-IP focus"))
-        .stdout(contains("Focus source IP: 198.51.100.1"))
+        .stdout(contains("Focus source IP(s): 198.51.100.1"))
         .stdout(contains(
-            "Private URI paths requested by the focused source IP",
+            "Private URI paths requested by the focused source IP(s)",
         ))
         .stdout(contains("/vulnerable/execute"));
     let sanitized = fs::read_to_string(ip_out.join("sanitized-research.json")).unwrap();
     assert!(!sanitized.contains("198.51.100.1"));
+    assert!(!sanitized.contains("/vulnerable/execute"));
+    assert!(sanitized.contains("source-ip"));
+
+    let private_stdout_out = directory.path().join("private-stdout");
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "concentration",
+            "--input",
+            "tests/fixtures/production/waf.jsonl",
+            "--format",
+            "aws-waf",
+            "--output",
+            private_stdout_out.to_str().unwrap(),
+            "--source-ip",
+            "198.51.100.1,198.51.100.2",
+        ])
+        .assert()
+        .success()
+        // The analyst-supplied selector IPs are echoed in the header even
+        // without --show-* gates; only the per-path/per-peer breakdown stays
+        // gated, and the sanitized artifact never receives raw values.
+        .stdout(contains("Focus source IP(s): 198.51.100.1, 198.51.100.2"));
+    let private_stdout_sanitized =
+        fs::read_to_string(private_stdout_out.join("sanitized-research.json")).unwrap();
+    assert!(!private_stdout_sanitized.contains("198.51.100.1"));
+    assert!(!private_stdout_sanitized.contains("198.51.100.2"));
+}
+
+#[test]
+fn concentration_accepts_comma_delimited_and_repeated_source_ip_focuses() {
+    let directory = tempdir().unwrap();
+    let comma_out = directory.path().join("comma");
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "concentration",
+            "--input",
+            "tests/fixtures/production/waf.jsonl",
+            "--format",
+            "aws-waf",
+            "--output",
+            comma_out.to_str().unwrap(),
+            "--source-ip",
+            "198.51.100.2,198.51.100.1,198.51.100.1",
+            "--show-paths",
+            "--show-source-ips",
+        ])
+        .assert()
+        .success()
+        .stdout(contains("Focus source IP(s): 198.51.100.1, 198.51.100.2"))
+        .stdout(contains("/vulnerable/execute"))
+        .stdout(contains("Private selected source-IP request breakdown"))
+        .stdout(contains("198.51.100.1"))
+        .stdout(contains("198.51.100.2"));
+
+    let repeated_out = directory.path().join("repeated");
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "concentration",
+            "--input",
+            "tests/fixtures/production/waf.jsonl",
+            "--format",
+            "aws-waf",
+            "--output",
+            repeated_out.to_str().unwrap(),
+            "--source-ip",
+            "198.51.100.2",
+            "--source-ip",
+            "198.51.100.1",
+            "--show-paths",
+            "--show-source-ips",
+        ])
+        .assert()
+        .success()
+        .stdout(contains("Focus source IP(s): 198.51.100.1, 198.51.100.2"));
+
+    let comma_private = fs::read_to_string(comma_out.join("request-concentration.json")).unwrap();
+    let repeated_private =
+        fs::read_to_string(repeated_out.join("request-concentration.json")).unwrap();
+    assert_eq!(comma_private, repeated_private);
+    assert!(comma_private.contains("198.51.100.1, 198.51.100.2"));
+    assert!(comma_private.contains("/vulnerable/execute"));
+
+    let sanitized = fs::read_to_string(comma_out.join("sanitized-research.json")).unwrap();
+    assert!(!sanitized.contains("198.51.100.1"));
+    assert!(!sanitized.contains("198.51.100.2"));
     assert!(!sanitized.contains("/vulnerable/execute"));
     assert!(sanitized.contains("source-ip"));
 }

@@ -107,11 +107,15 @@ Two related focuses build on the same private artifact. `--path-prefix /example`
 analyzes a path and everything under it (segment-boundary matching, so
 `/example` does not match `/examplex`); with `--show-paths` it lists the retained
 sub-paths and their request counts, and with `--show-source-ips` the peers that
-requested anything in the subtree. `--source-ip <IP>` reverses the view: it lists
-the URI paths one observed connection peer requested, most-requested first, with
-`--show-paths`. The three selectors are mutually exclusive, the sanitized report
-still records only aggregate counts and the focus kind, and neither is an
-attribution or DoS/attack/abuse determination. See
+requested anything in the subtree. `--source-ip <IP>` reverses the view and
+accepts one or more IPs, comma-separated or by repeating the flag: `--show-paths`
+lists the union of URI paths those observed connection peers requested, and
+`--show-source-ips` adds a private per-IP request breakdown for multiple selected
+IPs. The three selector kinds are mutually exclusive; selected IPs, paths, and
+breakdowns remain private, while the sanitized report still records only
+aggregate counts and the focus kind. This is not attribution or a
+DoS/attack/abuse determination. The private HTML report includes a per-IP chart
+for a multiple-IP focus and retains the union path breakdown. See
 [request concentration](request-concentration.md).
 
 With `--show-source-ips`, the same private focus output also includes derived

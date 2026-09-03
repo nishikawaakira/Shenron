@@ -270,10 +270,11 @@ enum ProductionCommand {
         /// `/api/...`), listing the sub-paths and observed connection peers.
         #[arg(long, conflicts_with_all = ["path", "source_ip"])]
         path_prefix: Option<String>,
-        /// Focus on one observed connection-peer IP, listing the URI paths it
-        /// requested. This is volume context, not attacker attribution.
-        #[arg(long, conflicts_with_all = ["path", "path_prefix"])]
-        source_ip: Option<String>,
+        /// Focus on one or more observed connection-peer IPs, listing the union
+        /// of URI paths they requested. Repeat the flag or separate IPs by commas.
+        /// This is volume context, not attacker attribution.
+        #[arg(long, value_delimiter = ',', conflicts_with_all = ["path", "path_prefix"])]
+        source_ip: Vec<String>,
         /// IPv4 prefix length for private focus-path address-block aggregation (default: 24).
         #[arg(long, value_parser = parse_ipv4_prefix_length)]
         ipv4_group_prefix: Option<u8>,
@@ -767,15 +768,26 @@ fn main() -> Result<()> {
                 show_source_ips,
                 limit,
             } => {
-                // clap enforces that at most one focus selector is set.
-                let focus = match (path, path_prefix, source_ip) {
-                    (Some(path), _, _) => Some(FocusSelector::ExactPath(path)),
-                    (_, Some(prefix), _) => Some(FocusSelector::PathPrefix(prefix)),
-                    (_, _, Some(ip)) => Some(FocusSelector::SourceIp(ip)),
-                    _ => None,
+                // clap enforces that at most one focus selector kind is set.
+                // Normalize repeated and comma-delimited source values into one
+                // deterministic set; empty elements do not create a focus.
+                let source_ips = source_ip
+                    .into_iter()
+                    .map(|value| value.trim().to_owned())
+                    .filter(|value| !value.is_empty())
+                    .collect::<BTreeSet<_>>();
+                let focus = if let Some(path) = path {
+                    Some(FocusSelector::ExactPath(path))
+                } else if let Some(prefix) = path_prefix {
+                    Some(FocusSelector::PathPrefix(prefix))
+                } else if source_ips.is_empty() {
+                    None
+                } else {
+                    Some(FocusSelector::SourceIp(source_ips))
                 };
                 // Address-block grouping applies to a path or path-prefix focus,
-                // which aggregate connection peers; a source-IP focus is one peer.
+                // which aggregate connection peers; source-IP focuses already
+                // have an analyst-selected peer set.
                 let groups_path_focus = matches!(
                     focus,
                     Some(FocusSelector::ExactPath(_) | FocusSelector::PathPrefix(_))
@@ -1633,12 +1645,15 @@ fn print_concentration(
                 "Focus prefix",
             ),
             FocusSelector::SourceIp(_) => (
-                "Source-IP focus (URI paths this observed connection peer requested)",
-                "Focus source IP",
+                "Source-IP focus (URI paths these observed connection peers requested)",
+                "Focus source IP(s)",
             ),
         };
         let mut lines = vec![
-            format!("  {selector_label}: {}", terminal_safe(selector.value())),
+            format!(
+                "  {selector_label}: {}",
+                terminal_safe(&selector.selector_display())
+            ),
             format!("  Requests: {}", focus_summary.total_requests),
         ];
         if !matches!(selector, FocusSelector::ExactPath(_)) {
@@ -1679,7 +1694,7 @@ fn print_concentration(
             if let Some(focus) = &private.focus {
                 if !focus.paths.is_empty() {
                     let noun = if focus.focus_kind == "source-ip" {
-                        "requested by the focused source IP"
+                        "requested by the focused source IP(s)"
                     } else {
                         "under the focused path prefix"
                     };
@@ -1724,29 +1739,46 @@ fn print_concentration(
                 );
             }
             if let Some(focus) = &private.focus {
-                println!(
-                    "\nPrivate observed connection-peer IPs requesting the focused path (requests only; not a DoS/attack/abuse/compromise/attribution determination):"
-                );
-                for source in focus.sources.iter().take(display_limit(limit)) {
+                let source_ip_selection_count = focus
+                    .selector
+                    .split(',')
+                    .filter(|value| !value.trim().is_empty())
+                    .count();
+                if focus.focus_kind != "source-ip" || source_ip_selection_count > 1 {
+                    let heading = if focus.focus_kind == "source-ip" {
+                        "Private selected source-IP request breakdown"
+                    } else {
+                        "Private observed connection-peer IPs requesting the focused path"
+                    };
                     println!(
-                        "  {}\n    Requests to focus path: {}",
-                        terminal_safe(&source.source_ip),
-                        source.requests,
+                        "\n{heading} (requests only; not a DoS/attack/abuse/compromise/attribution determination):"
                     );
+                    for source in focus.sources.iter().take(display_limit(limit)) {
+                        let count_label = if focus.focus_kind == "source-ip" {
+                            "Requests in source-IP focus"
+                        } else {
+                            "Requests to focus path"
+                        };
+                        println!(
+                            "  {}\n    {count_label}: {}",
+                            terminal_safe(&source.source_ip),
+                            source.requests,
+                        );
+                    }
+                    if focus.sources.len() > display_limit(limit) {
+                        println!(
+                            "  {} focused source IPs omitted. Pass --limit 0 to display all.",
+                            focus.sources.len() - display_limit(limit)
+                        );
+                    }
+                    if focus.source_ips_beyond_cap != 0 {
+                        println!(
+                            "  Focused source IP observations beyond tracking cap: {}",
+                            focus.source_ips_beyond_cap
+                        );
+                    }
                 }
-                if focus.sources.len() > display_limit(limit) {
-                    println!(
-                        "  {} focused source IPs omitted. Pass --limit 0 to display all.",
-                        focus.sources.len() - display_limit(limit)
-                    );
-                }
-                if focus.source_ips_beyond_cap != 0 {
-                    println!(
-                        "  Focused source IP observations beyond tracking cap: {}",
-                        focus.source_ips_beyond_cap
-                    );
-                }
-                if !focus.network_prefix_groups.is_empty() {
+                if focus.focus_kind != "source-ip" && !focus.network_prefix_groups.is_empty() {
                     println!(
                         "\nPrivate address-block aggregation for the focused path (network prefix only; not evidence of a shared operator, owner, or actor):"
                     );

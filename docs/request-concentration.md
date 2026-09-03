@@ -29,11 +29,14 @@ embedded in `sanitized-research.json`.
 
 ## Focus (`--path`, `--path-prefix`, `--source-ip`)
 
-A focus narrows the private review to one selector. The three are mutually
+A focus narrows the private review to one selector kind. The three are mutually
 exclusive: `--path` matches one exact normalized path, `--path-prefix` matches a
-path and everything under it, and `--source-ip` selects one observed connection
-peer and lists the paths it requested. In every case the analyst-supplied path
-or IP and all per-key detail stay in `request-concentration.json`;
+path and everything under it, and `--source-ip` selects one or more observed
+connection peers and lists the union of paths they requested. Source IPs may be
+comma-separated or supplied by repeating the flag; duplicates are removed and
+the retained values are ordered deterministically. In every case the
+analyst-supplied path or IPs and all per-key detail stay in
+`request-concentration.json`;
 `sanitized-research.json` records only aggregate counts and the focus kind, and
 never a raw path or IP address.
 
@@ -103,25 +106,31 @@ as a count.
 
 ### Source IP (`--source-ip`)
 
-To review what one observed connection peer requested, use `--source-ip`. This
-is the reverse of a path focus: it lists the URI paths that peer sent, with
-request counts.
+To review what one or more observed connection peers requested, use
+`--source-ip`. This is the reverse of a path focus: it lists the union of URI
+paths those peers sent, with request counts.
 
 ```bash
 shenron concentration \
   --input ./logs \
   --format apache \
   --output ./private-results/concentration \
-  --source-ip 198.51.100.7 \
+  --source-ip 198.51.100.7,198.51.100.8 \
   --show-paths
 ```
 
-`--show-paths` prints the paths the peer requested, most-requested first. The
-selected IP and the paths stay in `request-concentration.json`; the sanitized
-report records only the aggregate counts and the `source-ip` focus kind. An IP
-is one observed connection peer and may be a CDN, load balancer, NAT, or proxy;
-this is request-volume context, not attacker attribution. Address-block grouping
-flags do not apply to a source-IP focus, which is already a single peer.
+The equivalent repeated form is `--source-ip 198.51.100.7 --source-ip
+198.51.100.8`. `--show-paths` prints the union of paths the selected peers
+requested, most-requested first. When two or more IPs are selected,
+`--show-source-ips` also prints the request-count breakdown for each selected
+IP. The selected IPs, paths, and per-IP breakdown stay in
+`request-concentration.json`; the sanitized report records only aggregate
+counts and the `source-ip` focus kind. Each IP is an observed connection peer
+and may be a CDN, load balancer, NAT, or proxy; this is request-volume context,
+not attacker attribution. Address-block grouping flags do not apply to a
+source-IP focus because its peer set is explicitly selected. A private HTML
+report generated from this run shows the per-IP chart when multiple IPs were
+selected, while preserving the existing path breakdown.
 
 ### Relationship to ASN enrichment
 

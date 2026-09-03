@@ -30,16 +30,17 @@ pub const DEFAULT_MAX_FOCUS_PATHS: usize = 1_000_000;
 pub const DEFAULT_MAX_MINUTE_BUCKETS: usize = 1_000_000;
 
 /// What a `concentration` focus selects. Exact and prefix focuses are keyed on
-/// the normalized URI path; the source-IP focus lists what one observed
-/// connection peer requested. A focus never asserts attack, abuse, or identity.
+/// the normalized URI path; the source-IP focus lists what one or more observed
+/// connection peers requested. A focus never asserts attack, abuse, or identity.
 #[derive(Debug, Clone)]
 pub enum FocusSelector {
     /// One exact normalized URI path.
     ExactPath(String),
     /// A path and everything under it (`/api` matches `/api` and `/api/...`).
     PathPrefix(String),
-    /// One observed connection-peer IP address.
-    SourceIp(String),
+    /// One or more observed connection-peer IP addresses. The ordered set
+    /// removes duplicates and keeps private output deterministic.
+    SourceIp(BTreeSet<String>),
 }
 
 impl FocusSelector {
@@ -52,11 +53,12 @@ impl FocusSelector {
         }
     }
 
-    /// The analyst-supplied path or IP the focus selects. It is private and is
-    /// written only to the private artifact, never to sanitized output.
-    pub fn value(&self) -> &str {
+    /// A deterministic private display of the analyst-supplied selector. Paths
+    /// are returned unchanged; source IPs are joined in sorted order.
+    pub fn selector_display(&self) -> String {
         match self {
-            Self::ExactPath(value) | Self::PathPrefix(value) | Self::SourceIp(value) => value,
+            Self::ExactPath(value) | Self::PathPrefix(value) => value.clone(),
+            Self::SourceIp(values) => values.iter().cloned().collect::<Vec<_>>().join(", "),
         }
     }
 }
@@ -163,8 +165,8 @@ pub struct SanitizedFocusSummary {
     pub total_requests: u64,
     pub distinct_source_ips: usize,
     pub source_ips_beyond_cap: u64,
-    /// Distinct URI paths inside the focus (sub-paths of a prefix, or the paths
-    /// one source IP requested). Zero for an exact-path focus.
+    /// Distinct URI paths inside the focus (sub-paths of a prefix, or the union
+    /// requested by selected source IPs). Zero for an exact-path focus.
     #[serde(default)]
     pub distinct_uri_paths: usize,
     #[serde(default)]
@@ -228,7 +230,8 @@ pub struct PrivateFocusSource {
 
 /// One retained URI path inside a focus, with its request count. For a
 /// path-prefix focus these are the sub-paths; for a source-IP focus these are
-/// the paths that peer requested. Private: the path is a raw request value.
+/// the paths the selected peers requested. Private: the path is a raw request
+/// value.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct PrivateFocusPath {
     pub uri_path: String,
@@ -260,8 +263,8 @@ pub struct PrivateFocusSummary {
     /// Focus discriminator: `exact-path`, `path-prefix`, or `source-ip`.
     #[serde(default = "exact_path_kind")]
     pub focus_kind: String,
-    /// The analyst-supplied path or IP this focus selected. Kept in sync with
-    /// `uri_path` for path focuses; for a source-IP focus it is the IP.
+    /// The analyst-supplied path or deterministic comma-separated IP set this
+    /// focus selected. Kept in sync with `uri_path` for compatibility.
     #[serde(default)]
     pub selector: String,
     pub uri_path: String,
@@ -500,7 +503,7 @@ impl RequestConcentration {
         let matches = match selector {
             FocusSelector::ExactPath(value) => path == Some(value.as_str()),
             FocusSelector::PathPrefix(value) => path.is_some_and(|path| path_is_under(path, value)),
-            FocusSelector::SourceIp(value) => source_ip == Some(value.as_str()),
+            FocusSelector::SourceIp(values) => source_ip.is_some_and(|ip| values.contains(ip)),
         };
         // An exact-path focus has only the one path, so a per-path breakdown
         // would merely echo the selector; skip it for that kind.
@@ -557,6 +560,7 @@ impl RequestConcentration {
     fn private_focus_summary(&self) -> Option<PrivateFocusSummary> {
         self.focus.as_ref().map(|selector| {
             let (peak, median, _) = Self::request_rate_for(&self.focus_minute_buckets);
+            let selector_display = selector.selector_display();
             let mut sources = self
                 .focus_sources
                 .iter()
@@ -587,8 +591,8 @@ impl RequestConcentration {
             });
             PrivateFocusSummary {
                 focus_kind: selector.kind().to_owned(),
-                selector: selector.value().to_owned(),
-                uri_path: selector.value().to_owned(),
+                selector: selector_display.clone(),
+                uri_path: selector_display,
                 total_requests: self.focus_total,
                 distinct_source_ips: self.focus_sources.len(),
                 source_ips_beyond_cap: self.focus_source_ips_beyond_cap,
@@ -1234,7 +1238,9 @@ mod tests {
     #[test]
     fn source_ip_focus_lists_requested_paths() {
         let mut concentration = RequestConcentration::new(true);
-        concentration.focus_on(FocusSelector::SourceIp("198.51.100.7".to_owned()));
+        concentration.focus_on(FocusSelector::SourceIp(
+            ["198.51.100.7".to_owned()].into_iter().collect(),
+        ));
         for (path, ip) in [
             ("/a", "198.51.100.7"),
             ("/a", "198.51.100.7"),
@@ -1250,6 +1256,56 @@ mod tests {
         assert_eq!(focus.paths.len(), 2);
         assert_eq!(focus.paths[0].uri_path, "/a");
         assert_eq!(focus.paths[0].requests, 2);
+    }
+
+    #[test]
+    fn multiple_source_ip_focus_unions_paths_and_retains_per_ip_counts() {
+        let mut concentration = RequestConcentration::new(true);
+        concentration.focus_on(FocusSelector::SourceIp(
+            [
+                "198.51.100.2".to_owned(),
+                "198.51.100.1".to_owned(),
+                "198.51.100.2".to_owned(),
+            ]
+            .into_iter()
+            .collect(),
+        ));
+        for (path, ip) in [
+            ("/shared", "198.51.100.1"),
+            ("/one", "198.51.100.1"),
+            ("/shared", "198.51.100.2"),
+            ("/two", "198.51.100.2"),
+            ("/two", "198.51.100.2"),
+            ("/ignored", "198.51.100.3"),
+        ] {
+            concentration.observe(&event(Some(path), Some(ip), Some(0)));
+        }
+
+        let focus = concentration.private_report().focus.unwrap();
+        assert_eq!(focus.selector, "198.51.100.1, 198.51.100.2");
+        assert_eq!(focus.total_requests, 5);
+        assert_eq!(
+            focus
+                .sources
+                .iter()
+                .map(|source| (source.source_ip.as_str(), source.requests))
+                .collect::<Vec<_>>(),
+            vec![("198.51.100.2", 3), ("198.51.100.1", 2)]
+        );
+        assert_eq!(
+            focus
+                .paths
+                .iter()
+                .map(|path| (path.uri_path.as_str(), path.requests))
+                .collect::<Vec<_>>(),
+            vec![("/shared", 2), ("/two", 2), ("/one", 1)]
+        );
+
+        let sanitized = serde_json::to_string(&concentration.summary()).unwrap();
+        assert!(!sanitized.contains("198.51.100.1"));
+        assert!(!sanitized.contains("198.51.100.2"));
+        assert!(!sanitized.contains("/shared"));
+        assert!(sanitized.contains("source-ip"));
     }
 
     #[test]

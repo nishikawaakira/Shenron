@@ -759,20 +759,37 @@ fn render_concentration(
             );
         }
 
-        // A source-IP focus is a single observed peer, so the peer and
-        // network-prefix breakdowns only apply to a path or path-prefix focus.
-        if !is_source_ip_focus {
-            html.push_str(&format!("<h3>{}</h3>", html_escape(labels.focused_peers)));
+        // A multi-source-IP focus retains a useful per-peer breakdown. A
+        // single-source focus omits that redundant chart, as before.
+        let has_multiple_selected_source_ips = is_source_ip_focus
+            && focus
+                .selector
+                .split(',')
+                .filter(|value| !value.trim().is_empty())
+                .nth(1)
+                .is_some();
+        if !is_source_ip_focus || has_multiple_selected_source_ips {
+            let (peer_heading, peer_chart, peer_label) = if is_source_ip_focus {
+                (
+                    labels.top_peers,
+                    labels.top_observed_peers,
+                    labels.peer_addresses,
+                )
+            } else {
+                (
+                    labels.focused_peers,
+                    labels.focused_peer_chart,
+                    labels.focused_peer_addresses,
+                )
+            };
+            html.push_str(&format!("<h3>{}</h3>", html_escape(peer_heading)));
             let rows = focus_source_rows(&focus.sources, limit, language);
-            html.push_str(&bar_chart(labels.focused_peer_chart, &rows, language));
-            omitted(
-                html,
-                focus.sources.len(),
-                rows.len(),
-                labels.focused_peer_addresses,
-                language,
-            );
+            html.push_str(&bar_chart(peer_chart, &rows, language));
+            omitted(html, focus.sources.len(), rows.len(), peer_label, language);
+        }
 
+        // Network-prefix groups apply only to a path or path-prefix focus.
+        if !is_source_ip_focus {
             html.push_str(&format!(
                 "<h3>{}</h3><p class=\"note\">{}</p>",
                 html_escape(labels.focused_prefixes),
@@ -1960,5 +1977,37 @@ mod tests {
         assert!(html.contains("URI paths in focus"));
         assert!(html.contains("198.51.100.7"));
         assert!(html.contains("/a"));
+        assert!(!html.contains("Focused-path observed peers"));
+    }
+
+    #[test]
+    fn multiple_source_ip_focus_renders_the_per_ip_breakdown() {
+        let mut concentration = synthetic_concentration("/a");
+        let focus = concentration.focus.as_mut().unwrap();
+        focus.focus_kind = "source-ip".to_owned();
+        focus.selector = "198.51.100.1, 198.51.100.2".to_owned();
+        focus.uri_path = focus.selector.clone();
+        focus.sources = vec![
+            PrivateFocusSource {
+                source_ip: "198.51.100.1".to_owned(),
+                requests: 5,
+            },
+            PrivateFocusSource {
+                source_ip: "198.51.100.2".to_owned(),
+                requests: 3,
+            },
+        ];
+        let artifacts = ReportArtifacts {
+            sanitized: None,
+            manifest: None,
+            concentration: Some(concentration),
+            triage: None,
+        };
+        let html = render_report(&artifacts, 20, 240, ReportLanguage::En);
+        assert!(html.contains("Focused source IP"));
+        assert!(html.contains("198.51.100.1, 198.51.100.2"));
+        assert!(html.contains("Top observed connection peers"));
+        assert!(html.contains("198.51.100.1"));
+        assert!(html.contains("198.51.100.2"));
     }
 }
