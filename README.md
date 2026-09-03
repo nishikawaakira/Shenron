@@ -54,7 +54,7 @@ Read-only local AWS WAF production inspection and validated Nuclei hunting are a
 
 `shenron concentration` measures bounded, aggregate request-volume distribution without CTI inputs and keeps paths/IPs in a separate private artifact. It is not a denial-of-service, attack, abuse, compromise, or attribution determination; see [request concentration](docs/request-concentration.md).
 
-Use `concentration --path /example/path --show-source-ips` to review private, deterministic request counts for observed connection peers on one exact path. This is concentration context only; observed peers are not attacker attribution.
+Use `concentration --path /example/path --show-source-ips` to review private, deterministic request counts for observed connection peers on one exact path. `--path-prefix /example` analyzes a path and everything under it, listing the sub-paths (`--show-paths`) and the peers that hit the subtree; `--source-ip <IP>` reverses the view, listing the URI paths one observed peer requested. Selected paths and IPs stay in the private artifact; the sanitized report keeps only aggregate counts. This is concentration context only; observed peers are not attacker attribution.
 
 The same private focus view also aggregates retained peer addresses by network prefix (`/24` IPv4 and `/48` IPv6 by default; configurable with `--ipv4-group-prefix` and `--ipv6-group-prefix`) without replacing IP-level rows. Prefixes are address blocks, not evidence of a shared owner or actor.
 

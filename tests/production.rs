@@ -213,6 +213,90 @@ fn concentration_path_focus_keeps_sources_private_until_explicitly_requested() {
 }
 
 #[test]
+fn concentration_path_prefix_and_source_ip_focuses_keep_raw_values_private() {
+    let directory = tempdir().unwrap();
+
+    // Path-prefix focus: the subtree of /vulnerable, listing sub-paths.
+    let prefix_out = directory.path().join("prefix");
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "concentration",
+            "--input",
+            "tests/fixtures/production/waf.jsonl",
+            "--format",
+            "aws-waf",
+            "--output",
+            prefix_out.to_str().unwrap(),
+            "--path-prefix",
+            "/vulnerable",
+            "--show-paths",
+        ])
+        .assert()
+        .success()
+        .stdout(contains("Path-prefix focus"))
+        .stdout(contains("Focus prefix: /vulnerable"))
+        .stdout(contains("Private URI paths under the focused path prefix"))
+        .stdout(contains("/vulnerable/execute"));
+    let sanitized = fs::read_to_string(prefix_out.join("sanitized-research.json")).unwrap();
+    assert!(!sanitized.contains("/vulnerable"));
+    assert!(sanitized.contains("path-prefix"));
+    let private = fs::read_to_string(prefix_out.join("request-concentration.json")).unwrap();
+    assert!(private.contains("/vulnerable/execute"));
+
+    // Source-IP focus: the paths one observed peer requested.
+    let ip_out = directory.path().join("ip");
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "concentration",
+            "--input",
+            "tests/fixtures/production/waf.jsonl",
+            "--format",
+            "aws-waf",
+            "--output",
+            ip_out.to_str().unwrap(),
+            "--source-ip",
+            "198.51.100.1",
+            "--show-paths",
+        ])
+        .assert()
+        .success()
+        .stdout(contains("Source-IP focus"))
+        .stdout(contains("Focus source IP: 198.51.100.1"))
+        .stdout(contains(
+            "Private URI paths requested by the focused source IP",
+        ))
+        .stdout(contains("/vulnerable/execute"));
+    let sanitized = fs::read_to_string(ip_out.join("sanitized-research.json")).unwrap();
+    assert!(!sanitized.contains("198.51.100.1"));
+    assert!(!sanitized.contains("/vulnerable/execute"));
+    assert!(sanitized.contains("source-ip"));
+}
+
+#[test]
+fn concentration_rejects_conflicting_focus_selectors() {
+    let directory = tempdir().unwrap();
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "concentration",
+            "--input",
+            "tests/fixtures/production/waf.jsonl",
+            "--format",
+            "aws-waf",
+            "--output",
+            directory.path().join("conflict").to_str().unwrap(),
+            "--path",
+            "/vulnerable/execute",
+            "--source-ip",
+            "198.51.100.1",
+        ])
+        .assert()
+        .failure();
+}
+
+#[test]
 fn compare_reads_existing_runs_without_leaking_private_values_by_default() {
     let directory = tempdir().unwrap();
     let baseline = directory.path().join("baseline");

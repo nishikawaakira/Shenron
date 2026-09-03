@@ -27,7 +27,17 @@ generic rule matches a request. Hunt writes the private concentration artifact
 alongside `private-findings.jsonl`; its sanitized concentration summary is
 embedded in `sanitized-research.json`.
 
-## Path focus (`--path`)
+## Focus (`--path`, `--path-prefix`, `--source-ip`)
+
+A focus narrows the private review to one selector. The three are mutually
+exclusive: `--path` matches one exact normalized path, `--path-prefix` matches a
+path and everything under it, and `--source-ip` selects one observed connection
+peer and lists the paths it requested. In every case the analyst-supplied path
+or IP and all per-key detail stay in `request-concentration.json`;
+`sanitized-research.json` records only aggregate counts and the focus kind, and
+never a raw path or IP address.
+
+### Exact path (`--path`)
 
 For a local review of the observed connection peers that requested one exact
 path, use `--path` with `concentration`:
@@ -65,6 +75,53 @@ of a shared operator, owner, or actor: allocations can be split across tenants
 and one operator can span many prefixes. This is an address-block aggregation
 of observed request volume, not an attribution or a determination of a
 denial-of-service attempt, attack, or abuse.
+
+### Path subtree (`--path-prefix`)
+
+To analyze a path and everything under it (a directory-style rollup), use
+`--path-prefix`. Matching is on path segments, so `/wp-admin` covers `/wp-admin`
+and `/wp-admin/...` but not `/wp-adminx`; a trailing slash on the prefix is
+ignored, and `/` covers everything.
+
+```bash
+shenron concentration \
+  --input ./logs \
+  --format apache \
+  --output ./private-results/concentration \
+  --path-prefix /wp-admin \
+  --show-paths \
+  --show-source-ips
+```
+
+`--show-paths` lists the individual sub-paths under the prefix with their
+request counts; `--show-source-ips` lists the observed peers that requested
+anything in the subtree, plus the same address-block aggregation as an exact
+path focus. The sanitized report adds only `distinct_uri_paths` and the
+retained-path cap disclosure; the sub-paths themselves stay private. Distinct
+focus paths are bounded by a fixed cap, and observations beyond it are disclosed
+as a count.
+
+### Source IP (`--source-ip`)
+
+To review what one observed connection peer requested, use `--source-ip`. This
+is the reverse of a path focus: it lists the URI paths that peer sent, with
+request counts.
+
+```bash
+shenron concentration \
+  --input ./logs \
+  --format apache \
+  --output ./private-results/concentration \
+  --source-ip 198.51.100.7 \
+  --show-paths
+```
+
+`--show-paths` prints the paths the peer requested, most-requested first. The
+selected IP and the paths stay in `request-concentration.json`; the sanitized
+report records only the aggregate counts and the `source-ip` focus kind. An IP
+is one observed connection peer and may be a CDN, load balancer, NAT, or proxy;
+this is request-volume context, not attacker attribution. Address-block grouping
+flags do not apply to a source-IP focus, which is already a single peer.
 
 ### Relationship to ASN enrichment
 

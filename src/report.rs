@@ -13,7 +13,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::concentration::{
-    MinuteRequestCount, PrivateFocusPrefixGroup, PrivateFocusSource,
+    MinuteRequestCount, PrivateFocusPath, PrivateFocusPrefixGroup, PrivateFocusSource,
     PrivateRequestConcentrationReport, PrivateSourceConcentration, StatusClassCounts,
 };
 
@@ -82,6 +82,9 @@ struct Labels {
     requests_per_minute: &'static str,
     global_timeline: &'static str,
     focused_path: &'static str,
+    focused_source_ip: &'static str,
+    focused_paths_chart: &'static str,
+    focused_paths_label: &'static str,
     focused_peers: &'static str,
     focused_peer_chart: &'static str,
     focused_prefixes: &'static str,
@@ -164,6 +167,9 @@ const EN_LABELS: Labels = Labels {
     requests_per_minute: "Requests per minute",
     global_timeline: "Global request timeline",
     focused_path: "Focused path",
+    focused_source_ip: "Focused source IP",
+    focused_paths_chart: "URI paths in focus",
+    focused_paths_label: "focused URI paths",
     focused_peers: "Focused-path peers",
     focused_peer_chart: "Focused-path observed peers",
     focused_prefixes: "Focused-path network prefixes",
@@ -246,6 +252,9 @@ const JA_LABELS: Labels = Labels {
     requests_per_minute: "1分ごとのリクエスト数",
     global_timeline: "全体リクエスト時系列",
     focused_path: "フォーカスパス",
+    focused_source_ip: "フォーカス送信元 IP",
+    focused_paths_chart: "フォーカス内の URI パス",
+    focused_paths_label: "フォーカス URI パス",
     focused_peers: "フォーカスパスの接続ピア",
     focused_peer_chart: "フォーカスパスの観測接続ピア",
     focused_prefixes: "フォーカスパスのネットワークプレフィックス",
@@ -664,9 +673,15 @@ fn render_concentration(
     render_general_caps(html, concentration, language);
 
     if let Some(focus) = &concentration.focus {
+        let is_source_ip_focus = focus.focus_kind == "source-ip";
+        let heading = if is_source_ip_focus {
+            labels.focused_source_ip
+        } else {
+            labels.focused_path
+        };
         html.push_str(&format!(
             "<h2>{}</h2><p><code>{}</code> — {}</p>",
-            html_escape(labels.focused_path),
+            html_escape(heading),
             html_escape(&focus.uri_path),
             html_escape(&focus_summary(
                 language,
@@ -674,35 +689,63 @@ fn render_concentration(
                 focus.distinct_source_ips as u64,
             )),
         ));
-        html.push_str(&format!("<h3>{}</h3>", html_escape(labels.focused_peers)));
-        let rows = focus_source_rows(&focus.sources, limit, language);
-        html.push_str(&bar_chart(labels.focused_peer_chart, &rows, language));
-        omitted(
-            html,
-            focus.sources.len(),
-            rows.len(),
-            labels.focused_peer_addresses,
-            language,
-        );
 
-        html.push_str(&format!(
-            "<h3>{}</h3><p class=\"note\">{}</p>",
-            html_escape(labels.focused_prefixes),
-            html_escape(labels.prefix_note),
-        ));
-        let prefix_rows = prefix_rows(&focus.network_prefix_groups, limit, language);
-        html.push_str(&bar_chart(
-            labels.focused_prefix_chart,
-            &prefix_rows,
-            language,
-        ));
-        omitted(
-            html,
-            focus.network_prefix_groups.len(),
-            prefix_rows.len(),
-            labels.network_prefixes,
-            language,
-        );
+        // Sub-paths of a prefix focus, or the paths one source IP requested.
+        if !focus.paths.is_empty() {
+            html.push_str(&format!(
+                "<h3>{}</h3>",
+                html_escape(labels.focused_paths_chart)
+            ));
+            let path_rows = focus_path_rows(&focus.paths, limit, language);
+            html.push_str(&bar_chart(labels.focused_paths_chart, &path_rows, language));
+            omitted(
+                html,
+                focus.paths.len(),
+                path_rows.len(),
+                labels.focused_paths_label,
+                language,
+            );
+            cap_note(
+                html,
+                focus.paths_beyond_cap,
+                labels.focused_paths_label,
+                language,
+            );
+        }
+
+        // A source-IP focus is a single observed peer, so the peer and
+        // network-prefix breakdowns only apply to a path or path-prefix focus.
+        if !is_source_ip_focus {
+            html.push_str(&format!("<h3>{}</h3>", html_escape(labels.focused_peers)));
+            let rows = focus_source_rows(&focus.sources, limit, language);
+            html.push_str(&bar_chart(labels.focused_peer_chart, &rows, language));
+            omitted(
+                html,
+                focus.sources.len(),
+                rows.len(),
+                labels.focused_peer_addresses,
+                language,
+            );
+
+            html.push_str(&format!(
+                "<h3>{}</h3><p class=\"note\">{}</p>",
+                html_escape(labels.focused_prefixes),
+                html_escape(labels.prefix_note),
+            ));
+            let prefix_rows = prefix_rows(&focus.network_prefix_groups, limit, language);
+            html.push_str(&bar_chart(
+                labels.focused_prefix_chart,
+                &prefix_rows,
+                language,
+            ));
+            omitted(
+                html,
+                focus.network_prefix_groups.len(),
+                prefix_rows.len(),
+                labels.network_prefixes,
+                language,
+            );
+        }
 
         html.push_str(&format!(
             "<h3>{}</h3>",
@@ -1060,6 +1103,21 @@ fn focus_source_rows<'a>(
         .collect()
 }
 
+fn focus_path_rows<'a>(
+    paths: &'a [PrivateFocusPath],
+    limit: usize,
+    language: ReportLanguage,
+) -> Vec<BarRow<'a>> {
+    limited(paths, limit)
+        .iter()
+        .map(|path| BarRow {
+            label: path.uri_path.as_str(),
+            value: path.requests,
+            details: language.labels().request_count_label.to_owned(),
+        })
+        .collect()
+}
+
 fn prefix_rows<'a>(
     groups: &'a [PrivateFocusPrefixGroup],
     limit: usize,
@@ -1275,9 +1333,12 @@ mod tests {
                     observations_without_timestamp: 0,
                 },
                 focus: Some(SanitizedFocusSummary {
+                    focus_kind: "exact-path".to_owned(),
                     total_requests: 3,
                     distinct_source_ips: 1,
                     source_ips_beyond_cap: 0,
+                    distinct_uri_paths: 0,
+                    paths_beyond_cap: 0,
                     peak_requests_per_minute: Some(2),
                     median_requests_per_minute: Some(1.5),
                 }),
@@ -1298,10 +1359,14 @@ mod tests {
                 most_requested_uri_path: Some(path.to_owned()),
             }],
             focus: Some(PrivateFocusSummary {
+                focus_kind: "exact-path".to_owned(),
+                selector: path.to_owned(),
                 uri_path: path.to_owned(),
                 total_requests: 3,
                 distinct_source_ips: 1,
                 source_ips_beyond_cap: 0,
+                paths: Vec::new(),
+                paths_beyond_cap: 0,
                 peak_requests_per_minute: Some(2),
                 median_requests_per_minute: Some(1.5),
                 response_status_classes: status,
@@ -1524,5 +1589,35 @@ mod tests {
         let html = bar_chart("Top", &rows, ReportLanguage::En);
         assert!(html.contains("<rect class=\"bar\""));
         assert!(html.contains("<title>/x · 1,234 d</title>"));
+    }
+
+    #[test]
+    fn source_ip_focus_renders_ip_heading_and_path_breakdown() {
+        let mut concentration = synthetic_concentration("/a");
+        let focus = concentration.focus.as_mut().unwrap();
+        focus.focus_kind = "source-ip".to_owned();
+        focus.selector = "198.51.100.7".to_owned();
+        focus.uri_path = "198.51.100.7".to_owned();
+        focus.paths = vec![
+            PrivateFocusPath {
+                uri_path: "/a".to_owned(),
+                requests: 5,
+            },
+            PrivateFocusPath {
+                uri_path: "/b".to_owned(),
+                requests: 2,
+            },
+        ];
+        let artifacts = ReportArtifacts {
+            sanitized: None,
+            manifest: None,
+            concentration: Some(concentration),
+            triage: None,
+        };
+        let html = render_report(&artifacts, 20, 240, ReportLanguage::En);
+        assert!(html.contains("Focused source IP"));
+        assert!(html.contains("URI paths in focus"));
+        assert!(html.contains("198.51.100.7"));
+        assert!(html.contains("/a"));
     }
 }

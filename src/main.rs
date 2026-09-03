@@ -23,7 +23,7 @@ use shenron::{
     comparison::{
         compare_runs, write_comparison, PrivateTemporalComparison, SanitizedTemporalComparison,
     },
-    concentration::{FocusPrefixLengths, PrivateRequestConcentrationReport},
+    concentration::{FocusPrefixLengths, FocusSelector, PrivateRequestConcentrationReport},
     event::{TelemetryCapabilities, TelemetryProfile, TrustedProxy, TrustedProxySet},
     nuclei::{path_distinctiveness, PathDistinctiveness},
     output::{Finding, FindingWriter},
@@ -255,8 +255,16 @@ enum ProductionCommand {
         #[arg(long)]
         output: PathBuf,
         /// Focus the private source-IP breakdown on this exact URI path.
-        #[arg(long)]
+        #[arg(long, conflicts_with_all = ["path_prefix", "source_ip"])]
         path: Option<String>,
+        /// Focus on this path and everything under it (`/api` covers `/api` and
+        /// `/api/...`), listing the sub-paths and observed connection peers.
+        #[arg(long, conflicts_with_all = ["path", "source_ip"])]
+        path_prefix: Option<String>,
+        /// Focus on one observed connection-peer IP, listing the URI paths it
+        /// requested. This is volume context, not attacker attribution.
+        #[arg(long, conflicts_with_all = ["path", "path_prefix"])]
+        source_ip: Option<String>,
         /// IPv4 prefix length for private focus-path address-block aggregation (default: 24).
         #[arg(long, value_parser = parse_ipv4_prefix_length)]
         ipv4_group_prefix: Option<u8>,
@@ -753,6 +761,8 @@ fn main() -> Result<()> {
                 format,
                 output,
                 path,
+                path_prefix,
+                source_ip,
                 ipv4_group_prefix,
                 ipv6_group_prefix,
                 from,
@@ -761,8 +771,25 @@ fn main() -> Result<()> {
                 show_source_ips,
                 limit,
             } => {
-                if path.is_none() && (ipv4_group_prefix.is_some() || ipv6_group_prefix.is_some()) {
-                    anyhow::bail!("--ipv4-group-prefix and --ipv6-group-prefix require --path");
+                // clap enforces that at most one focus selector is set.
+                let focus = match (path, path_prefix, source_ip) {
+                    (Some(path), _, _) => Some(FocusSelector::ExactPath(path)),
+                    (_, Some(prefix), _) => Some(FocusSelector::PathPrefix(prefix)),
+                    (_, _, Some(ip)) => Some(FocusSelector::SourceIp(ip)),
+                    _ => None,
+                };
+                // Address-block grouping applies to a path or path-prefix focus,
+                // which aggregate connection peers; a source-IP focus is one peer.
+                let groups_path_focus = matches!(
+                    focus,
+                    Some(FocusSelector::ExactPath(_) | FocusSelector::PathPrefix(_))
+                );
+                if !groups_path_focus
+                    && (ipv4_group_prefix.is_some() || ipv6_group_prefix.is_some())
+                {
+                    anyhow::bail!(
+                        "--ipv4-group-prefix and --ipv6-group-prefix require --path or --path-prefix"
+                    );
                 }
                 let default_prefixes = FocusPrefixLengths::default();
                 let focus_prefix_lengths = FocusPrefixLengths {
@@ -774,7 +801,7 @@ fn main() -> Result<()> {
                     &output,
                     format.telemetry_profile_for_input(&input)?,
                     HuntTimeRange { from, to },
-                    path.as_deref(),
+                    focus.clone(),
                     focus_prefix_lengths,
                 )?;
                 let private_path = output.join("request-concentration.json");
@@ -788,7 +815,7 @@ fn main() -> Result<()> {
                     show_paths,
                     show_source_ips,
                     limit,
-                    path.as_deref(),
+                    focus.as_ref(),
                 );
                 Ok(())
             }
@@ -1519,7 +1546,7 @@ fn print_concentration(
     show_paths: bool,
     show_source_ips: bool,
     limit: usize,
-    focus_path: Option<&str>,
+    focus: Option<&FocusSelector>,
 ) {
     let time_range = match (&report.filter_from, &report.filter_to) {
         (None, None) => "Time filter:                all timestamps".to_owned(),
@@ -1549,21 +1576,47 @@ fn print_concentration(
         &report.request_concentration,
         "request-concentration.json",
     );
-    if let (Some(path), Some(focus)) = (focus_path, report.request_concentration.focus.as_ref()) {
+    if let (Some(selector), Some(focus_summary)) =
+        (focus, report.request_concentration.focus.as_ref())
+    {
         let rate = match (
-            focus.peak_requests_per_minute,
-            focus.median_requests_per_minute,
+            focus_summary.peak_requests_per_minute,
+            focus_summary.median_requests_per_minute,
         ) {
             (Some(peak), Some(median)) => format!("peak {peak} / median {median:.1}"),
             _ => "unavailable (no timestamped focused requests)".to_owned(),
         };
+        let (header, selector_label) = match selector {
+            FocusSelector::ExactPath(_) => ("Path focus (exact URI path)", "Focus path"),
+            FocusSelector::PathPrefix(_) => (
+                "Path-prefix focus (this path and everything under it)",
+                "Focus prefix",
+            ),
+            FocusSelector::SourceIp(_) => (
+                "Source-IP focus (URI paths this observed connection peer requested)",
+                "Focus source IP",
+            ),
+        };
+        let mut lines = vec![
+            format!("  {selector_label}: {}", terminal_safe(selector.value())),
+            format!("  Requests: {}", focus_summary.total_requests),
+        ];
+        if !matches!(selector, FocusSelector::ExactPath(_)) {
+            lines.push(format!(
+                "  Distinct URI paths in focus: {} (beyond cap: {})",
+                focus_summary.distinct_uri_paths, focus_summary.paths_beyond_cap,
+            ));
+        }
+        if !matches!(selector, FocusSelector::SourceIp(_)) {
+            lines.push(format!(
+                "  Distinct observed connection-peer IPs: {} (beyond cap: {})",
+                focus_summary.distinct_source_ips, focus_summary.source_ips_beyond_cap,
+            ));
+        }
+        lines.push(format!("  Peak / median requests per minute: {rate}"));
         println!(
-            "\nPath focus (aggregate requests to this path only; not a DoS/attack/abuse/compromise/attribution determination):\n  Focus path: {}\n  Requests: {}\n  Distinct observed connection-peer IPs: {}\n  Peak / median requests per minute: {}\n  Focus source IPs beyond cap: {}\n  Observed peers may be CDN/LB/NAT/proxy addresses and are not attacker attribution.",
-            terminal_safe(path),
-            focus.total_requests,
-            focus.distinct_source_ips,
-            rate,
-            focus.source_ips_beyond_cap,
+            "\n{header} (aggregate requests only; not a DoS/attack/abuse/compromise/attribution determination):\n{}\n  Observed peers may be CDN/LB/NAT/proxy addresses and are not attacker attribution.",
+            lines.join("\n"),
         );
     }
     if let Some(private) = private {
@@ -1582,6 +1635,37 @@ fn print_concentration(
                         .map(|value| value.to_string())
                         .unwrap_or_else(|| "unavailable for this telemetry profile".to_owned()),
                 );
+            }
+            if let Some(focus) = &private.focus {
+                if !focus.paths.is_empty() {
+                    let noun = if focus.focus_kind == "source-ip" {
+                        "requested by the focused source IP"
+                    } else {
+                        "under the focused path prefix"
+                    };
+                    println!(
+                        "\nPrivate URI paths {noun} (requests only; not a DoS/attack/abuse/compromise/attribution determination):"
+                    );
+                    for item in focus.paths.iter().take(display_limit(limit)) {
+                        println!(
+                            "  {}\n    Requests: {}",
+                            terminal_safe(&item.uri_path),
+                            item.requests,
+                        );
+                    }
+                    if focus.paths.len() > display_limit(limit) {
+                        println!(
+                            "  {} focused paths omitted. Pass --limit 0 to display all.",
+                            focus.paths.len() - display_limit(limit)
+                        );
+                    }
+                    if focus.paths_beyond_cap != 0 {
+                        println!(
+                            "  Focused path observations beyond tracking cap: {}",
+                            focus.paths_beyond_cap
+                        );
+                    }
+                }
             }
         }
         if show_source_ips {

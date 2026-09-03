@@ -103,6 +103,17 @@ normalized path. The path and peer values remain private in
 focus counts and rates. This is volume context only, never a DoS, attack,
 abuse, compromise, or attribution determination.
 
+Two related focuses build on the same private artifact. `--path-prefix /example`
+analyzes a path and everything under it (segment-boundary matching, so
+`/example` does not match `/examplex`); with `--show-paths` it lists the retained
+sub-paths and their request counts, and with `--show-source-ips` the peers that
+requested anything in the subtree. `--source-ip <IP>` reverses the view: it lists
+the URI paths one observed connection peer requested, most-requested first, with
+`--show-paths`. The three selectors are mutually exclusive, the sanitized report
+still records only aggregate counts and the focus kind, and neither is an
+attribution or DoS/attack/abuse determination. See
+[request concentration](request-concentration.md).
+
 With `--show-source-ips`, the same private focus output also includes derived
 network-prefix groups without replacing the individual peer-IP list. IPv4 uses
 `/24` by default and `--ipv4-group-prefix` can change it; IPv6 uses `/48` by default

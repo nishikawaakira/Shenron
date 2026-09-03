@@ -19,8 +19,8 @@ use walkdir::WalkDir;
 use crate::{
     access_log::{AccessLogFormat, AccessLogLines},
     concentration::{
-        add_focus_prefix_groups, FocusPrefixLengths, PrivateRequestConcentrationReport,
-        RequestConcentration, RequestConcentrationSummary,
+        add_focus_prefix_groups, FocusPrefixLengths, FocusSelector,
+        PrivateRequestConcentrationReport, RequestConcentration, RequestConcentrationSummary,
     },
     event::{HttpHeader, LogSource, TelemetryProfile, TrustedProxySet, WebEvent},
     nuclei::{
@@ -948,7 +948,7 @@ pub fn concentration(
     output: &Path,
     telemetry_profile: TelemetryProfile,
     time_range: HuntTimeRange,
-    focus_path: Option<&str>,
+    focus: Option<FocusSelector>,
     focus_prefix_lengths: FocusPrefixLengths,
 ) -> anyhow::Result<SanitizedConcentrationReport> {
     time_range.validate()?;
@@ -974,8 +974,8 @@ pub fn concentration(
     };
     let mut accumulator =
         RequestConcentration::new(telemetry_profile.capabilities().response_bytes);
-    if let Some(path) = focus_path {
-        accumulator.focus_on_path(path);
+    if let Some(selector) = focus {
+        accumulator.focus_on(selector);
     }
     let mut progress = ProgressReporter::new("concentration");
     for path in files {
