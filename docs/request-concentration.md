@@ -172,6 +172,14 @@ tracking is bounded at 1,000,000 distinct buckets for each global/focus map;
 records in new buckets beyond that cap are counted and disclosed, while already
 retained buckets continue to receive exact counts.
 
+For every retained global minute, the private artifact also stores aggregate
+request counts split into HTTP status classes 1xx, 2xx, 3xx, 4xx, and 5xx. The
+HTML report renders these as five lines on a shared scale immediately after the
+global request timeline. This status series follows the same minute-bucket cap
+and deterministic order, is not copied into sanitized output, and contains no
+raw path or IP values. Response status classes are observation context, not a
+determination of attack, exploitation, or compromise.
+
 ## Bounded tracking and reproducibility
 
 The default exact key limits are 100,000 URI paths, 1,000,000 source IPs, and

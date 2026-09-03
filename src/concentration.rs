@@ -256,6 +256,18 @@ pub struct MinuteRequestCount {
     pub requests: u64,
 }
 
+/// Private aggregate counts for one retained UTC epoch minute, split into the
+/// five standard HTTP status classes. Raw request values are not represented.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+pub struct StatusClassMinuteCount {
+    pub minute_epoch: i64,
+    pub informational: u64,
+    pub success: u64,
+    pub redirection: u64,
+    pub client_error: u64,
+    pub server_error: u64,
+}
+
 /// Private detail for one exact URI-path focus. Connection-peer IPs are not
 /// client/attacker attribution: they can be CDN, LB, NAT, or proxy addresses.
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -306,6 +318,10 @@ pub struct PrivateRequestConcentrationReport {
     /// Private minute-resolution series, ordered by epoch minute.
     #[serde(default)]
     pub requests_per_minute_series: Vec<MinuteRequestCount>,
+    /// Private aggregate-only status-class series, ordered by epoch minute.
+    /// It is absent from sanitized output and defaults empty for old artifacts.
+    #[serde(default)]
+    pub status_class_requests_per_minute_series: Vec<StatusClassMinuteCount>,
     /// Global records in new minute buckets omitted after the fixed cap.
     #[serde(default)]
     pub minute_buckets_beyond_cap: u64,
@@ -336,6 +352,7 @@ pub struct RequestConcentration {
     source_path_pairs: BTreeMap<(String, String), u64>,
     source_ips_with_incomplete_path_pairs: BTreeSet<String>,
     minute_buckets: BTreeMap<i64, u64>,
+    status_minute_buckets: BTreeMap<i64, StatusClassCounts>,
     minute_buckets_beyond_cap: u64,
     requests_without_uri_path: u64,
     requests_without_source_ip: u64,
@@ -369,6 +386,7 @@ impl RequestConcentration {
             source_path_pairs: BTreeMap::new(),
             source_ips_with_incomplete_path_pairs: BTreeSet::new(),
             minute_buckets: BTreeMap::new(),
+            status_minute_buckets: BTreeMap::new(),
             minute_buckets_beyond_cap: 0,
             requests_without_uri_path: 0,
             requests_without_source_ip: 0,
@@ -401,7 +419,7 @@ impl RequestConcentration {
 
     pub fn observe(&mut self, event: &WebEvent) {
         self.total_requests += 1;
-        self.observe_minute(event.timestamp);
+        self.observe_minute(event.timestamp, event.status);
 
         let path = event.uri_path.as_deref();
         let source_ip = event.source_ip.as_deref();
@@ -490,6 +508,9 @@ impl RequestConcentration {
                 .collect(),
             focus: self.private_focus_summary(),
             requests_per_minute_series: Self::minute_series(&self.minute_buckets),
+            status_class_requests_per_minute_series: Self::status_minute_series(
+                &self.status_minute_buckets,
+            ),
             minute_buckets_beyond_cap: self.minute_buckets_beyond_cap,
         }
     }
@@ -609,17 +630,23 @@ impl RequestConcentration {
         })
     }
 
-    fn observe_minute(&mut self, timestamp: Option<DateTime<Utc>>) {
+    fn observe_minute(&mut self, timestamp: Option<DateTime<Utc>>, status: Option<u16>) {
         let Some(timestamp) = timestamp else {
             self.observations_without_timestamp += 1;
             return;
         };
-        Self::track_minute_bucket(
+        let minute_epoch = timestamp.timestamp().div_euclid(60);
+        if Self::track_minute_bucket(
             &mut self.minute_buckets,
             &mut self.minute_buckets_beyond_cap,
             self.limits.max_minute_buckets,
-            timestamp.timestamp().div_euclid(60),
-        );
+            minute_epoch,
+        ) {
+            record_status_class(
+                self.status_minute_buckets.entry(minute_epoch).or_default(),
+                status,
+            );
+        }
     }
 
     fn track_path(&mut self, path: &str, event: &WebEvent) -> bool {
@@ -728,12 +755,13 @@ impl RequestConcentration {
         beyond_cap: &mut u64,
         maximum: usize,
         minute_epoch: i64,
-    ) {
+    ) -> bool {
         if !buckets.contains_key(&minute_epoch) && buckets.len() >= maximum {
             *beyond_cap += 1;
-            return;
+            return false;
         }
         *buckets.entry(minute_epoch).or_default() += 1;
+        true
     }
 
     fn minute_series(buckets: &BTreeMap<i64, u64>) -> Vec<MinuteRequestCount> {
@@ -742,6 +770,22 @@ impl RequestConcentration {
             .map(|(minute_epoch, requests)| MinuteRequestCount {
                 minute_epoch: *minute_epoch,
                 requests: *requests,
+            })
+            .collect()
+    }
+
+    fn status_minute_series(
+        buckets: &BTreeMap<i64, StatusClassCounts>,
+    ) -> Vec<StatusClassMinuteCount> {
+        buckets
+            .iter()
+            .map(|(minute_epoch, counts)| StatusClassMinuteCount {
+                minute_epoch: *minute_epoch,
+                informational: counts.informational,
+                success: counts.success,
+                redirection: counts.redirection,
+                client_error: counts.client_error,
+                server_error: counts.server_error,
             })
             .collect()
     }
@@ -930,12 +974,22 @@ mod tests {
             ]
         );
         assert_eq!(private.minute_buckets_beyond_cap, 1);
+        assert_eq!(private.status_class_requests_per_minute_series.len(), 2);
+        assert_eq!(
+            private
+                .status_class_requests_per_minute_series
+                .iter()
+                .map(|point| point.client_error)
+                .sum::<u64>(),
+            3
+        );
         let focus = private.focus.unwrap();
         assert_eq!(focus.requests_per_minute_series.len(), 2);
         assert_eq!(focus.minute_buckets_beyond_cap, 1);
 
         let sanitized = serde_json::to_string(&concentration.summary()).unwrap();
         assert!(!sanitized.contains("requests_per_minute_series"));
+        assert!(!sanitized.contains("status_class_requests_per_minute_series"));
         assert!(!sanitized.contains("198.51.100.1"));
         assert!(!sanitized.contains("/target"));
     }
@@ -947,6 +1001,7 @@ mod tests {
         let mut value = serde_json::to_value(concentration.private_report()).unwrap();
         let object = value.as_object_mut().unwrap();
         object.remove("requests_per_minute_series");
+        object.remove("status_class_requests_per_minute_series");
         object.remove("minute_buckets_beyond_cap");
         let focus = object
             .get_mut("focus")
@@ -956,10 +1011,47 @@ mod tests {
         focus.remove("minute_buckets_beyond_cap");
         let loaded: PrivateRequestConcentrationReport = serde_json::from_value(value).unwrap();
         assert!(loaded.requests_per_minute_series.is_empty());
+        assert!(loaded.status_class_requests_per_minute_series.is_empty());
         assert_eq!(loaded.minute_buckets_beyond_cap, 0);
         let focus = loaded.focus.unwrap();
         assert!(focus.requests_per_minute_series.is_empty());
         assert_eq!(focus.minute_buckets_beyond_cap, 0);
+    }
+
+    #[test]
+    fn keeps_status_class_minute_series_sorted_and_counted_by_class() {
+        let mut concentration = RequestConcentration::new(true);
+        for (minute, status) in [(2, 200), (0, 404), (0, 201), (1, 302), (1, 500), (1, 101)] {
+            let mut observed = event(Some("/status"), Some("198.51.100.1"), Some(minute));
+            observed.status = Some(status);
+            concentration.observe(&observed);
+        }
+
+        assert_eq!(
+            concentration
+                .private_report()
+                .status_class_requests_per_minute_series,
+            vec![
+                StatusClassMinuteCount {
+                    minute_epoch: 0,
+                    success: 1,
+                    client_error: 1,
+                    ..StatusClassMinuteCount::default()
+                },
+                StatusClassMinuteCount {
+                    minute_epoch: 1,
+                    informational: 1,
+                    redirection: 1,
+                    server_error: 1,
+                    ..StatusClassMinuteCount::default()
+                },
+                StatusClassMinuteCount {
+                    minute_epoch: 2,
+                    success: 1,
+                    ..StatusClassMinuteCount::default()
+                },
+            ]
+        );
     }
 
     #[test]

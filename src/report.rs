@@ -15,6 +15,7 @@ use serde_json::Value;
 use crate::concentration::{
     MinuteRequestCount, PrivateFocusPath, PrivateFocusPrefixGroup, PrivateFocusSource,
     PrivateRequestConcentrationReport, PrivateSourceConcentration, StatusClassCounts,
+    StatusClassMinuteCount,
 };
 
 pub const PRIVATE_REPORT_WARNING: &str =
@@ -93,6 +94,14 @@ struct Labels {
     top_observed_peers: &'static str,
     requests_per_minute: &'static str,
     global_timeline: &'static str,
+    status_requests_per_minute: &'static str,
+    status_timeline: &'static str,
+    status_timeline_note: &'static str,
+    status_informational: &'static str,
+    status_success: &'static str,
+    status_redirection: &'static str,
+    status_client_error: &'static str,
+    status_server_error: &'static str,
     focused_path: &'static str,
     focused_source_ip: &'static str,
     focused_paths_chart: &'static str,
@@ -190,6 +199,14 @@ const EN_LABELS: Labels = Labels {
     top_observed_peers: "Top observed connection peers",
     requests_per_minute: "Requests per minute",
     global_timeline: "Global request timeline",
+    status_requests_per_minute: "Requests per minute by HTTP status class",
+    status_timeline: "HTTP status-class request timeline",
+    status_timeline_note: "HTTP status classes are response outcomes, not a determination of attack, exploitation, or compromise. Other or unavailable status values are not plotted.",
+    status_informational: "Informational",
+    status_success: "Success",
+    status_redirection: "Redirection",
+    status_client_error: "Client error",
+    status_server_error: "Server error",
     focused_path: "Focused path",
     focused_source_ip: "Focused source IP",
     focused_paths_chart: "URI paths in focus",
@@ -287,6 +304,14 @@ const JA_LABELS: Labels = Labels {
     top_observed_peers: "上位の観測接続ピア",
     requests_per_minute: "1分ごとのリクエスト数",
     global_timeline: "全体リクエスト時系列",
+    status_requests_per_minute: "HTTP ステータスクラス別 1分ごとのリクエスト数",
+    status_timeline: "HTTP ステータスクラス別リクエスト時系列",
+    status_timeline_note: "HTTP ステータスクラスはレスポンス結果であり、攻撃・悪用・侵害の判定ではありません。その他または利用不可のステータス値は描画しません。",
+    status_informational: "情報",
+    status_success: "成功",
+    status_redirection: "リダイレクト",
+    status_client_error: "クライアントエラー",
+    status_server_error: "サーバーエラー",
     focused_path: "フォーカスパス",
     focused_source_ip: "フォーカス送信元 IP",
     focused_paths_chart: "フォーカス内の URI パス",
@@ -510,7 +535,7 @@ pub fn render_report(
 
     let mut html = format!(
         "<!doctype html><html lang=\"{}\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>{}</title><style>\
-        :root{{color-scheme:dark;--bg:#0b1020;--panel:#151d31;--muted:#a8b3c7;--text:#f4f7fb;--accent:#66d9c2;--warn:#ffcf66;--danger:#ff6b78;--line:#33415f}}*{{box-sizing:border-box}}body{{margin:0;overflow-x:hidden;background:var(--bg);color:var(--text);font:14px/1.5 system-ui,sans-serif}}main{{max-width:1240px;margin:auto;padding:24px;min-width:0}}a{{color:var(--accent)}}.private{{background:#6b1320;border:2px solid var(--danger);padding:16px;font-size:18px;font-weight:800;overflow-wrap:anywhere;word-break:break-word}}.note,.unavailable,.cap{{color:var(--muted)}}.note{{border-left:3px solid var(--warn);padding-left:12px}}.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;min-width:0}}.card,section{{background:var(--panel);border:1px solid var(--line);border-radius:10px;min-width:0}}.card{{padding:14px;overflow:hidden}}.card span,.card b{{overflow-wrap:anywhere;word-break:break-word}}.card b{{display:block;font-size:24px}}.badge{{display:inline-block;padding:1px 7px;border:1px solid var(--warn);border-radius:999px;color:var(--warn);font-weight:700}}section{{margin-top:18px;padding:18px;overflow:hidden}}h1,h2,h3{{margin-top:0;overflow-wrap:anywhere;word-break:break-word}}.chart-scroll,.table-scroll{{max-width:100%;overflow:auto;max-height:70vh}}svg{{width:100%;height:auto;background:#10172a;border-radius:8px}}.chart-scroll svg{{display:block;min-width:1000px}}.bar{{fill:var(--accent)}}.axis{{stroke:var(--line);stroke-width:1}}.timeline{{fill:none;stroke:var(--accent);stroke-width:3}}.timeline-area{{fill:#66d9c226;stroke:none}}.timeline-dot{{fill:var(--accent)}}.col{{cursor:crosshair}}.hit{{fill:transparent;pointer-events:all}}.col:hover .hit{{fill:#66d9c22e}}.tip{{visibility:hidden;pointer-events:none}}.col:hover .tip{{visibility:visible}}.tip-bg{{fill:#070b14;stroke:var(--accent);stroke-width:1}}.tip-label{{fill:#fff;font-weight:700}}svg text{{fill:var(--text);font:12px system-ui,sans-serif}}table{{width:100%;min-width:1000px;border-collapse:collapse}}th,td{{padding:9px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top;white-space:nowrap}}.score{{width:120px;background:#26334f;border-radius:9px;overflow:hidden}}.score span{{display:block;height:10px;background:var(--accent)}}code{{color:#b9f4e8;overflow-wrap:anywhere;word-break:break-word}}.small{{font-size:12px;color:var(--muted)}}</style></head><body><main>",
+        :root{{color-scheme:dark;--bg:#0b1020;--panel:#151d31;--muted:#a8b3c7;--text:#f4f7fb;--accent:#66d9c2;--warn:#ffcf66;--danger:#ff6b78;--line:#33415f}}*{{box-sizing:border-box}}body{{margin:0;overflow-x:hidden;background:var(--bg);color:var(--text);font:14px/1.5 system-ui,sans-serif}}main{{max-width:1240px;margin:auto;padding:24px;min-width:0}}a{{color:var(--accent)}}.private{{background:#6b1320;border:2px solid var(--danger);padding:16px;font-size:18px;font-weight:800;overflow-wrap:anywhere;word-break:break-word}}.note,.unavailable,.cap{{color:var(--muted)}}.note{{border-left:3px solid var(--warn);padding-left:12px}}.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;min-width:0}}.card,section{{background:var(--panel);border:1px solid var(--line);border-radius:10px;min-width:0}}.card{{padding:14px;overflow:hidden}}.card span,.card b{{overflow-wrap:anywhere;word-break:break-word}}.card b{{display:block;font-size:24px}}.badge{{display:inline-block;padding:1px 7px;border:1px solid var(--warn);border-radius:999px;color:var(--warn);font-weight:700}}section{{margin-top:18px;padding:18px;overflow:hidden}}h1,h2,h3{{margin-top:0;overflow-wrap:anywhere;word-break:break-word}}.chart-scroll,.table-scroll{{max-width:100%;overflow:auto;max-height:70vh}}svg{{width:100%;height:auto;background:#10172a;border-radius:8px}}.chart-scroll svg{{display:block;min-width:1000px}}.bar{{fill:var(--accent)}}.axis{{stroke:var(--line);stroke-width:1}}.timeline{{fill:none;stroke:var(--accent);stroke-width:3}}.timeline-area{{fill:#66d9c226;stroke:none}}.timeline-dot{{fill:var(--accent)}}.status-line{{fill:none;stroke-width:2.5}}.status-line.s1xx{{stroke:#c084fc}}.status-line.s2xx{{stroke:#4ade80}}.status-line.s3xx{{stroke:#38bdf8}}.status-line.s4xx{{stroke:#facc15}}.status-line.s5xx{{stroke:#fb7185}}.status-key.s1xx{{fill:#c084fc}}.status-key.s2xx{{fill:#4ade80}}.status-key.s3xx{{fill:#38bdf8}}.status-key.s4xx{{fill:#facc15}}.status-key.s5xx{{fill:#fb7185}}.col{{cursor:crosshair}}.hit{{fill:transparent;pointer-events:all}}.col:hover .hit{{fill:#66d9c22e}}.tip{{visibility:hidden;pointer-events:none}}.col:hover .tip{{visibility:visible}}.tip-bg{{fill:#070b14;stroke:var(--accent);stroke-width:1}}.tip-label{{fill:#fff;font-weight:700}}svg text{{fill:var(--text);font:12px system-ui,sans-serif}}table{{width:100%;min-width:1000px;border-collapse:collapse}}th,td{{padding:9px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top;white-space:nowrap}}.score{{width:120px;background:#26334f;border-radius:9px;overflow:hidden}}.score span{{display:block;height:10px;background:var(--accent)}}code{{color:#b9f4e8;overflow-wrap:anywhere;word-break:break-word}}.small{{font-size:12px;color:var(--muted)}}</style></head><body><main>",
         language.html_lang(),
         html_escape(labels.title),
     );
@@ -710,6 +735,26 @@ fn render_concentration(
         timeline_points,
         language,
     ));
+    if concentration
+        .status_class_requests_per_minute_series
+        .iter()
+        .any(|point| status_class_total(point) != 0)
+    {
+        html.push_str(&format!(
+            "<h3>{}</h3>",
+            html_escape(labels.status_requests_per_minute)
+        ));
+        html.push_str(&status_class_timeline_chart(
+            labels.status_timeline,
+            &concentration.status_class_requests_per_minute_series,
+            timeline_points,
+            language,
+        ));
+        html.push_str(&format!(
+            "<p class=\"note\">{}</p>",
+            html_escape(labels.status_timeline_note)
+        ));
+    }
     cap_note(
         html,
         concentration.minute_buckets_beyond_cap,
@@ -1220,6 +1265,161 @@ fn timeline_chart(
     )
 }
 
+fn status_class_timeline_chart(
+    title: &str,
+    series: &[StatusClassMinuteCount],
+    maximum_points: usize,
+    language: ReportLanguage,
+) -> String {
+    let labels = language.labels();
+    let points = downsample_status_timeline(series, maximum_points.max(1));
+    let Some(first_point) = points.first() else {
+        return String::new();
+    };
+    let first = first_point.minute_epoch;
+    let last = points
+        .last()
+        .expect("checked non-empty status timeline")
+        .minute_epoch;
+    let peak = points
+        .iter()
+        .flat_map(|point| {
+            [
+                point.informational,
+                point.success,
+                point.redirection,
+                point.client_error,
+                point.server_error,
+            ]
+        })
+        .max()
+        .unwrap_or(1)
+        .max(1);
+    let span = (last as i128 - first as i128).max(1) as f64;
+    let point_x =
+        |minute_epoch: i64| 60.0 + (minute_epoch as i128 - first as i128) as f64 / span * 880.0;
+    let point_y = |requests: u64| 180.0 - requests as f64 / peak as f64 * 145.0;
+    let classes = [
+        ("s1xx", "1xx", labels.status_informational),
+        ("s2xx", "2xx", labels.status_success),
+        ("s3xx", "3xx", labels.status_redirection),
+        ("s4xx", "4xx", labels.status_client_error),
+        ("s5xx", "5xx", labels.status_server_error),
+    ];
+    let mut polylines = String::new();
+    let mut legend = String::new();
+    for (index, (class, code, class_label)) in classes.iter().enumerate() {
+        let mut coordinates = points
+            .iter()
+            .map(|point| {
+                format!(
+                    "{:.2},{:.2}",
+                    point_x(point.minute_epoch),
+                    point_y(status_class_value(point, index))
+                )
+            })
+            .collect::<Vec<_>>();
+        if coordinates.len() == 1 {
+            coordinates.push(format!(
+                "940.00,{:.2}",
+                point_y(status_class_value(&points[0], index))
+            ));
+        }
+        polylines.push_str(&format!(
+            "<polyline class=\"status-line {class}\" points=\"{}\"></polyline>",
+            coordinates.join(" ")
+        ));
+        let legend_x = 70 + index * 176;
+        legend.push_str(&format!(
+            "<rect class=\"status-key {class}\" x=\"{legend_x}\" y=\"9\" width=\"12\" height=\"12\"></rect><text x=\"{}\" y=\"19\">{} {}</text>",
+            legend_x + 18,
+            html_escape(code),
+            html_escape(class_label),
+        ));
+    }
+    format!(
+        "<div class=\"chart-scroll\"><svg width=\"1000\" height=\"220\" viewBox=\"0 0 1000 220\" role=\"img\" aria-label=\"{}\">{}<line class=\"axis\" x1=\"60\" y1=\"180\" x2=\"940\" y2=\"180\"></line><line class=\"axis\" x1=\"60\" y1=\"35\" x2=\"60\" y2=\"180\"></line>{}<text x=\"60\" y=\"205\">{}</text><text x=\"760\" y=\"205\">{}</text></svg></div><p class=\"small\">{} {} · {} {}.</p>",
+        html_escape(title),
+        legend,
+        polylines,
+        html_escape(&minute_label(first, language)),
+        html_escape(&minute_label(last, language)),
+        group_thousands(points.len() as u64),
+        html_escape(labels.timeline_footer),
+        html_escape(labels.peak),
+        group_thousands(peak),
+    )
+}
+
+fn status_class_value(point: &StatusClassMinuteCount, index: usize) -> u64 {
+    match index {
+        0 => point.informational,
+        1 => point.success,
+        2 => point.redirection,
+        3 => point.client_error,
+        4 => point.server_error,
+        _ => 0,
+    }
+}
+
+fn status_class_total(point: &StatusClassMinuteCount) -> u64 {
+    point
+        .informational
+        .saturating_add(point.success)
+        .saturating_add(point.redirection)
+        .saturating_add(point.client_error)
+        .saturating_add(point.server_error)
+}
+
+fn downsample_status_timeline(
+    series: &[StatusClassMinuteCount],
+    maximum_points: usize,
+) -> Vec<StatusClassMinuteCount> {
+    let mut minutes = BTreeMap::<i64, StatusClassMinuteCount>::new();
+    for point in series {
+        let aggregate =
+            minutes
+                .entry(point.minute_epoch)
+                .or_insert_with(|| StatusClassMinuteCount {
+                    minute_epoch: point.minute_epoch,
+                    ..StatusClassMinuteCount::default()
+                });
+        add_status_point(aggregate, point);
+    }
+    let Some((&first, _)) = minutes.first_key_value() else {
+        return Vec::new();
+    };
+    let last = *minutes
+        .last_key_value()
+        .expect("checked non-empty status series")
+        .0;
+    let span = last as i128 - first as i128 + 1;
+    let maximum_points = maximum_points.max(1) as i128;
+    let width = ((span + maximum_points - 1) / maximum_points).max(1);
+    let mut buckets = BTreeMap::<i128, StatusClassMinuteCount>::new();
+    for (minute, point) in minutes {
+        let index = (minute as i128 - first as i128) / width;
+        let bucket = buckets.entry(index).or_default();
+        add_status_point(bucket, &point);
+    }
+    buckets
+        .into_iter()
+        .map(|(index, mut point)| {
+            let minute = first as i128 + index * width;
+            point.minute_epoch = minute.clamp(i64::MIN as i128, i64::MAX as i128) as i64;
+            point
+        })
+        .collect()
+}
+
+fn add_status_point(target: &mut StatusClassMinuteCount, point: &StatusClassMinuteCount) {
+    target.informational = target.informational.saturating_add(point.informational);
+    target.success = target.success.saturating_add(point.success);
+    target.redirection = target.redirection.saturating_add(point.redirection);
+    target.client_error = target.client_error.saturating_add(point.client_error);
+    target.server_error = target.server_error.saturating_add(point.server_error);
+}
+
 fn downsample_timeline(
     series: &[MinuteRequestCount],
     maximum_points: usize,
@@ -1628,6 +1828,19 @@ mod tests {
                     requests: 2,
                 },
             ],
+            status_class_requests_per_minute_series: vec![
+                StatusClassMinuteCount {
+                    minute_epoch: 0,
+                    success: 1,
+                    ..StatusClassMinuteCount::default()
+                },
+                StatusClassMinuteCount {
+                    minute_epoch: 1,
+                    success: 1,
+                    client_error: 1,
+                    ..StatusClassMinuteCount::default()
+                },
+            ],
             minute_buckets_beyond_cap: 0,
         }
     }
@@ -1671,6 +1884,7 @@ mod tests {
             "Top paths",
             "Top observed connection peers",
             "Requests per minute",
+            "Requests per minute by HTTP status class",
             "Hunt triage view",
         ] {
             assert!(html.contains(section));
@@ -1867,10 +2081,84 @@ mod tests {
     }
 
     #[test]
+    fn status_class_timeline_renders_five_lines_and_a_legend_without_external_refs() {
+        let series = vec![
+            StatusClassMinuteCount {
+                minute_epoch: 0,
+                informational: 1,
+                success: 1_234,
+                redirection: 2,
+                client_error: 3,
+                server_error: 4,
+            },
+            StatusClassMinuteCount {
+                minute_epoch: 1,
+                informational: 2,
+                success: 5,
+                redirection: 6,
+                client_error: 7,
+                server_error: 8,
+            },
+        ];
+        let html = status_class_timeline_chart("Status timeline", &series, 240, ReportLanguage::En);
+        assert_eq!(html.matches("<polyline class=\"status-line s").count(), 5);
+        for expected in [
+            "1xx Informational",
+            "2xx Success",
+            "3xx Redirection",
+            "4xx Client error",
+            "5xx Server error",
+            "1,234",
+        ] {
+            assert!(html.contains(expected));
+        }
+        assert!(html.contains("width=\"1000\" height=\"220\""));
+        for forbidden in ["http://", "https://", "src=", "<script"] {
+            assert!(!html.contains(forbidden));
+        }
+    }
+
+    #[test]
+    fn empty_status_class_series_omits_its_report_section() {
+        let mut concentration = synthetic_concentration("/a");
+        concentration
+            .status_class_requests_per_minute_series
+            .clear();
+        let artifacts = ReportArtifacts {
+            sanitized: None,
+            manifest: None,
+            concentration: Some(concentration),
+            triage: None,
+        };
+        let html = render_report(&artifacts, 20, 240, ReportLanguage::En);
+        assert!(!html.contains("Requests per minute by HTTP status class"));
+
+        let mut unavailable_only = synthetic_concentration("/a");
+        unavailable_only.status_class_requests_per_minute_series = vec![StatusClassMinuteCount {
+            minute_epoch: 0,
+            ..StatusClassMinuteCount::default()
+        }];
+        let artifacts = ReportArtifacts {
+            sanitized: None,
+            manifest: None,
+            concentration: Some(unavailable_only),
+            triage: None,
+        };
+        let html = render_report(&artifacts, 20, 240, ReportLanguage::En);
+        assert!(!html.contains("Requests per minute by HTTP status class"));
+    }
+
+    #[test]
     fn japanese_report_translates_human_labels_and_remains_self_contained() {
-        let html = render_report(&ReportArtifacts::default(), 20, 240, ReportLanguage::Ja);
+        let artifacts = ReportArtifacts {
+            concentration: Some(synthetic_concentration("/a")),
+            ..ReportArtifacts::default()
+        };
+        let html = render_report(&artifacts, 20, 240, ReportLanguage::Ja);
         assert!(html.contains("<html lang=\"ja\">"));
         assert!(html.contains("集計サマリ"));
+        assert!(html.contains("HTTP ステータスクラス別 1分ごとのリクエスト数"));
+        assert!(html.contains("1xx 情報"));
         assert!(html.contains("DoS・攻撃・悪用・侵害・悪性確率・攻撃者特定の判定ではありません"));
         for forbidden in ["http://", "https://", "src=", "<script src"] {
             assert!(!html.contains(forbidden));

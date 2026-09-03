@@ -30,11 +30,13 @@ missing sections unavailable rather than estimating them:
   manifest, so provenance is populated for either run; a `concentration` run has
   no Nuclei pass, so its Nuclei revision reads as not applicable;
 - `request-concentration.json` for private paths, observed connection-peer IPs,
-  prefix groups, tracking-cap disclosures, and minute-resolution timelines;
+  prefix groups, tracking-cap disclosures, the minute-resolution request
+  timeline, and aggregate minute-by-HTTP-status-class counts;
 - `triage-view.json` for the ranked private behavior-priority view.
 
 The report shows aggregate cards, Top-N path and peer-IP bars, global and
-focused-path request timelines, focused-path network-prefix bars when present,
+focused-path request timelines, a five-line global timeline split into HTTP
+status classes 1xx through 5xx, focused-path network-prefix bars when present,
 the hunt triage table, and a sanitized aggregate row for each observed CVE. The
 Observed CVEs summary card links to that final section when CVE rows exist. It
 lists the matching Nuclei template IDs, catalog KEV membership, and
@@ -52,6 +54,14 @@ disclosed; omitted data is never approximated. Human-readable labels default to
 English; pass `--report-lang ja` for Japanese. Integer counts use three-digit comma
 grouping in either language. Older artifacts without a retained minute series
 show guidance to rerun `hunt` or `concentration` with the current build.
+
+The status-class timeline uses the same retained minute admission and
+deterministic downsampling as the global request timeline. Its five lines share
+one scale so 1xx, 2xx, 3xx, 4xx, and 5xx volumes remain directly comparable.
+The series contains aggregate counts only and is stored only in the private
+`request-concentration.json`; it is not copied into sanitized output. HTTP
+response classes are context, not a determination of attack, exploitation, or
+compromise. Other or unavailable status values are not plotted.
 
 Timeline columns contain visible CSS-only hover readouts showing the UTC minute
 and request count; native SVG `<title>` elements remain as a fallback. Hovering
