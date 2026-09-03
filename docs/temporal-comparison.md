@@ -7,11 +7,11 @@ retro-hunt scope are now settled (see "Settled decisions"); the delivery is a
 single-pass command rather than a family of subcommands (see "One command, not a
 family").
 
-Part A implements the artifact comparison engine, `production compare`, and
-`production hunt --baseline`. It writes `comparison-summary.json`
+Part A implements the artifact comparison engine, `compare`, and
+`hunt --baseline`. It writes `comparison-summary.json`
 (`SANITIZED_TEMPORAL_COMPARISON`) and `comparison-detail.json`
 (`TEMPORAL_COMPARISON_PRIVATE`). Part B implements the consolidated
-behavior-score and reputation triage view emitted by every `production hunt`.
+behavior-score and reputation triage view emitted by every `hunt`.
 
 ## Why
 
@@ -30,7 +30,7 @@ yet answer two questions that materially help threat hunting:
    two CTI revisions rather than two calendar windows.
 
 Both are behavioural/temporal, orthogonal to the CVE-per-request matching. They
-extend the CTI-independent volume track that `production concentration` opened,
+extend the CTI-independent volume track that `concentration` opened,
 plus the CTI track via retro-hunting; they do not change how a single run works.
 
 ## The comparison modes
@@ -122,7 +122,7 @@ frozen inputs, exactly like a single run is a read-only function of one corpus.
 ## One command, not a family
 
 The primary path is a **single command that already does most of this**:
-`production hunt` runs Nuclei, Sigma, and concentration in one pass over the
+`hunt` runs Nuclei, Sigma, and concentration in one pass over the
 corpus. Rather than add a family of comparison subcommands the analyst must
 orchestrate, temporal comparison is folded into that one pass, and a single
 consolidated view is added, in the spirit of a one-command tool like Hayabusa —
@@ -151,8 +151,8 @@ Two additions:
 The focused subcommands stay available for re-analysis rather than being the
 common path:
 
-- `production explain`, `production concentration` — unchanged, for deep dives.
-- `production compare --baseline <run-A> --current <run-B> --output <dir>` — the
+- `explain`, `concentration` — unchanged, for deep dives.
+- `compare --baseline <run-A> --current <run-B> --output <dir>` — the
   same diff over two arbitrary pre-existing runs, for when neither is the run you
   just produced. It is a **pure read-only function of two local run directories**
   and **never re-streams a corpus** (see the retro-hunt decision).
@@ -176,7 +176,7 @@ downstream — unchanged. The comparison is pure aggregation over local files.
 
 ### Consolidated triage view (Part B)
 
-Every `production hunt` also re-reads its local `private-findings.jsonl` after
+Every `hunt` also re-reads its local `private-findings.jsonl` after
 the streaming pass and writes two additional artifacts:
 
 - `triage-summary.json` (`SANITIZED_HUNT_TRIAGE`) contains only entity counts,
@@ -192,7 +192,7 @@ to print private ranked entries, and use hunt's `--limit` (default 20; `0` for
 all) to bound that listing. Entries sort deterministically by behavior score
 descending, then locally supplied reputation score descending (missing opinion
 last), then first-seen first, then key. ASN and reputation inputs use the same
-prepared local datasets as `production explain`; no external lookup occurs.
+prepared local datasets as `explain`; no external lookup occurs.
 
 This is a **triage priority order — which entity a person reviews first — not a
 threat severity or a probability of malice**. A first-seen marker means new and

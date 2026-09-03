@@ -1,9 +1,9 @@
 # COUNT hypothesis ladder
 
-`shenron production count-hypotheses` evaluates broad-to-narrow validated Nuclei Detection IR predicates as **local COUNT-mode simulations**. It does not create an AWS rule, call AWS, deploy a control, execute a template, or contact a network. Its purpose is to give an analyst the measurements needed to choose whether a condition is appropriate for a separate human-reviewed COUNT-only export.
+`shenron count-hypotheses` evaluates broad-to-narrow validated Nuclei Detection IR predicates as **local COUNT-mode simulations**. It does not create an AWS rule, call AWS, deploy a control, execute a template, or contact a network. Its purpose is to give an analyst the measurements needed to choose whether a condition is appropriate for a separate human-reviewed COUNT-only export.
 
 ```bash
-shenron production count-hypotheses \
+shenron count-hypotheses \
   --input ./historical-logs \
   --format aws-waf \
   --nuclei-templates ./nuclei-templates \

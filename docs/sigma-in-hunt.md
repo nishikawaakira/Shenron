@@ -1,8 +1,8 @@
-# Sigma detection inside `production hunt`
+# Sigma detection inside `hunt`
 
 ## Why
 
-`production hunt` is CVE-anchored: it matches the validated Nuclei Detection IR and
+`hunt` is CVE-anchored: it matches the validated Nuclei Detection IR and
 reports per-CVE evidence. That is the right design for tracking known
 vulnerabilities and it does not change. But a source that systematically
 enumerates secret-file paths — `.env` and its variants, `/.aws/credentials`,
@@ -77,7 +77,7 @@ Two fields are deliberately **not** borrowed from the Nuclei model:
   Sigma rule carries a CVE tag; the CVE track stays Nuclei-only.
 - **`run-manifest.json`**: records how many supported Sigma rules were evaluated
   (0 when the pass was disabled or no rules were found).
-- **`production explain`**: the source is shown per finding and in the JSON view;
+- **`explain`**: the source is shown per finding and in the JSON view;
   the low-confidence display filter treats Sigma matches by the same
   request-specificity/path-distinctiveness rule as Nuclei matches.
 

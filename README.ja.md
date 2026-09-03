@@ -29,10 +29,10 @@ Shenron の解析本体 `shenron` は、ターゲットへのスキャン、エ�
 
 | 段階 | 目的 | 主なコマンド |
 | --- | --- | --- |
-| FIND | 既知の指標を過去ログから探す | `production hunt` |
-| EXPLAIN / PIVOT | CVE/テンプレ・IP・JA4・ASN 単位で読み解く | `production explain` / `production ablation` |
-| ACT | 防御条件の候補を作り COUNT で評価・出力 | `production count-hypotheses` / `candidate ...` |
-| VALIDATE | コーパス全体で脅威カバレッジを測る | `production replay` |
+| FIND | 既知の指標を過去ログから探す | `hunt` |
+| EXPLAIN / PIVOT | CVE/テンプレ・IP・JA4・ASN 単位で読み解く | `explain` / `ablation` |
+| ACT | 防御条件の候補を作り COUNT で評価・出力 | `count-hypotheses` / `candidate ...` |
+| VALIDATE | コーパス全体で脅威カバレッジを測る | `replay` |
 
 **設計の柱**は、(1) テンプレを実行しない静的変換、(2) 確度を数値・ラベルで明示、(3) 入力を固定版（凍結スナップショット）にして SHA-256 で記録する再現性、(4) 「攻撃・悪用成功・侵害・攻撃者特定」を決して断定しないこと、の4点です。
 
@@ -51,18 +51,18 @@ Shenron の解析本体 `shenron` は、ターゲットへのスキャン、エ�
 
 - 小さく明示的な Sigma サブセットによるログ照合
 - Nuclei の CVE テンプレートの静的解析と、検知可能性（detectability）の評価
-- `production inspect`：ログにどの情報が入っているか（可視性）を事前確認
-- `production hunt`：検証済み Nuclei 検出条件を過去ログに照合（FIND）
-- `production ablation`：URI-only から Nuclei IR・request-specific IR まで、条件の広さ別に一致件数（ボリューム）を比較
-- `production replay`：ローカルの履歴コーパス全体に対し、既知検出の再観測カバレッジとその他の一致を、機微情報を含まない集計として算出
-- `production count-hypotheses`：CVE ごとに「広い→狭い」WAF 条件を、ローカルの COUNT シミュレーションとして比較（推奨する条件を自動で選んだり、デプロイしたりはしません）
-- `production concentration`：CTI 入力なしで、固定上限と上限超過件数を明示したリクエスト量分布を集計します。パスと観測した接続ピア IP は private artifact の `request-concentration.json` に分離し、sanitized 側には集計だけを残します。これは DoS・攻撃・悪用・侵害・攻撃者特定の判定ではありません。詳細は [Request concentration](docs/request-concentration.md) を参照してください。
-- `production concentration --path /example/path --show-source-ips`：特定の正規化済みパスに対する観測接続ピアごとのリクエスト件数を private 側で確認できます。これは集中状況の文脈であり、観測 peer は攻撃者特定ではありません。
+- `inspect`：ログにどの情報が入っているか（可視性）を事前確認
+- `hunt`：検証済み Nuclei 検出条件を過去ログに照合（FIND）
+- `ablation`：URI-only から Nuclei IR・request-specific IR まで、条件の広さ別に一致件数（ボリューム）を比較
+- `replay`：ローカルの履歴コーパス全体に対し、既知検出の再観測カバレッジとその他の一致を、機微情報を含まない集計として算出
+- `count-hypotheses`：CVE ごとに「広い→狭い」WAF 条件を、ローカルの COUNT シミュレーションとして比較（推奨する条件を自動で選んだり、デプロイしたりはしません）
+- `concentration`：CTI 入力なしで、固定上限と上限超過件数を明示したリクエスト量分布を集計します。パスと観測した接続ピア IP は private artifact の `request-concentration.json` に分離し、sanitized 側には集計だけを残します。これは DoS・攻撃・悪用・侵害・攻撃者特定の判定ではありません。詳細は [Request concentration](docs/request-concentration.md) を参照してください。
+- `concentration --path /example/path --show-source-ips`：特定の正規化済みパスに対する観測接続ピアごとのリクエスト件数を private 側で確認できます。これは集中状況の文脈であり、観測 peer は攻撃者特定ではありません。
 - 同じ private フォーカス表示では、IP 単位の行を残したままネットワークプレフィックス単位にも集約します（IPv4 は既定 `/24`、IPv6 は既定 `/48`、`--ipv4-group-prefix` / `--ipv6-group-prefix` で変更可能）。プレフィックスの共有は所有者・運用主体・行為者の共有を意味しません。
-- `production report --input <run-dir> --output <report.html> --lang ja`：既存の hunt / concentration 成果物から、パス・IP の棒グラフ、分刻み時系列、hunt triage を含む自己完結オフライン HTML を生成します。`--lang ja` で見出しと安全上の注記を日本語にし、整数は3桁区切りで表示します。生のパスと IP を含む private 成果物であり、JavaScript・外部リソース・外部通信は使いません。DoS・攻撃・侵害・悪性確率・攻撃者特定の判定ではありません。詳細は [Private offline HTML report](docs/html-report.md) を参照してください。
-- `production compare`：2つのローカル凍結 run artifact を差分比較します。`hunt --baseline <prior-run>` では新しい hunt 後に同じ比較を出力します。CVE の差分と集計は sanitized 側、first-seen entity とパス/IP 詳細は private 側に分離されます。first-seen や elevated-volume は悪性・攻撃・侵害・攻撃者特定の判定ではありません。詳細は [Temporal comparison](docs/temporal-comparison.md) を参照してください。
-- `production hunt`：毎回、集計のみの `triage-summary.json` と、優先順付き private `triage-view.json` も出力します。IP 等の private 値を標準出力に表示するには `--show-triage`（必要なら `--limit`）を指定します。この順序は人間が先に確認するためのトリアージであり、脅威の重大度・悪性確率ではありません。first-seen は「新規なので要確認」であって悪性の断定ではありません。
-- `production explain`：CVE / テンプレート / リクエスト証拠の表示。既定では `response-unverified` かつ generic path の低確度ノイズを隠し、`--include-generic` で保存済みの全 finding を表示します。これは**表示フィルタのみ**で、一覧表示を変えるだけであり、トリアージのグルーピングやスコアリングには影響しません（グルーピング/スコアは常に全 finding を対象にします）。そのため、distinctive な探索1件と generic 複数件を混ぜた送信元も breadth 判定に達します。接続元・クライアント IP（`--show-source-ips`）、ローカル ASN データで解決した ASN（`--show-asn`）、JA4 フィンガープリント（`--show-fingerprints`）ごとの breadth/depth/時間窓トリアージと、観測挙動のみから算出する挙動優先度スコアを表示します。スコアは generic path の反復による深さを意図的に抑え、distinctive path の一致へ小さな寄与を与え、合計はその finding のテレメトリ・プロファイルが到達可能な最大値で正規化します（WAF 判定のない combined ログが構造的に低く出るのを防ぎます）。ただし悪性確率・攻撃成立・攻撃者特定の判定ではありません。`shenron-lab reputation update` で準備されたローカル IP/ASN データは既定で自動参照し、明示指定のデータセットは引き続き優先します。レピュテーションは外部照会をせず、第三者の意見として示します。`--output-format json`（任意で `--output <PATH>`）を付けると、スコア・スコア内訳・トリアージ根拠・グルーピングを機械可読の `EXPLAIN_PRIVATE_TRIAGE` レポートとして出力します（テキストと同一の `--show-*` プライバシーゲートを尊重）
+- `report --input <run-dir> --output <report.html> --lang ja`：既存の hunt / concentration 成果物から、パス・IP の棒グラフ、分刻み時系列、hunt triage を含む自己完結オフライン HTML を生成します。`--lang ja` で見出しと安全上の注記を日本語にし、整数は3桁区切りで表示します。生のパスと IP を含む private 成果物であり、JavaScript・外部リソース・外部通信は使いません。DoS・攻撃・侵害・悪性確率・攻撃者特定の判定ではありません。詳細は [Private offline HTML report](docs/html-report.md) を参照してください。
+- `compare`：2つのローカル凍結 run artifact を差分比較します。`hunt --baseline <prior-run>` では新しい hunt 後に同じ比較を出力します。CVE の差分と集計は sanitized 側、first-seen entity とパス/IP 詳細は private 側に分離されます。first-seen や elevated-volume は悪性・攻撃・侵害・攻撃者特定の判定ではありません。詳細は [Temporal comparison](docs/temporal-comparison.md) を参照してください。
+- `hunt`：毎回、集計のみの `triage-summary.json` と、優先順付き private `triage-view.json` も出力します。IP 等の private 値を標準出力に表示するには `--show-triage`（必要なら `--limit`）を指定します。この順序は人間が先に確認するためのトリアージであり、脅威の重大度・悪性確率ではありません。first-seen は「新規なので要確認」であって悪性の断定ではありません。
+- `explain`：CVE / テンプレート / リクエスト証拠の表示。既定では `response-unverified` かつ generic path の低確度ノイズを隠し、`--include-generic` で保存済みの全 finding を表示します。これは**表示フィルタのみ**で、一覧表示を変えるだけであり、トリアージのグルーピングやスコアリングには影響しません（グルーピング/スコアは常に全 finding を対象にします）。そのため、distinctive な探索1件と generic 複数件を混ぜた送信元も breadth 判定に達します。接続元・クライアント IP（`--show-source-ips`）、ローカル ASN データで解決した ASN（`--show-asn`）、JA4 フィンガープリント（`--show-fingerprints`）ごとの breadth/depth/時間窓トリアージと、観測挙動のみから算出する挙動優先度スコアを表示します。スコアは generic path の反復による深さを意図的に抑え、distinctive path の一致へ小さな寄与を与え、合計はその finding のテレメトリ・プロファイルが到達可能な最大値で正規化します（WAF 判定のない combined ログが構造的に低く出るのを防ぎます）。ただし悪性確率・攻撃成立・攻撃者特定の判定ではありません。`shenron-lab reputation update` で準備されたローカル IP/ASN データは既定で自動参照し、明示指定のデータセットは引き続き優先します。レピュテーションは外部照会をせず、第三者の意見として示します。`--output-format json`（任意で `--output <PATH>`）を付けると、スコア・スコア内訳・トリアージ根拠・グルーピングを機械可読の `EXPLAIN_PRIVATE_TRIAGE` レポートとして出力します（テキストと同一の `--show-*` プライバシーゲートを尊重）
 - 防御候補（candidate）の作成、履歴での replay、バックエンド互換性の確認
 - COUNT 固定の AWS WAF JSON / Terraform ルール断片、または OSSEC 検知 XML の出力
 
@@ -103,7 +103,7 @@ cargo run --bin shenron -- validate-rules --rules ./rules/
 
 ```bash
 shenron-lab setup
-shenron production hunt --input ./waf-logs
+shenron hunt --input ./waf-logs
 ```
 
 ログ入力コマンドの既定は `--format auto` です。AWS WAF JSON と vhost 前置き Apache Combined は自動識別します。標準 nginx Combined と標準 Apache Combined は構造が同一で安全に区別できないため、その場合だけ `--format nginx` または `--format apache` を指定してください。`--format apache` は標準行と vhost 前置き行の両方を受け付け、`--format apache-vhost` は vhost 前置きを厳格に要求します。
@@ -117,7 +117,7 @@ shenron production hunt --input ./waf-logs
 `hunt` は、機微なリクエスト値を含む **private findings** と、それを含まない **sanitized（無害化済み）レポート**を分離して出力します。AWS WAF の検出結果は `explain` で `BLOCK` / `not-blocked` を絞り込めます。
 
 ```bash
-shenron production explain \
+shenron explain \
   --findings ./private-hunt-results/private-findings.jsonl \
   --waf-outcome not-blocked \
   --show-evidence
@@ -125,9 +125,9 @@ shenron production explain \
 
 `not-blocked` は「検出はされたが、記録上ブロックされなかった」リクエストを指します。これはエクスプロイト成功の証拠ではありません。nginx / Apache のログには WAF の判定自体が無いため、この分類は使えません。
 
-`production ablation` は、URI-only から検証済み Nuclei IR までの間で一致件数を集計比較します。これは件数割合（ボリューム）の比較であって、精度（precision）・正解データ・攻撃や侵害の判定ではありません。詳細は [Detection-strategy ablation](docs/ablation.md) を参照してください。
+`ablation` は、URI-only から検証済み Nuclei IR までの間で一致件数を集計比較します。これは件数割合（ボリューム）の比較であって、精度（precision）・正解データ・攻撃や侵害の判定ではありません。詳細は [Detection-strategy ablation](docs/ablation.md) を参照してください。
 
-`production explain` のサマリはリクエストの method/path 単位で CVE とテンプレートを束ねるため、同一パスに複数の CVE が割り当たる場合も1項目で確認できます。`production explain` と sanitized レポートは、一致したパスを透明な `generic` / `distinctive` のトリアージ補助としてラベル付けします。一致を除外することはなく、精度・攻撃・悪用成功・侵害の判定でもありません。
+`explain` のサマリはリクエストの method/path 単位で CVE とテンプレートを束ねるため、同一パスに複数の CVE が割り当たる場合も1項目で確認できます。`explain` と sanitized レポートは、一致したパスを透明な `generic` / `distinctive` のトリアージ補助としてラベル付けします。一致を除外することはなく、精度・攻撃・悪用成功・侵害の判定でもありません。
 
 ## 防御候補（candidate）のワークフロー
 

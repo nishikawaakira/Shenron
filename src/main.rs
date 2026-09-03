@@ -83,10 +83,10 @@ enum Command {
         rules: PathBuf,
     },
     /// Read-only local inspection and hunting against historical web logs.
-    Production {
-        #[command(subcommand)]
-        command: ProductionCommand,
-    },
+    /// These subcommands are flattened to the top level (for example
+    /// `shenron hunt`), so there is no `production` subcommand group.
+    #[command(flatten)]
+    Production(ProductionCommand),
     /// Build, review, and export defensive candidates. Never deploys controls.
     Candidate {
         #[command(subcommand)]
@@ -603,7 +603,7 @@ fn main() -> Result<()> {
             output,
             output_format,
         } => scan(&input, &rules, output.as_deref(), output_format, format),
-        Command::Production { command } => match command {
+        Command::Production(command) => match command {
             ProductionCommand::Inspect {
                 input,
                 format,

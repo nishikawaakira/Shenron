@@ -1,11 +1,11 @@
 # Private offline HTML report
 
-`shenron production report` renders an existing hunt or concentration run as a
+`shenron report` renders an existing hunt or concentration run as a
 single self-contained HTML file. It reads only local artifacts and does not
 re-stream the original logs:
 
 ```bash
-shenron production report \
+shenron report \
   --input ./private-results/hunt-20260901T120000Z \
   --output ./private-results/hunt-20260901T120000Z-report.html \
   --lang ja

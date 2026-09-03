@@ -48,7 +48,6 @@ fn ablation_cli_writes_an_aggregate_only_report() {
     Command::cargo_bin("shenron")
         .unwrap()
         .args([
-            "production",
             "ablation",
             "--input",
             "tests/fixtures/production/waf.jsonl",
@@ -120,7 +119,6 @@ fn concentration_writes_private_detail_without_leaking_it_to_sanitized_or_defaul
     Command::cargo_bin("shenron")
         .unwrap()
         .args([
-            "production",
             "concentration",
             "--input",
             input.to_str().unwrap(),
@@ -138,7 +136,6 @@ fn concentration_writes_private_detail_without_leaking_it_to_sanitized_or_defaul
     Command::cargo_bin("shenron")
         .unwrap()
         .args([
-            "production",
             "concentration",
             "--input",
             input.to_str().unwrap(),
@@ -162,7 +159,6 @@ fn concentration_path_focus_keeps_sources_private_until_explicitly_requested() {
     Command::cargo_bin("shenron")
         .unwrap()
         .args([
-            "production",
             "concentration",
             "--input",
             "tests/fixtures/production/waf.jsonl",
@@ -191,7 +187,6 @@ fn concentration_path_focus_keeps_sources_private_until_explicitly_requested() {
     Command::cargo_bin("shenron")
         .unwrap()
         .args([
-            "production",
             "concentration",
             "--input",
             "tests/fixtures/production/waf.jsonl",
@@ -243,7 +238,6 @@ fn compare_reads_existing_runs_without_leaking_private_values_by_default() {
     Command::cargo_bin("shenron")
         .unwrap()
         .args([
-            "production",
             "compare",
             "--baseline",
             baseline.to_str().unwrap(),
@@ -267,7 +261,6 @@ fn compare_reads_existing_runs_without_leaking_private_values_by_default() {
     Command::cargo_bin("shenron")
         .unwrap()
         .args([
-            "production",
             "compare",
             "--baseline",
             baseline.to_str().unwrap(),
@@ -307,7 +300,6 @@ fn hunt_baseline_writes_temporal_comparison_artifacts() {
     Command::cargo_bin("shenron")
         .unwrap()
         .args([
-            "production",
             "hunt",
             "--input",
             "tests/fixtures/production/waf.jsonl",
@@ -374,7 +366,6 @@ fn hunt_triage_keeps_private_entities_gated_and_marks_baseline_first_seen_entiti
     Command::cargo_bin("shenron")
         .unwrap()
         .args([
-            "production",
             "hunt",
             "--input",
             "tests/fixtures/production/waf.jsonl",
@@ -408,7 +399,6 @@ fn hunt_triage_keeps_private_entities_gated_and_marks_baseline_first_seen_entiti
     Command::cargo_bin("shenron")
         .unwrap()
         .args([
-            "production",
             "hunt",
             "--input",
             "tests/fixtures/production/waf.jsonl",
@@ -505,7 +495,6 @@ fn historical_replay_measures_sanitized_cve_coverage_and_other_matches() {
     Command::cargo_bin("shenron")
         .unwrap()
         .args([
-            "production",
             "replay",
             "--input",
             "tests/fixtures/production/waf.jsonl",
@@ -636,7 +625,6 @@ fn count_hypotheses_reports_a_sanitized_monotonic_per_cve_ladder() {
     Command::cargo_bin("shenron")
         .unwrap()
         .args([
-            "production",
             "count-hypotheses",
             "--input",
             "tests/fixtures/production/waf.jsonl",
@@ -772,7 +760,6 @@ fn hunt_uses_validated_matchers_and_separates_sensitive_output() {
     Command::cargo_bin("shenron")
         .unwrap()
         .args([
-            "production",
             "explain",
             "--findings",
             private_findings.to_str().unwrap(),
@@ -793,7 +780,6 @@ fn hunt_uses_validated_matchers_and_separates_sensitive_output() {
     Command::cargo_bin("shenron")
         .unwrap()
         .args([
-            "production",
             "explain",
             "--findings",
             private_findings.to_str().unwrap(),
@@ -811,7 +797,6 @@ fn hunt_uses_validated_matchers_and_separates_sensitive_output() {
     Command::cargo_bin("shenron")
         .unwrap()
         .args([
-            "production",
             "explain",
             "--findings",
             private_findings.to_str().unwrap(),
@@ -850,7 +835,7 @@ fn hunt_uses_prepared_default_inputs_and_output_without_kev() {
     command
         .current_dir(directory.path())
         .env("SHENRON_DATA_DIR", &data_dir)
-        .args(["production", "hunt", "--input", input.to_str().unwrap()])
+        .args(["hunt", "--input", input.to_str().unwrap()])
         .assert()
         .success();
 
@@ -876,7 +861,6 @@ fn hunt_uses_prepared_default_inputs_and_output_without_kev() {
         .current_dir(directory.path())
         .env("SHENRON_DATA_DIR", &data_dir)
         .args([
-            "production",
             "hunt",
             "--input",
             input.to_str().unwrap(),
@@ -903,7 +887,6 @@ fn auto_format_detects_waf_and_apache_vhost_but_rejects_ambiguous_combined() {
     Command::cargo_bin("shenron")
         .unwrap()
         .args([
-            "production",
             "inspect",
             "--input",
             "tests/fixtures/production/waf.jsonl",
@@ -921,7 +904,7 @@ fn auto_format_detects_waf_and_apache_vhost_but_rejects_ambiguous_combined() {
     .unwrap();
     Command::cargo_bin("shenron")
         .unwrap()
-        .args(["production", "inspect", "--input", vhost.to_str().unwrap()])
+        .args(["inspect", "--input", vhost.to_str().unwrap()])
         .assert()
         .success()
         .stdout(contains("Telemetry profile:          ApacheCombined"));
@@ -935,7 +918,6 @@ fn auto_format_detects_waf_and_apache_vhost_but_rejects_ambiguous_combined() {
     Command::cargo_bin("shenron")
         .unwrap()
         .args([
-            "production",
             "inspect",
             "--input",
             combined.to_str().unwrap(),
@@ -950,7 +932,6 @@ fn auto_format_detects_waf_and_apache_vhost_but_rejects_ambiguous_combined() {
     Command::cargo_bin("shenron")
         .unwrap()
         .args([
-            "production",
             "inspect",
             "--input",
             combined.to_str().unwrap(),
@@ -969,7 +950,6 @@ fn production_report_renders_existing_hunt_artifacts_as_private_offline_html() {
     Command::cargo_bin("shenron")
         .unwrap()
         .args([
-            "production",
             "hunt",
             "--input",
             "tests/fixtures/production/waf.jsonl",
@@ -992,7 +972,6 @@ fn production_report_renders_existing_hunt_artifacts_as_private_offline_html() {
     Command::cargo_bin("shenron")
         .unwrap()
         .args([
-            "production",
             "report",
             "--input",
             hunt_output.to_str().unwrap(),
@@ -1025,7 +1004,6 @@ fn production_report_renders_existing_hunt_artifacts_as_private_offline_html() {
     Command::cargo_bin("shenron")
         .unwrap()
         .args([
-            "production",
             "report",
             "--input",
             hunt_output.to_str().unwrap(),
@@ -1050,7 +1028,6 @@ fn production_report_renders_existing_hunt_artifacts_as_private_offline_html() {
     Command::cargo_bin("shenron")
         .unwrap()
         .args([
-            "production",
             "report",
             "--input",
             hunt_output.to_str().unwrap(),
@@ -1065,7 +1042,6 @@ fn production_report_renders_existing_hunt_artifacts_as_private_offline_html() {
     Command::cargo_bin("shenron")
         .unwrap()
         .args([
-            "production",
             "report",
             "--input",
             hunt_output.to_str().unwrap(),
@@ -1112,7 +1088,6 @@ fn explain_labels_generic_and_distinctive_paths_without_excluding_either() {
     Command::cargo_bin("shenron")
         .unwrap()
         .args([
-            "production",
             "explain",
             "--findings",
             findings.to_str().unwrap(),
@@ -1150,7 +1125,6 @@ fn explain_bundles_multiple_cves_and_templates_by_request_path() {
     let output = Command::cargo_bin("shenron")
         .unwrap()
         .args([
-            "production",
             "explain",
             "--findings",
             findings.to_str().unwrap(),
@@ -1199,7 +1173,6 @@ fn explain_uses_prepared_default_reputation_and_asn_datasets_when_available() {
         .unwrap()
         .env("SHENRON_DATA_DIR", &data_dir)
         .args([
-            "production",
             "explain",
             "--findings",
             findings.to_str().unwrap(),
@@ -1234,7 +1207,6 @@ fn explain_hides_only_response_unverified_generic_paths_by_default() {
     Command::cargo_bin("shenron")
         .unwrap()
         .args([
-            "production",
             "explain",
             "--findings",
             findings.to_str().unwrap(),
@@ -1266,7 +1238,6 @@ fn explain_hides_only_response_unverified_generic_paths_by_default() {
     Command::cargo_bin("shenron")
         .unwrap()
         .args([
-            "production",
             "explain",
             "--findings",
             findings.to_str().unwrap(),
@@ -1318,7 +1289,6 @@ fn explain_enriches_private_ip_groups_from_offline_asn_and_reputation_datasets()
     Command::cargo_bin("shenron")
         .unwrap()
         .args([
-            "production",
             "explain",
             "--findings",
             findings.to_str().unwrap(),
@@ -1359,7 +1329,6 @@ fn explain_groups_private_findings_by_resolved_asn() {
     Command::cargo_bin("shenron")
         .unwrap()
         .args([
-            "production",
             "explain",
             "--findings",
             findings.to_str().unwrap(),
@@ -1400,7 +1369,6 @@ fn explain_triages_only_repeated_distinct_source_behavior() {
     Command::cargo_bin("shenron")
         .unwrap()
         .args([
-            "production",
             "explain",
             "--findings",
             findings.to_str().unwrap(),
@@ -1443,7 +1411,6 @@ fn explain_allows_explicit_non_default_triage_thresholds() {
     Command::cargo_bin("shenron")
         .unwrap()
         .args([
-            "production",
             "explain",
             "--findings",
             findings.to_str().unwrap(),
@@ -1465,7 +1432,6 @@ fn explain_allows_explicit_non_default_triage_thresholds() {
     Command::cargo_bin("shenron")
         .unwrap()
         .args([
-            "production",
             "explain",
             "--findings",
             findings.to_str().unwrap(),
@@ -1542,7 +1508,6 @@ fn explain_windowed_triage_distinguishes_bursts_and_excludes_undated_records() {
     Command::cargo_bin("shenron")
         .unwrap()
         .args([
-            "production",
             "explain",
             "--findings",
             findings.to_str().unwrap(),
@@ -1571,7 +1536,6 @@ fn explain_windowed_triage_distinguishes_bursts_and_excludes_undated_records() {
     Command::cargo_bin("shenron")
         .unwrap()
         .args([
-            "production",
             "explain",
             "--findings",
             findings.to_str().unwrap(),
@@ -1605,7 +1569,6 @@ fn explain_triages_repeated_single_template_behavior_by_depth() {
     Command::cargo_bin("shenron")
         .unwrap()
         .args([
-            "production",
             "explain",
             "--findings",
             findings.to_str().unwrap(),
@@ -1635,7 +1598,6 @@ fn explain_prefers_a_validated_client_for_ip_grouping() {
     Command::cargo_bin("shenron")
         .unwrap()
         .args([
-            "production",
             "explain",
             "--findings",
             findings.to_str().unwrap(),
@@ -1839,7 +1801,6 @@ fn explain_scores_behavior_and_groups_shared_ja4_fingerprints() {
     let assertion = Command::cargo_bin("shenron")
         .unwrap()
         .args([
-            "production",
             "explain",
             "--findings",
             findings_path.to_str().unwrap(),
@@ -1951,7 +1912,6 @@ fn replay_warns_up_front_when_findings_carry_no_request_id() {
     Command::cargo_bin("shenron")
         .unwrap()
         .args([
-            "production",
             "replay",
             "--input",
             "tests/fixtures/production/waf.jsonl",
@@ -1987,7 +1947,6 @@ fn explain_json_omits_private_evidence_without_show_flags() {
     let stdout = Command::cargo_bin("shenron")
         .unwrap()
         .args([
-            "production",
             "explain",
             "--findings",
             findings_path.to_str().unwrap(),
@@ -2045,7 +2004,6 @@ fn generic_filter_is_display_only_and_does_not_change_triage_grouping() {
 
     let run = |include_generic: bool| -> serde_json::Value {
         let mut args = vec![
-            "production",
             "explain",
             "--findings",
             findings_path.to_str().unwrap(),
@@ -2135,7 +2093,6 @@ fn explain_json_round_trips_score_components() {
     let stdout = Command::cargo_bin("shenron")
         .unwrap()
         .args([
-            "production",
             "explain",
             "--findings",
             findings_path.to_str().unwrap(),

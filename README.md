@@ -25,44 +25,44 @@ The whole tool follows a **FIND → EXPLAIN → PIVOT → ACT → VALIDATE** wor
 
 | Stage | Purpose | Commands |
 | --- | --- | --- |
-| FIND | Match known indicators in historical logs | `production hunt` |
-| EXPLAIN / PIVOT | Read results by CVE/template, IP, JA4, ASN | `production explain`, `production ablation` |
-| ACT | Propose and COUNT-evaluate defensive conditions | `production count-hypotheses`, `candidate ...` |
-| VALIDATE | Measure threat coverage across the corpus | `production replay` |
+| FIND | Match known indicators in historical logs | `hunt` |
+| EXPLAIN / PIVOT | Read results by CVE/template, IP, JA4, ASN | `explain`, `ablation` |
+| ACT | Propose and COUNT-evaluate defensive conditions | `count-hypotheses`, `candidate ...` |
+| VALIDATE | Measure threat coverage across the corpus | `replay` |
 
 Four design pillars: (1) static conversion — templates are never executed; (2) fidelity made explicit as scores and labels; (3) reproducibility via frozen input snapshots recorded with SHA-256; and (4) never asserting an attack, exploitation, compromise, or attacker identity.
 
 ## Capabilities
 
-The scanner pipeline streams AWS WAF JSONL (including gzip) → normalized `WebEvent` → a deliberately small Sigma subset → JSONL or CSV findings. It supports AWS WAF action, labels, request metadata, and optional JA3/JA4 fingerprints. Analysis commands, including `shenron production ...` and `shenron candidate ...`, never access the network, upload customer data, execute exploits, change AWS, deploy candidates, or take automatic BLOCK actions. Only explicit `shenron-lab` preparation commands such as `nuclei update` and `reputation update` may download public threat-intelligence inputs.
+The scanner pipeline streams AWS WAF JSONL (including gzip) → normalized `WebEvent` → a deliberately small Sigma subset → JSONL or CSV findings. It supports AWS WAF action, labels, request metadata, and optional JA3/JA4 fingerprints. Analysis commands, including `shenron hunt ...` and `shenron candidate ...`, never access the network, upload customer data, execute exploits, change AWS, deploy candidates, or take automatic BLOCK actions. Only explicit `shenron-lab` preparation commands such as `nuclei update` and `reputation update` may download public threat-intelligence inputs.
 
 It also includes a reproducible synthetic validation loop: project-owned AWS WAF-shaped corpora, separate ground truth, mutation tests, regression fixtures, and machine-readable validation results. See [validation](docs/validation.md) and [synthetic corpus generation](docs/synthetic-corpus.md).
 
 Static Nuclei CVE analysis is available through `shenron-lab nuclei inventory` and `shenron-lab nuclei coverage`. `shenron-lab nuclei update` can prepare a local checkout by downloading public templates only; inventory and coverage remain passive local YAML analysis, and no template is executed or transmitted. See [detectability policy](docs/nuclei-detectability.md) and [Nuclei test generation](docs/nuclei-test-generation.md).
 
-Read-only local AWS WAF production inspection and validated Nuclei hunting are available through `shenron production inspect` and `shenron production hunt`. They separate private investigation evidence from sanitized aggregate output and make no AWS changes. See [production hunting](docs/production-hunting.md).
+Read-only local AWS WAF production inspection and validated Nuclei hunting are available through `shenron inspect` and `shenron hunt`. They separate private investigation evidence from sanitized aggregate output and make no AWS changes. See [production hunting](docs/production-hunting.md).
 
-`shenron production explain` reviews private findings locally: its summary groups CVEs and templates by request method/path, alongside per-request evidence and breadth/depth/windowed triage of connection/client IP groups (`--show-source-ips`), locally resolved ASN groups (`--show-asn`), or JA4 client fingerprints (`--show-fingerprints`). By default it hides only response-unverified matches on generic paths; pass `--include-generic` to review every stored finding. This is a display filter only — it changes what is listed, never triage grouping or scoring, which always see every finding — so a source mixing one distinctive probe with several generic ones still meets the breadth basis. `shenron-lab reputation update` prepares public reputation/ASN inputs that explain automatically reads from the local data directory when present; explicit dataset paths remain available. Each group carries an offline [behavior priority score](docs/production-hunting.md#behavior-priority-score) computed only from observed request behavior; it transparently limits repeated generic-path depth and gives a small distinctiveness component, normalizes the total against the maximum the finding's telemetry profile can reach (so combined logs without a WAF outcome are not systematically depressed), ranks entities for triage, and is never a probability of malice, an exploitation or compromise determination, or attacker attribution. Optional local [IP/ASN reputation enrichment](docs/production-hunting.md#ipasn-reputation-enrichment-offline) uses frozen datasets only, never an inline external lookup, and remains a third-party opinion rather than a conclusion. `--output-format json` (with optional `--output <PATH>`) emits the same content — scores, score components, triage basis, and groupings — as a machine-readable `EXPLAIN_PRIVATE_TRIAGE` report that honors the identical `--show-*` privacy gates.
+`shenron explain` reviews private findings locally: its summary groups CVEs and templates by request method/path, alongside per-request evidence and breadth/depth/windowed triage of connection/client IP groups (`--show-source-ips`), locally resolved ASN groups (`--show-asn`), or JA4 client fingerprints (`--show-fingerprints`). By default it hides only response-unverified matches on generic paths; pass `--include-generic` to review every stored finding. This is a display filter only — it changes what is listed, never triage grouping or scoring, which always see every finding — so a source mixing one distinctive probe with several generic ones still meets the breadth basis. `shenron-lab reputation update` prepares public reputation/ASN inputs that explain automatically reads from the local data directory when present; explicit dataset paths remain available. Each group carries an offline [behavior priority score](docs/production-hunting.md#behavior-priority-score) computed only from observed request behavior; it transparently limits repeated generic-path depth and gives a small distinctiveness component, normalizes the total against the maximum the finding's telemetry profile can reach (so combined logs without a WAF outcome are not systematically depressed), ranks entities for triage, and is never a probability of malice, an exploitation or compromise determination, or attacker attribution. Optional local [IP/ASN reputation enrichment](docs/production-hunting.md#ipasn-reputation-enrichment-offline) uses frozen datasets only, never an inline external lookup, and remains a third-party opinion rather than a conclusion. `--output-format json` (with optional `--output <PATH>`) emits the same content — scores, score components, triage basis, and groupings — as a machine-readable `EXPLAIN_PRIVATE_TRIAGE` report that honors the identical `--show-*` privacy gates.
 
-`shenron production ablation` compares aggregate match volume from URI-only through validated Nuclei IR and request-specific IR. It is a volume comparison, not precision, ground truth, or an attack/compromise determination; see [detection-strategy ablation](docs/ablation.md).
+`shenron ablation` compares aggregate match volume from URI-only through validated Nuclei IR and request-specific IR. It is a volume comparison, not precision, ground truth, or an attack/compromise determination; see [detection-strategy ablation](docs/ablation.md).
 
-`production explain` and sanitized hunt reports also label matched paths as `generic` or `distinctive` with a transparent, non-excluding triage heuristic; this is not a precision, attack, exploitation, or compromise determination.
+`explain` and sanitized hunt reports also label matched paths as `generic` or `distinctive` with a transparent, non-excluding triage heuristic; this is not a precision, attack, exploitation, or compromise determination.
 
-`shenron production replay` measures conservative known-finding re-observation and other aggregate historical matcher matches across a local corpus, writing only a sanitized report; see [historical replay coverage](docs/historical-replay.md).
+`shenron replay` measures conservative known-finding re-observation and other aggregate historical matcher matches across a local corpus, writing only a sanitized report; see [historical replay coverage](docs/historical-replay.md).
 
-`shenron production count-hypotheses` compares broad-to-narrow per-CVE WAF-condition measurements as offline, non-deploying COUNT simulations and deliberately does not recommend a rung; see [COUNT hypothesis ladder](docs/count-hypotheses.md).
+`shenron count-hypotheses` compares broad-to-narrow per-CVE WAF-condition measurements as offline, non-deploying COUNT simulations and deliberately does not recommend a rung; see [COUNT hypothesis ladder](docs/count-hypotheses.md).
 
-`shenron production concentration` measures bounded, aggregate request-volume distribution without CTI inputs and keeps paths/IPs in a separate private artifact. It is not a denial-of-service, attack, abuse, compromise, or attribution determination; see [request concentration](docs/request-concentration.md).
+`shenron concentration` measures bounded, aggregate request-volume distribution without CTI inputs and keeps paths/IPs in a separate private artifact. It is not a denial-of-service, attack, abuse, compromise, or attribution determination; see [request concentration](docs/request-concentration.md).
 
-Use `production concentration --path /example/path --show-source-ips` to review private, deterministic request counts for observed connection peers on one exact path. This is concentration context only; observed peers are not attacker attribution.
+Use `concentration --path /example/path --show-source-ips` to review private, deterministic request counts for observed connection peers on one exact path. This is concentration context only; observed peers are not attacker attribution.
 
 The same private focus view also aggregates retained peer addresses by network prefix (`/24` IPv4 and `/48` IPv6 by default; configurable with `--ipv4-group-prefix` and `--ipv6-group-prefix`) without replacing IP-level rows. Prefixes are address blocks, not evidence of a shared owner or actor.
 
-`shenron production report --input <run-dir> --output <report.html>` turns existing hunt or concentration artifacts into a private, self-contained offline HTML report with inline SVG path/IP bars, minute timelines, and hunt triage. Integer counts use three-digit comma grouping; pass `--lang ja` for Japanese labels and safety notices. It contains raw paths and IPs, uses no JavaScript or external resources, and is visualization for human review rather than a DoS, attack, compromise, malice, or attribution determination; see [private HTML reports](docs/html-report.md).
+`shenron report --input <run-dir> --output <report.html>` turns existing hunt or concentration artifacts into a private, self-contained offline HTML report with inline SVG path/IP bars, minute timelines, and hunt triage. Integer counts use three-digit comma grouping; pass `--lang ja` for Japanese labels and safety notices. It contains raw paths and IPs, uses no JavaScript or external resources, and is visualization for human review rather than a DoS, attack, compromise, malice, or attribution determination; see [private HTML reports](docs/html-report.md).
 
-`shenron production compare` diffs two local frozen run artifacts, while `hunt --baseline <prior-run>` writes the same temporal comparison after a new hunt. CVE changes and aggregate counts are sanitized; first-seen entities and path/IP detail remain private. Neither first-seen nor elevated-volume labels determine maliciousness, attack, compromise, or attribution; see [temporal comparison](docs/temporal-comparison.md).
+`shenron compare` diffs two local frozen run artifacts, while `hunt --baseline <prior-run>` writes the same temporal comparison after a new hunt. CVE changes and aggregate counts are sanitized; first-seen entities and path/IP detail remain private. Neither first-seen nor elevated-volume labels determine maliciousness, attack, compromise, or attribution; see [temporal comparison](docs/temporal-comparison.md).
 
-Every `production hunt` also writes an aggregate-only `triage-summary.json` and a private ranked `triage-view.json`; pass `--show-triage` (and optionally `--limit`) to display private entries. This order is for human triage, not threat severity or probability of malice; first-seen means review, never malicious.
+Every `hunt` also writes an aggregate-only `triage-summary.json` and a private ranked `triage-view.json`; pass `--show-triage` (and optionally `--limit`) to display private entries. This order is for human triage, not threat severity or probability of malice; first-seen means review, never malicious.
 
 Defensive candidates can be built from private hunt findings, replayed locally, reviewed for backend compatibility, and exported as COUNT-only AWS WAF JSON, Terraform rule fragments, or OSSEC detection XML. Export never deploys a control and refuses non-faithful translations. See the [candidate model](docs/waf-candidate-model.md).
 
@@ -99,14 +99,14 @@ Findings go to stdout as JSONL; the scan summary and malformed-record warnings g
 cargo run --bin shenron -- validate-rules --rules ./rules/
 ```
 
-## Quick production hunt
+## Quick hunt
 
 Prepare public Nuclei, reputation, and ASN intelligence once, then hunt a
 safely recognizable local log input without a format option:
 
 ```bash
 shenron-lab setup
-shenron production hunt --input ./waf-logs
+shenron hunt --input ./waf-logs
 ```
 
 AWS WAF JSON and vhost-prefixed Apache Combined logs are recognized

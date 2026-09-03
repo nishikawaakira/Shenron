@@ -1,12 +1,12 @@
 # Detection-strategy ablation
 
-`shenron production ablation` compares aggregate match volume for several
+`shenron ablation` compares aggregate match volume for several
 predicates derived from the same validated Nuclei Detection IR. It reads local
 historical telemetry and frozen Nuclei/KEV reports, but it never writes private
 findings or request evidence.
 
 ```bash
-shenron production ablation \
+shenron ablation \
   --input ./historical-logs --format aws-waf \
   --nuclei-templates ./nuclei-templates \
   --nuclei-report ./research/nuclei/<revision>/final.json \
@@ -15,7 +15,7 @@ shenron production ablation \
 ```
 
 `--from` and `--to` use the same inclusive RFC 3339 time filter as
-`production hunt`. The optional output is an aggregate-only JSON report.
+`hunt`. The optional output is an aggregate-only JSON report.
 
 ## Ladder
 

@@ -1,11 +1,11 @@
 # Request concentration
 
-`shenron production concentration` measures the distribution of requests in a
+`shenron concentration` measures the distribution of requests in a
 local historical corpus without requiring Nuclei templates, KEV data, or any
 network access:
 
 ```bash
-shenron production concentration \
+shenron concentration \
   --input ./logs \
   --format apache \
   --output ./private-results/concentration
@@ -21,7 +21,7 @@ artifact containing URI paths and observed connection-peer IPs. The default
 stdout never displays either private value; use `--show-paths` or
 `--show-source-ips` deliberately when reviewing the private artifact.
 
-The same aggregate runs as part of every `production hunt`, independently of
+The same aggregate runs as part of every `hunt`, independently of
 Nuclei and Sigma matching. It therefore exposes volume shapes even if no CVE or
 generic rule matches a request. Hunt writes the private concentration artifact
 alongside `private-findings.jsonl`; its sanitized concentration summary is
@@ -30,10 +30,10 @@ embedded in `sanitized-research.json`.
 ## Path focus (`--path`)
 
 For a local review of the observed connection peers that requested one exact
-path, use `--path` with `production concentration`:
+path, use `--path` with `concentration`:
 
 ```bash
-shenron production concentration \
+shenron concentration \
   --input ./logs \
   --format apache \
   --output ./private-results/concentration \
@@ -70,8 +70,8 @@ denial-of-service attempt, attack, or abuse.
 
 ASN is the semantically appropriate unit when the question concerns a possible
 shared network operator. Shenron already supports this separately through
-`AsnDatabase` and `production explain --show-asn --asn-dataset`. Prefix
-aggregation is a local-dataset-free alternative for `production concentration`:
+`AsnDatabase` and `explain --show-asn --asn-dataset`. Prefix
+aggregation is a local-dataset-free alternative for `concentration`:
 it keeps the command usable without CTI inputs or an ownership lookup. When a
 local ASN dataset is available, ASN grouping is the more accurate choice for
 operator-oriented analysis; prefix groups remain only address-block volume
@@ -100,7 +100,7 @@ AWS WAF marks them unavailable rather than replacing them with zero.
 
 The private `request-concentration.json` also stores the retained global and,
 when selected, focused-path minute buckets as an epoch-minute/request-count
-series in ascending order. `production report` uses this series for its inline
+series in ascending order. `report` uses this series for its inline
 SVG timeline. The series is never copied into `sanitized-research.json`. Minute
 tracking is bounded at 1,000,000 distinct buckets for each global/focus map;
 records in new buckets beyond that cap are counted and disclosed, while already

@@ -1,9 +1,9 @@
 # Historical replay coverage
 
-`shenron production replay` measures the validated Nuclei request matchers against a complete local historical corpus. It is the workflow's **VALIDATE** measurement: it does not build a candidate, export a control, deploy anything, execute a template, or contact a network.
+`shenron replay` measures the validated Nuclei request matchers against a complete local historical corpus. It is the workflow's **VALIDATE** measurement: it does not build a candidate, export a control, deploy anything, execute a template, or contact a network.
 
 ```bash
-shenron production replay \
+shenron replay \
   --input ./historical-logs \
   --format aws-waf \
   --nuclei-templates ./nuclei-templates \

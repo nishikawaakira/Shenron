@@ -5,7 +5,7 @@ Production hunting is read-only and local. Shenron never modifies source logs, c
 Inspect structure before a hunt. This command reports only counts, timestamps, and field availability; it never prints raw requests.
 
 ```bash
-cargo run --bin shenron -- production inspect --input ./production-waf-logs --sample 10000
+cargo run --bin shenron -- inspect --input ./production-waf-logs --sample 10000
 ```
 
 Prepare public Nuclei templates, reputation, and ASN inputs once. This
@@ -22,7 +22,7 @@ The default data directory is `$SHENRON_DATA_DIR` when set, otherwise
 there. A full hunt then needs only a safely recognizable local input:
 
 ```bash
-cargo run --bin shenron -- production hunt \
+cargo run --bin shenron -- hunt \
   --input ./production-waf-logs
 ```
 
@@ -39,7 +39,7 @@ one of those explicit formats.
 explicit frozen checkout/report pair. If neither default input exists, Shenron
 asks you to run `shenron-lab nuclei update` or `shenron-lab setup` first. `--kev-report` is optional;
 when omitted, KEV membership is empty. The same prepared-input defaults apply
-to `production ablation`, `production replay`, and `production count-hypotheses`.
+to `ablation`, `replay`, and `count-hypotheses`.
 
 `shenron-lab setup` is an explicit download-only preparation command. It
 refreshes public Nuclei templates and their frozen report together with public
@@ -69,7 +69,7 @@ holds on every outcome.
 If the direct peer is a known CDN, load balancer, or reverse proxy, supply every trusted proxy IP or CIDR explicitly to verify a forwarded end-client address. Shenron ignores `X-Forwarded-For` unless the observed direct peer is in this configured set: an untrusted peer can forge that header. Shenron evaluates a verified chain from right to left, removes only trusted proxy hops, and uses the first non-trusted address as `client_ip`. A missing, malformed, or all-trusted chain remains unavailable. Standard nginx/Apache Combined Log Format does not retain `X-Forwarded-For`, so it normally cannot provide `client_ip` even when `--trusted-proxy` is supplied.
 
 ```bash
-cargo run --bin shenron -- production hunt \
+cargo run --bin shenron -- hunt \
   --input ./production-waf-logs \
   --format aws-waf \
   --trusted-proxy 198.51.100.0/24 \
@@ -79,7 +79,7 @@ cargo run --bin shenron -- production hunt \
 Restrict a hunt to an inclusive UTC time interval with RFC 3339 timestamps. The report records the selected interval and how many parseable events were excluded because they were outside the interval or had no timestamp.
 
 ```bash
-cargo run --bin shenron -- production hunt \
+cargo run --bin shenron -- hunt \
   --input ./production-waf-logs \
   --format aws-waf \
   --from 2026-04-01T00:00:00Z \
@@ -92,11 +92,11 @@ Every hunt also measures [request concentration](request-concentration.md) in th
 same stream, independently of Nuclei and Sigma. The sanitized report receives
 counts and ratios only, while `request-concentration.json` is a private artifact
 that contains paths and observed connection-peer IPs. Use the CTI-independent
-`production concentration` command when this volume context is needed without a
+`concentration` command when this volume context is needed without a
 hunt. Neither command classifies concentration as a denial-of-service attempt,
 attack, abuse, compromise, or attacker identity.
 
-Use `production concentration --path /example/path --show-source-ips` to
+Use `concentration --path /example/path --show-source-ips` to
 inspect deterministic request counts for observed connection peers on one exact
 normalized path. The path and peer values remain private in
 `request-concentration.json`; the sanitized report contains only aggregate
@@ -115,7 +115,7 @@ Render an existing hunt or concentration output directory without reading the
 raw logs again:
 
 ```bash
-shenron production report \
+shenron report \
   --input ./private-results/hunt-20260901T120000Z \
   --output ./private-results/hunt-20260901T120000Z-report.html \
   --lang ja
@@ -142,7 +142,7 @@ guide](html-report.md).
 Compare two existing local run directories without re-streaming either corpus:
 
 ```bash
-shenron production compare \
+shenron compare \
   --baseline ./private-results/previous-run \
   --current ./private-results/current-run \
   --output ./private-results/comparison
@@ -158,7 +158,7 @@ determination of DoS, attack, abuse, exploitation, compromise, or attribution.
 
 ## Consolidated hunt triage view
 
-Every `production hunt` writes a consolidated connection/client-IP triage view
+Every `hunt` writes a consolidated connection/client-IP triage view
 after its local matching pass. `triage-summary.json`
 (`SANITIZED_HUNT_TRIAGE`) contains only aggregate cardinalities and a
 behavior-priority tier histogram; `triage-view.json`
@@ -171,7 +171,7 @@ accepts `0` to display all entries.
 The ranking is deterministic: behavior score descending, then local
 reputation score descending (no opinion last), then first-seen entities, then
 the entity key. It uses the same local prepared ASN/reputation datasets as
-`production explain` when present and never performs an external lookup.
+`explain` when present and never performs an external lookup.
 This is a **triage priority order for human review**, not threat severity or a
 probability of malice. `first-seen` means new and worth review, never malicious;
 neither it nor a score/reputation opinion determines attack, exploitation,
@@ -183,10 +183,10 @@ Long streaming commands (`hunt`, `ablation`, `replay`, `count-hypotheses`) emit 
 
 Every hunt also writes `run-manifest.json` beside the sanitized report. It records the Shenron version, generated time, telemetry profile, Nuclei report revision and provenance, optional KEV/Nuclei report byte lengths, trusted-proxy configuration, fixed triage baseline, time filters, and aggregate exclusion counts. The Nuclei report and, when supplied, the KEV report receive streaming SHA-256 values so reviewers can verify that frozen research inputs are identical; the templates directory remains identified by its pinned Nuclei revision rather than a directory-wide hash. This makes a run reviewable and reproducible without placing raw telemetry in the artifact: the manifest never contains raw request values, client or peer IP addresses, hosts, URI/query values, headers, or JA3/JA4 values.
 
-Review the request-to-template mappings locally with `production explain`. By default it hides only low-confidence display noise: findings that are both `response-unverified` and on a `generic` path such as `/robots.txt`. Pass `--include-generic` to restore every locally stored finding. This is a **display filter only**: it changes what is *listed* — the per-finding rows and the "Top request paths" summary — but it does **not** affect triage grouping or scoring. Entity grouping (IP/ASN/JA4) and the behavior priority score always see every finding that passed the `--waf-outcome` selection, so a source that mixes one distinctive probe with several generic ones still meets the repeated-pattern (breadth) basis. Because a group's observation and template counts are computed from all matching findings, they can exceed the rows shown; when low-confidence matches are hidden and a triage section is displayed, `explain` states this once in both text and JSON. `--include-generic` therefore changes only what is listed, never a group's score, observation count, or triage basis. Hunt records and sanitized reports always retain every match. The summary groups results by request method and path (up to 20 paths by default), bundling every distinct CVE and template that matched that path into one entry; this keeps paths shared by several CVEs readable. Each entry labels the path as `distinctive` or `generic`, and `--show-request` prints the deterministic path label for each individual matched method/path/query record. Generic paths, especially with response-unverified evidence, may be shared by unrelated applications and deserve closer review; the label is a triage heuristic only, never a precision, attack, exploitation, compromise, or vulnerable-product determination, and it never excludes a match. Add `--show-evidence` for all locally stored evidence, `--show-source-ips` for an IP-group summary, or `--show-fingerprints` for a JA4 client-fingerprint summary. Evidence labels distinguish the observed connection peer from a validated forwarded client IP. IP addresses and JA4 values are shown only from the local private findings file and are never added to the sanitized report. Use `--limit 0` only when intentionally reviewing every request path, IP address, and individual finding.
+Review the request-to-template mappings locally with `explain`. By default it hides only low-confidence display noise: findings that are both `response-unverified` and on a `generic` path such as `/robots.txt`. Pass `--include-generic` to restore every locally stored finding. This is a **display filter only**: it changes what is *listed* — the per-finding rows and the "Top request paths" summary — but it does **not** affect triage grouping or scoring. Entity grouping (IP/ASN/JA4) and the behavior priority score always see every finding that passed the `--waf-outcome` selection, so a source that mixes one distinctive probe with several generic ones still meets the repeated-pattern (breadth) basis. Because a group's observation and template counts are computed from all matching findings, they can exceed the rows shown; when low-confidence matches are hidden and a triage section is displayed, `explain` states this once in both text and JSON. `--include-generic` therefore changes only what is listed, never a group's score, observation count, or triage basis. Hunt records and sanitized reports always retain every match. The summary groups results by request method and path (up to 20 paths by default), bundling every distinct CVE and template that matched that path into one entry; this keeps paths shared by several CVEs readable. Each entry labels the path as `distinctive` or `generic`, and `--show-request` prints the deterministic path label for each individual matched method/path/query record. Generic paths, especially with response-unverified evidence, may be shared by unrelated applications and deserve closer review; the label is a triage heuristic only, never a precision, attack, exploitation, compromise, or vulnerable-product determination, and it never excludes a match. Add `--show-evidence` for all locally stored evidence, `--show-source-ips` for an IP-group summary, or `--show-fingerprints` for a JA4 client-fingerprint summary. Evidence labels distinguish the observed connection peer from a validated forwarded client IP. IP addresses and JA4 values are shown only from the local private findings file and are never added to the sanitized report. Use `--limit 0` only when intentionally reviewing every request path, IP address, and individual finding.
 
 ```bash
-cargo run --bin shenron -- production explain \
+cargo run --bin shenron -- explain \
   --findings ./private-results/hunt-2026-08-24/private-findings.jsonl \
   --show-request
 ```
@@ -196,16 +196,16 @@ cargo run --bin shenron -- production explain \
 # the observed connection peer is used. The fixed breadth rule is at least
 # three matching request observations and two template patterns. The fixed
 # depth rule is at least ten matching request observations, including one-template repetition.
-cargo run --bin shenron -- production explain \
+cargo run --bin shenron -- explain \
   --findings ./private-results/hunt-2026-08-24/private-findings.jsonl \
   --show-source-ips
 ```
 
 `requires investigation` means that breadth or depth of CVE-pattern behavior was observed for the selected grouping identity: `validated-client` where a trusted forwarded chain was verified, otherwise `observed-peer`. `validated-client` and `observed-peer` groups are intentionally never merged: if forwarded resolution works for only some requests, one actual sender can appear under both identities. `breadth` means several request observations across template patterns; `depth` means repeated observations even when only one template matched. It does **not** establish that the IP belongs to an attacker, that a vulnerability was exploited, or that a compromise occurred. An observed peer can be a proxy, CDN, load balancer, or NAT; monitoring and authorized vulnerability scanners can also produce either pattern. The default thresholds are fixed so the research baseline remains comparable and the CLI stays small.
 
-The default triage policy is the fixed research baseline: breadth is three distinct request observations across two templates, and depth is ten distinct request observations. `production explain` can explicitly override these with `--triage-breadth-observations`, `--triage-breadth-templates`, and `--triage-depth-observations`; any non-default value is labelled `CUSTOM` and is not comparable to the fixed baseline. Add `--triage-window 10m` (or a positive `s`, `m`, `h`, or `d` duration) to require the breadth/depth condition within one sliding time window. Without it, all observations remain eligible as before. Timestamp-less observations are excluded only from windowed evaluation and their count is shown for each group.
+The default triage policy is the fixed research baseline: breadth is three distinct request observations across two templates, and depth is ten distinct request observations. `explain` can explicitly override these with `--triage-breadth-observations`, `--triage-breadth-templates`, and `--triage-depth-observations`; any non-default value is labelled `CUSTOM` and is not comparable to the fixed baseline. Add `--triage-window 10m` (or a positive `s`, `m`, `h`, or `d` duration) to require the breadth/depth condition within one sliding time window. Without it, all observations remain eligible as before. Timestamp-less observations are excluded only from windowed evaluation and their count is shown for each group.
 
-`production explain` writes the human-readable text report to stdout by default. Pass `--output-format json` to emit the same content — the path summary, the entity groupings with their behavior scores and score-component breakdowns, the triage basis, and (with `--show-*`) the requested private detail — as a machine-readable report carrying `report_kind: EXPLAIN_PRIVATE_TRIAGE`, and `--output <PATH>` to write it to a file. The JSON honors the identical privacy gates as the text: fields behind `--show-request`, `--show-evidence`, `--show-source-ips`, `--show-asn`, and `--show-fingerprints` stay gated, so no request value, IP, host, header, JA3/JA4, or request ID appears unless it was explicitly requested. Like the text report, the JSON is private analyst output and is never added to the sanitized report or run manifest.
+`explain` writes the human-readable text report to stdout by default. Pass `--output-format json` to emit the same content — the path summary, the entity groupings with their behavior scores and score-component breakdowns, the triage basis, and (with `--show-*`) the requested private detail — as a machine-readable report carrying `report_kind: EXPLAIN_PRIVATE_TRIAGE`, and `--output <PATH>` to write it to a file. The JSON honors the identical privacy gates as the text: fields behind `--show-request`, `--show-evidence`, `--show-source-ips`, `--show-asn`, and `--show-fingerprints` stay gated, so no request value, IP, host, header, JA3/JA4, or request ID appears unless it was explicitly requested. Like the text report, the JSON is private analyst output and is never added to the sanitized report or run manifest.
 
 ## Behavior priority score
 
@@ -236,10 +236,10 @@ This behavioral score is intentionally computed offline and involves no network 
 
 ## IP/ASN reputation enrichment (offline)
 
-`production explain --show-source-ips` can join the private IP groups to frozen local datasets without any HTTP request or external API call. `shenron-lab reputation update` can prepare public reputation and ASN inputs once; when `<data-dir>/reputation.jsonl` and/or `<data-dir>/asn-ranges.tsv` exist, `explain` automatically uses them unless an explicit `--reputation-dataset` or `--asn-dataset` path overrides them. The data directory is `SHENRON_DATA_DIR`, then `$XDG_DATA_HOME/shenron`, then `~/.local/share/shenron`. Explicit datasets also remain supported: `--asn-dataset ./GeoLite2-ASN-Blocks-CSV.csv` accepts a GeoLite2-ASN-compatible CSV, while the prepared `asn-ranges.tsv` is a sorted IPv4 `start_ip<TAB>end_ip<TAB>asn<TAB>org` file resolved by binary search. The JSONL dataset has one record per opinion, for example `{"scope":"ip","value":"203.0.113.7","score":90,"source":"example-feed","categories":["scanner"],"as_of":"2026-08-01"}`. `scope` is `ip`, `cidr`, or `asn`; scores are integer values from 0 through 100, categories default to an empty list, and ASN values can be strings or numbers.
+`explain --show-source-ips` can join the private IP groups to frozen local datasets without any HTTP request or external API call. `shenron-lab reputation update` can prepare public reputation and ASN inputs once; when `<data-dir>/reputation.jsonl` and/or `<data-dir>/asn-ranges.tsv` exist, `explain` automatically uses them unless an explicit `--reputation-dataset` or `--asn-dataset` path overrides them. The data directory is `SHENRON_DATA_DIR`, then `$XDG_DATA_HOME/shenron`, then `~/.local/share/shenron`. Explicit datasets also remain supported: `--asn-dataset ./GeoLite2-ASN-Blocks-CSV.csv` accepts a GeoLite2-ASN-compatible CSV, while the prepared `asn-ranges.tsv` is a sorted IPv4 `start_ip<TAB>end_ip<TAB>asn<TAB>org` file resolved by binary search. The JSONL dataset has one record per opinion, for example `{"scope":"ip","value":"203.0.113.7","score":90,"source":"example-feed","categories":["scanner"],"as_of":"2026-08-01"}`. `scope` is `ip`, `cidr`, or `asn`; scores are integer values from 0 through 100, categories default to an empty list, and ASN values can be strings or numbers.
 
 ```bash
-cargo run --bin shenron -- production explain \
+cargo run --bin shenron -- explain \
   --findings ./private-results/hunt-2026-08-24/private-findings.jsonl \
   --show-source-ips \
   --asn-dataset ./datasets/GeoLite2-ASN-Blocks-CSV.csv \
@@ -253,7 +253,7 @@ The display records each supplied dataset's path, streaming SHA-256, and record 
 Add `--show-asn` to group private findings by a locally resolved ASN. It uses the prepared default ASN file when available, or an explicit `--asn-dataset`; without either it prints a warning and no ASN groups. Like IP grouping, it keeps `validated-client` and `observed-peer` identities separate even when they resolve to the same ASN. Its spread is the number of distinct member IPs in the larger of those two separate identity populations; they are never merged. Findings whose selected client/peer IP is absent, malformed, or unresolved by the local ASN dataset are excluded from ASN aggregation and counted in the output.
 
 ```bash
-cargo run --bin shenron -- production explain \
+cargo run --bin shenron -- explain \
   --findings ./private-results/hunt-2026-08-24/private-findings.jsonl \
   --show-asn \
   --asn-dataset ./datasets/GeoLite2-ASN-Blocks-CSV.csv \
