@@ -206,6 +206,10 @@ pub struct SanitizedCveFinding {
     pub response_status_counts: BTreeMap<u16, usize>,
     pub outcomes: OutcomeCounts,
     pub protection_gap_rate: Option<f64>,
+    /// Deterministically sorted public Nuclei template identifiers which
+    /// produced a request match for this CVE. These are CTI metadata, not
+    /// customer telemetry values.
+    pub template_ids: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -626,6 +630,7 @@ struct CveAccumulator {
     requests: usize,
     distinctive_path_matches: u64,
     generic_path_matches: u64,
+    template_ids: BTreeSet<String>,
     source_ips: BTreeSet<String>,
     ja4s: BTreeSet<String>,
     hosts: BTreeSet<String>,
@@ -814,7 +819,8 @@ pub fn hunt_with_options(
                 metrics.sigma_rule_matches += 1;
                 matched_sigma_rules.insert(rule.id.clone());
             }
-            let mut observed_cves = BTreeMap::<String, (Detectability, RequestSpecificity)>::new();
+            let mut observed_cves =
+                BTreeMap::<String, (Detectability, RequestSpecificity, BTreeSet<String>)>::new();
             for detection in &matches {
                 for cve in &detection.cves {
                     observed_cves
@@ -823,13 +829,20 @@ pub fn hunt_with_options(
                             current.0 = strongest(current.0, detection.detectability);
                             current.1 =
                                 strongest_specificity(current.1, detection.request_specificity());
+                            current.2.insert(detection.template_id.clone());
                         })
-                        .or_insert((detection.detectability, detection.request_specificity()));
+                        .or_insert_with(|| {
+                            (
+                                detection.detectability,
+                                detection.request_specificity(),
+                                BTreeSet::from([detection.template_id.clone()]),
+                            )
+                        });
                 }
             }
             let path_distinctiveness =
                 path_distinctiveness(event.uri_path.as_deref().unwrap_or_default());
-            for (cve, (detectability, request_specificity)) in observed_cves {
+            for (cve, (detectability, request_specificity, template_ids)) in observed_cves {
                 metrics.cve_related_request_matches += 1;
                 match request_specificity {
                     RequestSpecificity::RequestSpecific => metrics.request_specific_matches += 1,
@@ -851,6 +864,7 @@ pub fn hunt_with_options(
                 accumulator.kev = kev_cves.contains(&cve);
                 accumulator.detectability = strongest(accumulator.detectability, detectability);
                 accumulator.requests += 1;
+                accumulator.template_ids.extend(template_ids);
                 match path_distinctiveness {
                     PathDistinctiveness::Distinctive => accumulator.distinctive_path_matches += 1,
                     PathDistinctiveness::Generic => accumulator.generic_path_matches += 1,
@@ -915,6 +929,7 @@ pub fn hunt_with_options(
                 response_status_counts: item.response_status_counts,
                 outcomes: item.outcomes,
                 protection_gap_rate,
+                template_ids: item.template_ids.into_iter().collect(),
             }
         })
         .collect();

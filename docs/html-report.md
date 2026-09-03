@@ -37,10 +37,13 @@ The report shows aggregate cards, Top-N path and peer-IP bars, global and
 focused-path request timelines, focused-path network-prefix bars when present,
 the hunt triage table, and a sanitized aggregate row for each observed CVE. The
 Observed CVEs summary card links to that final section when CVE rows exist. It
-lists catalog KEV membership and detectability alongside aggregate request,
-path-distinctiveness, time-range, and protection-gap fields; these remain
-catalog and matcher-volume context, not an exploitation, compromise, or
-attacker-identity determination. `--limit` defaults to 20 and controls private
+lists the matching Nuclei template IDs, catalog KEV membership, and
+detectability alongside aggregate request, path-distinctiveness, time-range,
+and protection-gap fields. Template IDs are public CTI metadata and are also
+stored in each sanitized CVE finding as the sorted `template_ids` array; this
+adds no customer telemetry value. These fields remain catalog and matcher-volume
+context, not an exploitation, compromise, or attacker-identity determination.
+`--limit` defaults to 20 and controls private
 path, IP, prefix, and triage rows; `0` shows all. The CVE list remains complete.
 The timeline uses at most 240 points.
 Longer minute series are deterministically downsampled into equal-width minute

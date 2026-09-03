@@ -1,5 +1,5 @@
 use std::{
-    fs,
+    fs::{self, File},
     path::{Path, PathBuf},
 };
 
@@ -791,6 +791,10 @@ fn hunt_uses_validated_matchers_and_separates_sensitive_output() {
     assert_eq!(report.cve_findings[0].protection_gap_rate, Some(0.5));
     assert_eq!(report.cve_findings[0].distinctive_path_matches, 2);
     assert_eq!(report.cve_findings[0].generic_path_matches, 0);
+    assert_eq!(
+        report.cve_findings[0].template_ids,
+        vec!["synthetic-cve-2024-10001"]
+    );
     assert!(report.cve_findings[0].response_status_counts.is_empty());
 
     let private = fs::read_to_string(output.path().join("private-findings.jsonl")).unwrap();
@@ -802,6 +806,7 @@ fn hunt_uses_validated_matchers_and_separates_sensitive_output() {
     assert!(!sanitized.contains("/vulnerable/execute"));
     assert!(sanitized.contains("\"distinctive_path_matches\":2"));
     assert!(sanitized.contains("\"generic_path_matches\":0"));
+    assert!(sanitized.contains("\"template_ids\":[\"synthetic-cve-2024-10001\"]"));
     let manifest = fs::read_to_string(output.path().join("run-manifest.json")).unwrap();
     assert!(manifest.contains("\"report_kind\": \"RUN_MANIFEST\""));
     assert!(manifest.contains("\"shenron_version\": \"0.1.0\""));
@@ -897,6 +902,74 @@ fn hunt_uses_validated_matchers_and_separates_sensitive_output() {
         .stdout(contains("198.51.100.1"))
         .stdout(contains("Grouping identity: observed-peer"))
         .stdout(contains("Matching request observations: 1"));
+}
+
+#[test]
+fn hunt_sorts_and_deduplicates_template_ids_per_sanitized_cve() {
+    let directory = tempdir().unwrap();
+    let templates = directory.path().join("templates");
+    let output = directory.path().join("output");
+    let data_dir = directory.path().join("empty-data");
+    fs::create_dir_all(&templates).unwrap();
+    fs::create_dir_all(&data_dir).unwrap();
+    let template = |id: &str| {
+        format!(
+            "id: {id}\ninfo:\n  name: Template provenance fixture\n  severity: high\n  classification:\n    cve-id: CVE-2024-10001\nhttp:\n  - method: GET\n    path:\n      - '{{{{BaseURL}}}}/vulnerable/execute?cmd=probe'\n    headers:\n      X-Synthetic-Exploit: marker-10001\n"
+        )
+    };
+    fs::write(templates.join("z-template.yaml"), template("z-template")).unwrap();
+    fs::write(templates.join("a-template.yaml"), template("a-template")).unwrap();
+    let report_path = directory.path().join("nuclei-report.json");
+    fs::write(
+        &report_path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "nuclei_revision": "template-order-fixture",
+            "templates": [
+                {
+                    "template_id": "z-template",
+                    "cves": ["CVE-2024-10001"],
+                    "conversion_status": "SUPPORTED",
+                    "validation_status": "passed"
+                },
+                {
+                    "template_id": "a-template",
+                    "cves": ["CVE-2024-10001"],
+                    "conversion_status": "SUPPORTED",
+                    "validation_status": "passed"
+                }
+            ]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .env("SHENRON_DATA_DIR", data_dir)
+        .args([
+            "hunt",
+            "--input",
+            "tests/fixtures/production/waf.jsonl",
+            "--format",
+            "aws-waf",
+            "--nuclei-templates",
+            templates.to_str().unwrap(),
+            "--nuclei-report",
+            report_path.to_str().unwrap(),
+            "--output",
+            output.to_str().unwrap(),
+            "--no-sigma",
+        ])
+        .assert()
+        .success();
+
+    let sanitized: serde_json::Value =
+        serde_json::from_reader(File::open(output.join("sanitized-research.json")).unwrap())
+            .unwrap();
+    assert_eq!(
+        sanitized["cve_findings"][0]["template_ids"],
+        serde_json::json!(["a-template", "z-template"])
+    );
 }
 
 #[test]
@@ -1060,6 +1133,8 @@ fn hunt_writes_and_rerenders_private_offline_html() {
         "<a href=\"#observed-cves\">1</a>",
         "<section id=\"observed-cves\">",
         "CVE-2024-10001",
+        "テンプレート",
+        "synthetic-cve-2024-10001",
         "hunt トリアージビュー",
         "/vulnerable/execute",
         "198.51.100.1",

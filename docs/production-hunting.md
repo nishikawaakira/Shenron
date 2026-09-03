@@ -143,7 +143,8 @@ the only action in `--results-dir` mode, and the default destination remains
 The self-contained HTML uses inline CSS and server-generated inline SVG only:
 there is no JavaScript, external resource, fetch, or network access. It combines
 available aggregate provenance, private path/IP concentration and minute
-timelines, focused-path prefix groups, and the private hunt triage view. Missing
+timelines, focused-path prefix groups, the private hunt triage view, and an
+observed-CVE table with matching Nuclei template IDs. Missing
 artifacts are labeled unavailable, never inferred. The report is explicitly
 private because it contains raw paths and observed peer IPs; it is not a
 sanitized artifact. Every artifact-derived string is HTML-escaped. The charts
@@ -198,7 +199,7 @@ compromise, abuse, or attacker identity.
 
 Long streaming commands (`hunt`, `ablation`, `replay`, `count-hypotheses`) emit a periodic progress heartbeat to stderr during a large scan. It reports only a running record count and a fixed command label — never a request value, IP address, or hostname — and stdout continues to carry findings and reports.
 
-`--output` must be outside the raw-input tree. When omitted, hunt writes to `./private-results/hunt-<UTC timestamp>/`. The command writes `private-findings.jsonl` locally with investigation evidence, including fields that may be sensitive. `sanitized-research.json` has aggregate CVE/KEV counts, time ranges, WAF outcomes, and cardinalities only; it never includes raw request values, IPs, hostnames, JA3/JA4 values, queries, or headers. The default `private-results/` location is ignored by Git, but that is only an additional safeguard and not a data-security boundary.
+`--output` must be outside the raw-input tree. When omitted, hunt writes to `./private-results/hunt-<UTC timestamp>/`. The command writes `private-findings.jsonl` locally with investigation evidence, including fields that may be sensitive. `sanitized-research.json` has aggregate CVE/KEV counts, time ranges, WAF outcomes, cardinalities, and the sorted matching Nuclei `template_ids` for each observed CVE. Template IDs are public CTI metadata rather than customer data; no raw request values, IPs, hostnames, JA3/JA4 values, queries, or headers are included. The default `private-results/` location is ignored by Git, but that is only an additional safeguard and not a data-security boundary.
 
 Every hunt also writes `run-manifest.json` beside the sanitized report. It records the Shenron version, generated time, telemetry profile, Nuclei report revision and provenance, optional KEV/Nuclei report byte lengths, trusted-proxy configuration, fixed triage baseline, time filters, and aggregate exclusion counts. The Nuclei report and, when supplied, the KEV report receive streaming SHA-256 values so reviewers can verify that frozen research inputs are identical; the templates directory remains identified by its pinned Nuclei revision rather than a directory-wide hash. This makes a run reviewable and reproducible without placing raw telemetry in the artifact: the manifest never contains raw request values, client or peer IP addresses, hosts, URI/query values, headers, or JA3/JA4 values.
 

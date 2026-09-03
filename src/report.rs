@@ -73,6 +73,7 @@ struct Labels {
     cve_list_heading: &'static str,
     cve_list_note: &'static str,
     cve_id: &'static str,
+    cve_templates: &'static str,
     kev_membership: &'static str,
     kev_badge: &'static str,
     detectability: &'static str,
@@ -167,8 +168,9 @@ const EN_LABELS: Labels = Labels {
     distinct_peers: "Distinct observed peers",
     observed_cves: "Observed CVEs",
     cve_list_heading: "Observed CVEs",
-    cve_list_note: "KEV membership and detectability are catalog facts, not an exploitation, compromise, or attacker-identity determination. Request counts are observed matcher volume, not proof of exploitation.",
+    cve_list_note: "Nuclei template IDs are public CTI metadata. Template IDs, KEV membership, and detectability are catalog facts, not an exploitation, compromise, or attacker-identity determination. Request counts are observed matcher volume, not proof of exploitation.",
     cve_id: "CVE ID",
+    cve_templates: "Templates",
     kev_membership: "CISA KEV",
     kev_badge: "KEV",
     detectability: "Detectability",
@@ -263,8 +265,9 @@ const JA_LABELS: Labels = Labels {
     distinct_peers: "異なる観測接続ピア数",
     observed_cves: "観測された CVE 数",
     cve_list_heading: "観測された CVE",
-    cve_list_note: "KEV 該否と detectability はカタログ上の情報であり、悪用・侵害・攻撃者特定の判定ではありません。リクエスト件数は観測されたマッチ量であり、悪用の証明ではありません。",
+    cve_list_note: "Nuclei テンプレート ID は公開 CTI メタデータです。テンプレート ID・KEV 該否・detectability はカタログ上の情報であり、悪用・侵害・攻撃者特定の判定ではありません。リクエスト件数は観測されたマッチ量であり、悪用の証明ではありません。",
     cve_id: "CVE ID",
+    cve_templates: "テンプレート",
     kev_membership: "CISA KEV",
     kev_badge: "KEV",
     detectability: "検知可能性",
@@ -943,10 +946,11 @@ fn render_cve_list(html: &mut String, artifacts: &ReportArtifacts, language: Rep
         "<section id=\"observed-cves\"><h2>{}</h2><p class=\"note\">{}</p>\
          <div class=\"table-scroll\"><table><thead><tr>\
          <th>{}</th><th>{}</th><th>{}</th><th>{}</th><th>{}</th><th>{}</th>\
-         <th>{}</th><th>{}</th><th>{}</th></tr></thead><tbody>",
+         <th>{}</th><th>{}</th><th>{}</th><th>{}</th></tr></thead><tbody>",
         html_escape(labels.cve_list_heading),
         html_escape(labels.cve_list_note),
         html_escape(labels.cve_id),
+        html_escape(labels.cve_templates),
         html_escape(labels.kev_membership),
         html_escape(labels.detectability),
         html_escape(labels.requests),
@@ -991,8 +995,9 @@ fn render_cve_list(html: &mut String, artifacts: &ReportArtifacts, language: Rep
             .map_or_else(|| "—".to_owned(), |rate| format!("{:.1}%", rate * 100.0));
         html.push_str(&format!(
             "<tr><td><code>{}</code></td><td>{}</td><td>{}</td><td>{}</td>\
-             <td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
+             <td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
             html_escape(cve),
+            cve_template_ids(finding),
             kev,
             html_escape(detectability),
             cve_count(finding, "request_count", language),
@@ -1011,6 +1016,22 @@ fn cve_count(finding: &Value, field: &str, language: ReportLanguage) -> String {
         || html_escape(language.labels().unavailable),
         group_thousands,
     )
+}
+
+fn cve_template_ids(finding: &Value) -> String {
+    let template_ids = finding
+        .get("template_ids")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(html_escape)
+        .collect::<Vec<_>>();
+    if template_ids.is_empty() {
+        "—".to_owned()
+    } else {
+        template_ids.join(", ")
+    }
 }
 
 fn observed_cve_findings(artifacts: &ReportArtifacts) -> Option<&[Value]> {
@@ -1703,6 +1724,7 @@ mod tests {
                 "cve_findings": [
                     {
                         "cve": "CVE-2026-10001",
+                        "template_ids": ["nuclei-template-a", "nuclei-template-b", "nuclei-template-<escaped>"],
                         "cisa_kev": true,
                         "detectability": "HIGH",
                         "request_count": 1234,
@@ -1714,6 +1736,7 @@ mod tests {
                     },
                     {
                         "cve": "CVE-&<escaped>",
+                        "template_ids": [],
                         "cisa_kev": false,
                         "detectability": "MEDIUM",
                         "request_count": 2,
@@ -1732,6 +1755,8 @@ mod tests {
             "<a href=\"#observed-cves\">2</a>",
             "<section id=\"observed-cves\">",
             "CVE-2026-10001",
+            "Templates",
+            "nuclei-template-a, nuclei-template-b, nuclei-template-&lt;escaped&gt;",
             "<span class=\"badge\">KEV</span>",
             "Distinctive-path matches",
             "Generic-path matches",
@@ -1742,12 +1767,20 @@ mod tests {
             assert!(html.contains(expected), "missing {expected}");
         }
         assert!(!html.contains("CVE-&<escaped>"));
+        assert!(!html.contains("nuclei-template-<escaped>"));
+        assert_eq!(html.matches("<th>").count(), 10);
+        assert_eq!(html.matches("<td>").count(), 20);
+        assert_eq!(
+            cve_template_ids(&serde_json::json!({"template_ids": []})),
+            "—"
+        );
         for forbidden in ["http://", "https://", "src=", "<script"] {
             assert!(!html.contains(forbidden));
         }
 
         let japanese = render_report(&artifacts, 20, 240, ReportLanguage::Ja);
         assert!(japanese.contains("観測された CVE 数"));
+        assert!(japanese.contains("テンプレート"));
         assert!(japanese.contains("検知可能性"));
         assert!(japanese.contains("保護ギャップ率"));
 
