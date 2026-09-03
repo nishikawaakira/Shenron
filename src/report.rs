@@ -474,7 +474,7 @@ pub fn render_report(
 
     let mut html = format!(
         "<!doctype html><html lang=\"{}\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>{}</title><style>\
-        :root{{color-scheme:dark;--bg:#0b1020;--panel:#151d31;--muted:#a8b3c7;--text:#f4f7fb;--accent:#66d9c2;--warn:#ffcf66;--danger:#ff6b78;--line:#33415f}}*{{box-sizing:border-box}}body{{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 system-ui,sans-serif}}main{{max-width:1240px;margin:auto;padding:24px}}.private{{background:#6b1320;border:2px solid var(--danger);padding:16px;font-size:18px;font-weight:800}}.note,.unavailable,.cap{{color:var(--muted)}}.note{{border-left:3px solid var(--warn);padding-left:12px}}.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px}}.card,section{{background:var(--panel);border:1px solid var(--line);border-radius:10px}}.card{{padding:14px}}.card b{{display:block;font-size:24px}}section{{margin-top:18px;padding:18px}}h1,h2,h3{{margin-top:0}}svg{{width:100%;height:auto;background:#10172a;border-radius:8px}}.bar{{fill:var(--accent)}}.axis{{stroke:var(--line);stroke-width:1}}.timeline{{fill:none;stroke:var(--accent);stroke-width:3}}.timeline-area{{fill:#66d9c226;stroke:none}}.timeline-dot{{fill:var(--accent)}}.hit{{fill:transparent}}.hit:hover{{fill:#66d9c22e}}svg text{{fill:var(--text);font:12px system-ui,sans-serif}}table{{width:100%;border-collapse:collapse;display:block;overflow-x:auto}}th,td{{padding:9px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top;white-space:nowrap}}.score{{width:120px;background:#26334f;border-radius:9px;overflow:hidden}}.score span{{display:block;height:10px;background:var(--accent)}}code{{color:#b9f4e8}}.small{{font-size:12px;color:var(--muted)}}</style></head><body><main>",
+        :root{{color-scheme:dark;--bg:#0b1020;--panel:#151d31;--muted:#a8b3c7;--text:#f4f7fb;--accent:#66d9c2;--warn:#ffcf66;--danger:#ff6b78;--line:#33415f}}*{{box-sizing:border-box}}body{{margin:0;overflow-x:hidden;background:var(--bg);color:var(--text);font:14px/1.5 system-ui,sans-serif}}main{{max-width:1240px;margin:auto;padding:24px;min-width:0}}.private{{background:#6b1320;border:2px solid var(--danger);padding:16px;font-size:18px;font-weight:800;overflow-wrap:anywhere;word-break:break-word}}.note,.unavailable,.cap{{color:var(--muted)}}.note{{border-left:3px solid var(--warn);padding-left:12px}}.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;min-width:0}}.card,section{{background:var(--panel);border:1px solid var(--line);border-radius:10px;min-width:0}}.card{{padding:14px;overflow:hidden}}.card span,.card b{{overflow-wrap:anywhere;word-break:break-word}}.card b{{display:block;font-size:24px}}section{{margin-top:18px;padding:18px;overflow:hidden}}h1,h2,h3{{margin-top:0;overflow-wrap:anywhere;word-break:break-word}}.chart-scroll,.table-scroll{{max-width:100%;overflow:auto;max-height:70vh}}svg{{width:100%;height:auto;background:#10172a;border-radius:8px}}.chart-scroll svg{{display:block;min-width:1000px}}.bar{{fill:var(--accent)}}.axis{{stroke:var(--line);stroke-width:1}}.timeline{{fill:none;stroke:var(--accent);stroke-width:3}}.timeline-area{{fill:#66d9c226;stroke:none}}.timeline-dot{{fill:var(--accent)}}.col{{cursor:crosshair}}.hit{{fill:transparent;pointer-events:all}}.col:hover .hit{{fill:#66d9c22e}}.tip{{visibility:hidden;pointer-events:none}}.col:hover .tip{{visibility:visible}}.tip-bg{{fill:#070b14;stroke:var(--accent);stroke-width:1}}.tip-label{{fill:#fff;font-weight:700}}svg text{{fill:var(--text);font:12px system-ui,sans-serif}}table{{width:100%;min-width:1000px;border-collapse:collapse}}th,td{{padding:9px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top;white-space:nowrap}}.score{{width:120px;background:#26334f;border-radius:9px;overflow:hidden}}.score span{{display:block;height:10px;background:var(--accent)}}code{{color:#b9f4e8;overflow-wrap:anywhere;word-break:break-word}}.small{{font-size:12px;color:var(--muted)}}</style></head><body><main>",
         language.html_lang(),
         html_escape(labels.title),
     );
@@ -801,7 +801,7 @@ fn render_triage(
         return;
     }
     html.push_str(&format!(
-        "<table><thead><tr><th>{}</th><th>{}</th><th>{}</th><th>{}</th><th>{}</th><th>{}</th><th>{}</th><th>{}</th></tr></thead><tbody>",
+        "<div class=\"table-scroll\"><table><thead><tr><th>{}</th><th>{}</th><th>{}</th><th>{}</th><th>{}</th><th>{}</th><th>{}</th><th>{}</th></tr></thead><tbody>",
         html_escape(labels.entity),
         html_escape(labels.identity),
         html_escape(labels.behavior_priority),
@@ -856,7 +856,7 @@ fn render_triage(
             }),
         ));
     }
-    html.push_str("</tbody></table>");
+    html.push_str("</tbody></table></div>");
     omitted(
         html,
         triage.entities.len(),
@@ -882,8 +882,24 @@ fn bar_chart(title: &str, rows: &[BarRow<'_>], language: ReportLanguage) -> Stri
     }
     let maximum = rows.iter().map(|row| row.value).max().unwrap_or(1).max(1);
     let height = rows.len() * 42 + 16;
+    // Preserve room for ordinary long paths instead of clipping them at the
+    // fixed label column. The enclosing scroll container exposes any width
+    // beyond the viewport; an extreme value still has its complete SVG title.
+    let label_column = rows
+        .iter()
+        .map(|row| {
+            row.label
+                .chars()
+                .count()
+                .saturating_mul(7)
+                .saturating_add(16)
+        })
+        .max()
+        .unwrap_or(300)
+        .clamp(300, 4_000);
+    let chart_width = label_column + 700;
     let mut svg = format!(
-        "<svg width=\"1000\" height=\"{height}\" viewBox=\"0 0 1000 {height}\" role=\"img\" aria-label=\"{}\">",
+        "<div class=\"chart-scroll\"><svg width=\"{chart_width}\" height=\"{height}\" viewBox=\"0 0 {chart_width} {height}\" role=\"img\" aria-label=\"{}\">",
         html_escape(title)
     );
     for (index, row) in rows.iter().enumerate() {
@@ -898,19 +914,19 @@ fn bar_chart(title: &str, rows: &[BarRow<'_>], language: ReportLanguage) -> Stri
             row.details
         );
         svg.push_str(&format!(
-            "<text x=\"8\" y=\"{}\">{}</text><rect class=\"bar\" x=\"300\" y=\"{}\" width=\"{:.2}\" height=\"14\"><title>{}</title></rect><text x=\"{}\" y=\"{}\">{} · {}</text>",
+            "<text x=\"8\" y=\"{}\">{}</text><rect class=\"bar\" x=\"{label_column}\" y=\"{}\" width=\"{:.2}\" height=\"14\"><title>{}</title></rect><text x=\"{}\" y=\"{}\">{} · {}</text>",
             y + 12,
             html_escape(row.label),
             y,
             width,
             html_escape(&tip),
-            310.0 + width,
+            label_column as f64 + 10.0 + width,
             y + 12,
             group_thousands(row.value),
             html_escape(&row.details),
         ));
     }
-    svg.push_str("</svg>");
+    svg.push_str("</svg></div>");
     svg
 }
 
@@ -963,20 +979,25 @@ fn timeline_chart(
     }
     let coordinates = coordinate_values.join(" ");
     let area = format!("60,180 {coordinates} 940,180");
-    // A full-height transparent column per point carries a native SVG <title>
-    // tooltip (no JavaScript) showing that minute and its request count on
-    // hover; a small dot marks each retained point.
-    let column = if points.len() > 1 {
-        880.0 / (points.len() - 1) as f64
-    } else {
-        880.0
-    };
+    // Each point owns the non-overlapping column bounded by the midpoints to
+    // its neighbors. Hovering the column reveals an explicit CSS-only readout;
+    // the native SVG title remains as a fallback and requires no JavaScript.
     let mut markers = String::new();
-    for point in &points {
+    for (index, point) in points.iter().enumerate() {
         let x = point_x(point.minute_epoch);
         let y = point_y(point.requests);
-        let hit_x = (x - column / 2.0).max(60.0);
-        let hit_width = column.min(940.0 - hit_x).max(0.5);
+        let hit_x = if index == 0 {
+            60.0
+        } else {
+            (point_x(points[index - 1].minute_epoch) + x) / 2.0
+        };
+        let hit_right = if index + 1 == points.len() {
+            940.0
+        } else {
+            (x + point_x(points[index + 1].minute_epoch)) / 2.0
+        };
+        let hit_width = (hit_right - hit_x).max(0.5);
+        let tip_x = (x - 180.0).clamp(62.0, 578.0);
         let tip = format!(
             "{} · {} {}",
             minute_label(point.minute_epoch, language),
@@ -984,12 +1005,14 @@ fn timeline_chart(
             labels.request_count_label,
         );
         markers.push_str(&format!(
-            "<rect class=\"hit\" x=\"{hit_x:.2}\" y=\"35\" width=\"{hit_width:.2}\" height=\"145\"><title>{}</title></rect><circle class=\"timeline-dot\" cx=\"{x:.2}\" cy=\"{y:.2}\" r=\"2.5\"></circle>",
+            "<g class=\"col\"><rect class=\"hit\" x=\"{hit_x:.2}\" y=\"35\" width=\"{hit_width:.2}\" height=\"145\"><title>{}</title></rect><circle class=\"timeline-dot\" cx=\"{x:.2}\" cy=\"{y:.2}\" r=\"2.5\"></circle><g class=\"tip\"><rect class=\"tip-bg\" x=\"{tip_x:.2}\" y=\"40\" width=\"360\" height=\"26\" rx=\"4\"></rect><text class=\"tip-label\" x=\"{:.2}\" y=\"58\">{}</text></g></g>",
+            html_escape(&tip),
+            tip_x + 8.0,
             html_escape(&tip),
         ));
     }
     format!(
-        "<svg width=\"1000\" height=\"220\" viewBox=\"0 0 1000 220\" role=\"img\" aria-label=\"{}\"><line class=\"axis\" x1=\"60\" y1=\"180\" x2=\"940\" y2=\"180\"></line><line class=\"axis\" x1=\"60\" y1=\"35\" x2=\"60\" y2=\"180\"></line><polygon class=\"timeline-area\" points=\"{}\"></polygon><polyline class=\"timeline\" points=\"{}\"></polyline>{}<text x=\"60\" y=\"205\">{}</text><text x=\"760\" y=\"205\">{}</text><text x=\"65\" y=\"30\">{} {}</text></svg><p class=\"small\">{} {}</p>",
+        "<div class=\"chart-scroll\"><svg width=\"1000\" height=\"220\" viewBox=\"0 0 1000 220\" role=\"img\" aria-label=\"{}\"><line class=\"axis\" x1=\"60\" y1=\"180\" x2=\"940\" y2=\"180\"></line><line class=\"axis\" x1=\"60\" y1=\"35\" x2=\"60\" y2=\"180\"></line><polygon class=\"timeline-area\" points=\"{}\"></polygon><polyline class=\"timeline\" points=\"{}\"></polyline>{}<text x=\"60\" y=\"205\">{}</text><text x=\"760\" y=\"205\">{}</text><text x=\"65\" y=\"30\">{} {}</text></svg></div><p class=\"small\">{} {}</p>",
         html_escape(title),
         area,
         coordinates,
@@ -1419,7 +1442,8 @@ mod tests {
             manifest: Some(serde_json::json!({
                 "shenron_version": "0.1.0",
                 "telemetry_profile": "aws-waf",
-                "nuclei_revision": "fixture"
+                "nuclei_revision": "fixture",
+                "generated_at": "2026-09-03T07:51:07.442436+00:00"
             })),
             concentration: Some(concentration),
             triage: Some(ReportTriageView {
@@ -1452,6 +1476,10 @@ mod tests {
         assert!(html.contains("&lt;script&gt;alert(1)&lt;/script&gt;&amp;&quot;&#39;"));
         assert!(html.contains("1,234"));
         assert!(html.contains("<svg width=\"1000\" height=\"58\" viewBox=\"0 0 1000 58\""));
+        assert!(html.contains("overflow-wrap:anywhere;word-break:break-word"));
+        assert!(html.contains("body{margin:0;overflow-x:hidden"));
+        assert!(html.contains("<div class=\"chart-scroll\"><svg"));
+        assert!(html.contains("<div class=\"table-scroll\"><table"));
         for forbidden in ["http://", "https://", "src=", "<script src"] {
             assert!(
                 !html.contains(forbidden),
@@ -1558,7 +1586,7 @@ mod tests {
     }
 
     #[test]
-    fn timeline_points_carry_native_hover_titles() {
+    fn timeline_columns_have_visible_css_readouts_and_native_title_fallbacks() {
         let series = vec![
             MinuteRequestCount {
                 minute_epoch: 100,
@@ -1570,10 +1598,13 @@ mod tests {
             },
         ];
         let html = timeline_chart("t", &series, 240, ReportLanguage::Ja);
-        assert!(html.contains("<rect class=\"hit\""));
+        assert!(html.contains("<g class=\"col\">"));
+        assert!(html.contains("<g class=\"tip\">"));
+        assert!(html.contains("<text class=\"tip-label\""));
+        assert!(html.contains("1970-01-01 01:40 · 3 リクエスト"));
         assert!(html.contains("<title>"));
-        assert!(html.contains("リクエスト"));
         assert!(html.contains("class=\"timeline-dot\""));
+        assert!(html.contains("<svg width=\"1000\" height=\"220\""));
         for forbidden in ["http://", "https://", "src=", "<script"] {
             assert!(!html.contains(forbidden));
         }
@@ -1589,6 +1620,20 @@ mod tests {
         let html = bar_chart("Top", &rows, ReportLanguage::En);
         assert!(html.contains("<rect class=\"bar\""));
         assert!(html.contains("<title>/x · 1,234 d</title>"));
+    }
+
+    #[test]
+    fn long_bar_labels_expand_inside_the_scroll_container() {
+        let label = format!("/{}", "segment".repeat(40));
+        let rows = [BarRow {
+            label: &label,
+            value: 1,
+            details: "d".to_owned(),
+        }];
+        let html = bar_chart("Top", &rows, ReportLanguage::En);
+        assert!(html.contains("<div class=\"chart-scroll\">"));
+        assert!(!html.contains("<svg width=\"1000\""));
+        assert!(html.contains(&html_escape(&label)));
     }
 
     #[test]

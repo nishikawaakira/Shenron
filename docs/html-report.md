@@ -34,12 +34,15 @@ English; pass `--lang ja` for Japanese. Integer counts use three-digit comma
 grouping in either language. Older artifacts without a retained minute series
 show guidance to rerun `hunt` or `concentration` with the current build.
 
-Charts carry native hover tooltips implemented with SVG `<title>` elements and
-no JavaScript: hovering a point on a request timeline shows that minute and its
-request count, and hovering a bar shows the full path or peer address with its
-count even when the on-chart label is truncated. When a run recorded no explicit
-filter window, the provenance time range is the observed span of retained minute
-buckets, and the report says so.
+Timeline columns contain visible CSS-only hover readouts showing the UTC minute
+and request count; native SVG `<title>` elements remain as a fallback. Hovering
+a bar likewise exposes the full path or peer address with its count. These
+interactions use no JavaScript. Long provenance labels and values wrap inside
+their cards. Charts and triage tables are placed in independent horizontal and
+bounded vertical scroll containers, so wide labels and high row counts do not
+force page-level horizontal scrolling or become unreachable. When a run
+recorded no explicit filter window, the provenance time range is the observed
+span of retained minute buckets, and the report says so.
 
 ## Privacy and offline guarantees
 
