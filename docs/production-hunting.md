@@ -225,13 +225,13 @@ shenron hunt \
   --input ./logs \
   --format apache \
   --report \
-  --report-lang ja
+  --lang ja
 ```
 
 This writes the normal hunt artifacts and `<run-dir>/report.html` together;
 `--report <path>` overrides the HTML destination. To rerender an existing hunt
 or concentration run without reading or analyzing raw logs again, use
-`shenron hunt --results-dir <run-dir> --report-lang ja`. Report generation is
+`shenron hunt --results-dir <run-dir> --lang ja`. Report generation is
 the only action in `--results-dir` mode, and the default destination remains
 `<run-dir>/report.html` even when `--report` is omitted.
 
@@ -247,7 +247,7 @@ show volume and review priority only, not DoS, attack, exploitation, abuse,
 compromise, probability of malice, or attribution. A report may be a file
 inside the run directory (for example `<run-dir>/report.html`), since its source
 is produced artifacts rather than raw logs; Shenron refuses to overwrite a
-directory or a source artifact it reads. English is the default; `--report-lang ja`
+directory or a source artifact it reads. English is the default; `--lang ja`
 localizes every human-readable report label and safety notice into Japanese.
 Integer counts use three-digit comma grouping in both languages. See the full [HTML report
 guide](html-report.md).

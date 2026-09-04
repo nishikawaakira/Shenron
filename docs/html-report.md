@@ -7,7 +7,7 @@ shenron hunt \
   --input ./logs \
   --format apache \
   --report \
-  --report-lang ja
+  --lang ja
 ```
 
 The hunt writes its normal artifacts and then renders
@@ -18,7 +18,7 @@ re-analyzing raw logs, use the same command with the distinct results input:
 ```bash
 shenron hunt \
   --results-dir ./private-results/hunt-20260901T120000Z \
-  --report-lang ja
+  --lang ja
 ```
 
 Report rendering uses whichever of these artifacts are present and labels
@@ -51,7 +51,7 @@ The timeline uses at most 240 points.
 Longer minute series are deterministically downsampled into equal-width minute
 spans whose request counts are summed. Retained-bucket and key-tracking caps are
 disclosed; omitted data is never approximated. Human-readable labels default to
-English; pass `--report-lang ja` for Japanese. Integer counts use three-digit comma
+English; pass `--lang ja` for Japanese. Integer counts use three-digit comma
 grouping in either language. Older artifacts without a retained minute series
 show guidance to rerun `hunt` or `concentration` with the current build.
 

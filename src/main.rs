@@ -303,7 +303,7 @@ enum ProductionCommand {
         report: Option<Option<PathBuf>>,
         /// Human-readable HTML report language.
         #[arg(long, value_enum, default_value_t = ReportLanguage::En)]
-        report_lang: ReportLanguage,
+        lang: ReportLanguage,
     },
     /// Compare two existing local run-artifact directories without re-streaming logs.
     Compare {
@@ -740,7 +740,7 @@ fn main() -> Result<()> {
                 show_triage,
                 limit,
                 report: html_report,
-                report_lang,
+                lang,
             } => {
                 if let Some(run_dir) = results_dir {
                     if !run_dir.is_dir() {
@@ -752,13 +752,7 @@ fn main() -> Result<()> {
                     let report_output = html_report
                         .flatten()
                         .unwrap_or_else(|| run_dir.join("report.html"));
-                    return write_html_report(
-                        &run_dir,
-                        &run_dir,
-                        &report_output,
-                        limit,
-                        report_lang,
-                    );
+                    return write_html_report(&run_dir, &run_dir, &report_output, limit, lang);
                 }
 
                 // clap requires one of --input or --results-dir. This branch is
@@ -904,7 +898,7 @@ fn main() -> Result<()> {
                 if let Some(selected_report) = html_report {
                     let report_output =
                         selected_report.unwrap_or_else(|| output.join("report.html"));
-                    write_html_report(&output, &input, &report_output, limit, report_lang)?;
+                    write_html_report(&output, &input, &report_output, limit, lang)?;
                 }
                 Ok(())
             }

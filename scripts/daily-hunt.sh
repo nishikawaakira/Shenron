@@ -30,4 +30,4 @@ run_dir="$RUN_ROOT/hunt-$(date -u +%Y%m%dT%H%M%SZ)"
   --output "$run_dir" \
   --baseline-latest "$RUN_ROOT" \
   --report \
-  --report-lang "$REPORT_LANG"
+  --lang "$REPORT_LANG"

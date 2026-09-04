@@ -1790,7 +1790,7 @@ fn hunt_writes_and_rerenders_private_offline_html() {
             hunt_output.to_str().unwrap(),
             "--no-sigma",
             "--report",
-            "--report-lang",
+            "--lang",
             "ja",
         ])
         .assert()
@@ -1828,7 +1828,7 @@ fn hunt_writes_and_rerenders_private_offline_html() {
             "hunt",
             "--results-dir",
             hunt_output.to_str().unwrap(),
-            "--report-lang",
+            "--lang",
             "ja",
         ])
         .assert()
@@ -1899,7 +1899,7 @@ fn report_rerender_streams_only_sensitive_sigma_findings_with_2xx_status() {
             "hunt",
             "--results-dir",
             run_dir.to_str().unwrap(),
-            "--report-lang",
+            "--lang",
             "ja",
         ])
         .assert()

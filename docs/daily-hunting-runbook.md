@@ -41,7 +41,7 @@ don't undermine it by moving the ground under an active investigation.
 ### Hunt (daily)
 
 ```bash
-nice -n 10 shenron hunt --input /var/log/nginx --format nginx --since 24h --baseline-latest ./private-results --report --report-lang ja
+nice -n 10 shenron hunt --input /var/log/nginx --format nginx --since 24h --baseline-latest ./private-results --report --lang ja
 ```
 
 This single command is suitable for cron. The optional
@@ -66,7 +66,7 @@ source files.
 shenron hunt --input /var/log/nginx --format nginx --since 24h \
   --output ./private-results/hunt-<UTC> \
   --baseline-latest ./private-results \
-  --report --report-lang ja
+  --report --lang ja
 ```
 
 A single pass runs, in one stream over the corpus: the CVE-anchored Nuclei
