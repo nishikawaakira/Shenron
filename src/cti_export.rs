@@ -40,6 +40,17 @@ impl TlpLevel {
             Self::Red => "red",
         }
     }
+
+    /// Canonical STIX marking-definition name (e.g. `TLP:AMBER`). Without it a
+    /// STIX viewer shows the marking name as empty.
+    fn marking_name(self) -> &'static str {
+        match self {
+            Self::Clear => "TLP:CLEAR",
+            Self::Green => "TLP:GREEN",
+            Self::Amber => "TLP:AMBER",
+            Self::Red => "TLP:RED",
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -171,6 +182,7 @@ fn stix_bundle(
             "spec_version": "2.1",
             "id": marking_id,
             "created": created,
+            "name": tlp.marking_name(),
             "definition_type": "tlp",
             "definition": { "tlp": tlp.label() }
         }),
@@ -471,7 +483,9 @@ mod tests {
         assert!(valid_stix_id("bundle", bundle["id"].as_str().unwrap()));
         let objects = bundle["objects"].as_array().unwrap();
         assert!(objects.iter().any(|item| {
-            item["type"] == "marking-definition" && item["definition"]["tlp"] == "amber"
+            item["type"] == "marking-definition"
+                && item["definition"]["tlp"] == "amber"
+                && item["name"] == "TLP:AMBER"
         }));
         assert!(objects.iter().all(|item| valid_stix_id(
             item["type"].as_str().unwrap(),
@@ -492,7 +506,9 @@ mod tests {
         assert!(!text.contains("secret-token"));
         let bundle: Value = serde_json::from_str(&text).unwrap();
         assert!(bundle["objects"].as_array().unwrap().iter().any(|item| {
-            item["type"] == "marking-definition" && item["definition"]["tlp"] == "red"
+            item["type"] == "marking-definition"
+                && item["definition"]["tlp"] == "red"
+                && item["name"] == "TLP:RED"
         }));
     }
 
