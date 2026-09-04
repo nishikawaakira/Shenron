@@ -32,6 +32,8 @@ The whole tool follows a **FIND → EXPLAIN → PIVOT → ACT → VALIDATE** wor
 
 Four design pillars: (1) static conversion — templates are never executed; (2) fidelity made explicit as scores and labels; (3) reproducibility via frozen input snapshots recorded with SHA-256; and (4) never asserting an attack, exploitation, compromise, or attacker identity.
 
+`shenron export --results-dir <run> --format stix|misp --output <file>` converts an existing run to a local CTI file without network transmission or log reprocessing. It is sanitized-only by default; `--include-observables` explicitly adds private peer IPs and URI paths and defaults the marking to TLP:RED. No threat actor, campaign, attack, exploitation, compromise, or attribution is inferred. See [CTI export](docs/cti-export.md).
+
 ## Capabilities
 
 The scanner pipeline streams AWS WAF JSONL (including gzip) → normalized `WebEvent` → a deliberately small Sigma subset → JSONL or CSV findings. It supports AWS WAF action, labels, request metadata, and optional JA3/JA4 fingerprints. Analysis commands, including `shenron hunt ...` and `shenron candidate ...`, never access the network, upload customer data, execute exploits, change AWS, deploy candidates, or take automatic BLOCK actions. Only explicit `shenron-lab` preparation commands such as `nuclei update`, `reputation update`, and `bot-ranges update` may download public threat-intelligence inputs.

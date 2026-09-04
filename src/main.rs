@@ -25,6 +25,7 @@ use shenron::{
         compare_runs, write_comparison, PrivateTemporalComparison, SanitizedTemporalComparison,
     },
     concentration::{FocusPrefixLengths, FocusSelector, PrivateRequestConcentrationReport},
+    cti_export::{export_run as export_cti_run, CtiExportFormat, TlpLevel},
     event::{TelemetryCapabilities, TelemetryProfile, TrustedProxy, TrustedProxySet},
     nuclei::{path_distinctiveness, PathDistinctiveness},
     output::{Finding, FindingWriter},
@@ -98,6 +99,24 @@ enum Command {
     Candidate {
         #[command(subcommand)]
         command: CandidateCommand,
+    },
+    /// Convert an existing run into a local STIX 2.1 or MISP JSON file.
+    /// Sanitized aggregates are the default; nothing is transmitted.
+    Export {
+        /// Existing hunt run directory. Source logs are not reprocessed.
+        #[arg(long)]
+        results_dir: PathBuf,
+        #[arg(long, value_enum, default_value_t = CtiExportFormat::Stix)]
+        format: CtiExportFormat,
+        #[arg(long)]
+        output: PathBuf,
+        /// Include private observed connection-peer IPs and URI paths. Without
+        /// this explicit opt-in, private findings are not read.
+        #[arg(long)]
+        include_observables: bool,
+        /// Override the default marking (AMBER sanitized; RED with observables).
+        #[arg(long, value_enum)]
+        tlp: Option<TlpLevel>,
     },
 }
 
@@ -1091,6 +1110,26 @@ fn main() -> Result<()> {
                 Ok(())
             }
         },
+        Command::Export {
+            results_dir,
+            format,
+            output,
+            include_observables,
+            tlp,
+        } => {
+            export_cti_run(&results_dir, &output, format, include_observables, tlp)?;
+            if include_observables {
+                eprintln!(
+                    "PRIVATE export: observed connection-peer IPs and URI paths were included by explicit request. This is not attacker attribution or an attack/exploitation/compromise determination."
+                );
+            }
+            println!(
+                "Local {:?} export written: {}\nNo network transmission was performed.",
+                format,
+                output.display()
+            );
+            Ok(())
+        }
         Command::Candidate { command } => match command {
             CandidateCommand::Build {
                 from_findings,

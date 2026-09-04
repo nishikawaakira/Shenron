@@ -160,6 +160,19 @@ not attribution or a determination of a denial-of-service attempt, attack, or
 abuse. ASN and organization values remain private and are not added to the
 sanitized report.
 
+## File-only CTI export
+
+Convert an existing run without reprocessing logs using `shenron export
+--results-dir <run-dir> --format stix|misp --output <file>`. The default reads
+only sanitized aggregate results and includes no observed IP, URI path, host,
+query, or header. `--include-observables` is an explicit private-data opt-in
+that reads only observed peer IPs and URI paths from private findings. STIX
+output always carries TLP marking (AMBER by default, RED when observables are
+included); `--tlp` can override it. Export writes a local file only and never
+pushes to TAXII or MISP. It creates no threat-actor or campaign assertion and
+does not determine attack, exploitation, compromise, vulnerability, or
+attribution. See [CTI export](cti-export.md).
+
 ## Private offline HTML report
 
 Analyze raw logs and render the private report in the same hunt by adding

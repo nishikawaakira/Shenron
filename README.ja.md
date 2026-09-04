@@ -6,6 +6,8 @@ Shenron は、Web アクセスログを対象にした Rust 製の「受動的�
 
 Shenron の解析本体 `shenron` は、ターゲットへのスキャン、エクスプロイトの実行、AWS の変更や AWS API の呼び出し、WAF ルールの自動適用、`terraform plan/apply`、OSSEC の再起動、解析中のネットワーク接続を一切行いません。ログ・検出結果・IP・リクエスト値などの顧客データを外部へ送信・アップロードする機能もありません。準備用の `shenron-lab nuclei update` と `shenron-lab reputation update` は、明示的に実行した場合に公開インテリジェンスをダウンロードしますが、顧客データは送信しません。出力は必ず人間のレビューを前提とした「提案」であり、Shenron 自身が何かをデプロイすることはありません。
 
+`shenron export --results-dir <run> --format stix|misp --output <file>` は、ログを再解析せず、既存 run をローカル CTI ファイルへ変換します。既定では sanitized 集計だけを扱い、`--include-observables` を明示した場合のみ private な観測 peer IP と URI パスを追加し、既定の marking は TLP:RED になります。ネットワーク送信は行わず、脅威アクター・campaign・攻撃・悪用・侵害・帰属を推定しません。詳細は [CTI export](docs/cti-export.md) を参照してください。
+
 ## 仕組み（アーキテクチャ概要）
 
 一言でいうと、「公開CTI ＋ 自社のログ」をオフラインの解析パイプラインで照合し、確度を明示し、そのまま観測（COUNT）に使える WAF ルール案を作るツールです。公開 CTI の取得は準備用コマンドを明示的に実行した場合だけで、顧客データは外部へ送信しません。処理は次のようになっています。

@@ -431,6 +431,87 @@ fn hunt_compares_declared_bot_ua_with_frozen_ranges_without_changing_cve_metrics
 }
 
 #[test]
+fn cti_export_defaults_to_sanitized_stix_and_requires_observable_opt_in() {
+    let directory = tempdir().unwrap();
+    fs::write(
+        directory.path().join("sanitized-research.json"),
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "report_kind": "SANITIZED_RESEARCH_OUTPUT",
+            "metrics": {
+                "earliest_timestamp": "2026-01-01T00:00:00Z",
+                "request_specific_matches": 1,
+                "response_unverified_matches": 0
+            },
+            "cve_findings": [{
+                "cve": "CVE-2026-0001",
+                "request_count": 1,
+                "detectability": "HIGH",
+                "distinctive_path_matches": 1,
+                "generic_path_matches": 0,
+                "template_ids": ["fixture-template"]
+            }]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    fs::write(
+        directory.path().join("private-findings.jsonl"),
+        "{\"source_ip\":\"198.51.100.77\",\"uri_path\":\"/private-path\",\"host\":\"private.example.test\",\"headers\":[{\"name\":\"X-Secret\",\"value\":\"secret-token\"}]}\n",
+    )
+    .unwrap();
+
+    let sanitized_output = directory.path().join("sanitized-stix.json");
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "export",
+            "--results-dir",
+            directory.path().to_str().unwrap(),
+            "--output",
+            sanitized_output.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(contains("No network transmission was performed"));
+    let sanitized = fs::read_to_string(&sanitized_output).unwrap();
+    assert!(sanitized.contains("CVE-2026-0001"));
+    assert!(sanitized.contains("fixture-template"));
+    assert!(sanitized.contains(r#""tlp": "amber""#));
+    for private in [
+        "198.51.100.77",
+        "/private-path",
+        "private.example.test",
+        "secret-token",
+    ] {
+        assert!(!sanitized.contains(private));
+    }
+
+    let private_output = directory.path().join("private-stix.json");
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "export",
+            "--results-dir",
+            directory.path().to_str().unwrap(),
+            "--output",
+            private_output.to_str().unwrap(),
+            "--include-observables",
+        ])
+        .assert()
+        .success()
+        .stderr(contains("PRIVATE export"));
+    let private = fs::read_to_string(private_output).unwrap();
+    assert!(private.contains("198.51.100.77"));
+    assert!(private.contains("/private-path"));
+    assert!(private.contains(r#""tlp": "red""#));
+    assert!(!private.contains("secret-token"));
+    let bundle: serde_json::Value = serde_json::from_str(&private).unwrap();
+    let objects = bundle["objects"].as_array().unwrap();
+    assert!(objects.iter().all(|item| item["type"] != "threat-actor"));
+    assert!(objects.iter().all(|item| item["type"] != "campaign"));
+}
+
+#[test]
 fn concentration_path_prefix_and_source_ip_focuses_keep_raw_values_private() {
     let directory = tempdir().unwrap();
 
