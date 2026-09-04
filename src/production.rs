@@ -31,7 +31,7 @@ use crate::{
         compare_declared_with_observed, declared_browser_family, ConsistencyAccumulator,
         ConsistencySummary, PrivateConsistencyReport,
     },
-    event::{HttpHeader, LogSource, TelemetryProfile, TrustedProxySet, WebEvent},
+    event::{HttpHeader, LogSource, RawRetention, TelemetryProfile, TrustedProxySet, WebEvent},
     nuclei::{
         frozen_nuclei_selection, path_distinctiveness, validated_detections, Detectability,
         PathDistinctiveness, RequestSpecificity, ValidatedNucleiDetection,
@@ -570,6 +570,10 @@ struct PrivateFinding {
     /// Missing status remains `None` and is never inferred.
     #[serde(default)]
     response_status: Option<u16>,
+    /// Observed response byte size when the telemetry source records it.
+    /// Missing values remain `None` and are never inferred.
+    #[serde(default)]
+    response_bytes: Option<u64>,
 }
 
 /// A terminal-safe view of private hunt evidence. The CLI keeps private
@@ -719,24 +723,30 @@ pub fn inspect_with_trusted_proxies(
         if report.sampled_events >= sample_limit {
             break;
         }
-        stream_events_with_trusted_proxies(&path, telemetry_profile, trusted_proxies, |result| {
-            if report.sampled_events >= sample_limit {
-                return Ok(());
-            }
-            match result {
-                Ok(event) => {
-                    report.sampled_events += 1;
-                    record_availability(&mut report.fields_available, &event);
-                    update_time_range(
-                        &mut report.earliest_timestamp,
-                        &mut report.latest_timestamp,
-                        event.timestamp,
-                    );
+        stream_events_with_trusted_proxies_and_raw_retention(
+            &path,
+            telemetry_profile,
+            trusted_proxies,
+            RawRetention::Drop,
+            |result| {
+                if report.sampled_events >= sample_limit {
+                    return Ok(());
                 }
-                Err(_) => report.malformed_events += 1,
-            }
-            Ok(())
-        })?;
+                match result {
+                    Ok(event) => {
+                        report.sampled_events += 1;
+                        record_availability(&mut report.fields_available, &event);
+                        update_time_range(
+                            &mut report.earliest_timestamp,
+                            &mut report.latest_timestamp,
+                            event.timestamp,
+                        );
+                    }
+                    Err(_) => report.malformed_events += 1,
+                }
+                Ok(())
+            },
+        )?;
     }
     Ok(report)
 }
@@ -1157,7 +1167,7 @@ pub fn concentration_with_asn_and_rate_windows(
     }
     let mut progress = ProgressReporter::new("concentration");
     for path in files {
-        stream_events(&path, telemetry_profile, |result| {
+        stream_events_with_raw_retention(&path, telemetry_profile, RawRetention::Drop, |result| {
             progress.tick();
             let event = match result {
                 Ok(event) => event,
@@ -1339,7 +1349,7 @@ pub fn ablation_with_optional_kev(
     let mut accumulators = std::array::from_fn::<_, 5, _>(|_| AblationAccumulator::default());
     let mut progress = ProgressReporter::new("ablation");
     for path in &files {
-        stream_events(path, telemetry_profile, |result| {
+        stream_events_with_raw_retention(path, telemetry_profile, RawRetention::Drop, |result| {
             progress.tick();
             let event = match result {
                 Ok(event) => event,
@@ -1495,7 +1505,7 @@ pub fn historical_replay_with_optional_kev(
 
     let mut progress = ProgressReporter::new("replay");
     for path in &files {
-        stream_events(path, telemetry_profile, |result| {
+        stream_events_with_raw_retention(path, telemetry_profile, RawRetention::Drop, |result| {
             progress.tick();
             let event = match result {
                 Ok(event) => event,
@@ -1683,7 +1693,7 @@ pub fn count_hypotheses_with_optional_kev(
     let mut parse_errors = 0;
     let mut progress = ProgressReporter::new("count-hypotheses");
     for path in &files {
-        stream_events(path, telemetry_profile, |result| {
+        stream_events_with_raw_retention(path, telemetry_profile, RawRetention::Drop, |result| {
             progress.tick();
             let event = match result {
                 Ok(event) => event,
@@ -2027,6 +2037,7 @@ fn private_finding(detection: &ValidatedNucleiDetection, event: &WebEvent) -> Pr
         rule_title: None,
         sigma_level: None,
         response_status: event.status,
+        response_bytes: event.response_bytes,
     }
 }
 
@@ -2061,6 +2072,7 @@ fn sigma_finding(rule: &crate::sigma::CompiledRule, event: &WebEvent) -> Private
         rule_title: Some(rule.title.clone()),
         sigma_level: rule.level.clone(),
         response_status: event.status,
+        response_bytes: event.response_bytes,
     }
 }
 
@@ -2242,18 +2254,20 @@ impl ProgressReporter {
     }
 }
 
-pub(crate) fn stream_events<F>(
+pub(crate) fn stream_events_with_raw_retention<F>(
     path: &Path,
     telemetry_profile: TelemetryProfile,
+    raw_retention: RawRetention,
     callback: F,
 ) -> anyhow::Result<()>
 where
     F: FnMut(Result<WebEvent, String>) -> anyhow::Result<()>,
 {
-    stream_events_with_trusted_proxies(
+    stream_events_with_trusted_proxies_and_raw_retention(
         path,
         telemetry_profile,
         &TrustedProxySet::default(),
+        raw_retention,
         callback,
     )
 }
@@ -2262,6 +2276,25 @@ pub(crate) fn stream_events_with_trusted_proxies<F>(
     path: &Path,
     telemetry_profile: TelemetryProfile,
     trusted_proxies: &TrustedProxySet,
+    callback: F,
+) -> anyhow::Result<()>
+where
+    F: FnMut(Result<WebEvent, String>) -> anyhow::Result<()>,
+{
+    stream_events_with_trusted_proxies_and_raw_retention(
+        path,
+        telemetry_profile,
+        trusted_proxies,
+        RawRetention::Keep,
+        callback,
+    )
+}
+
+fn stream_events_with_trusted_proxies_and_raw_retention<F>(
+    path: &Path,
+    telemetry_profile: TelemetryProfile,
+    trusted_proxies: &TrustedProxySet,
+    raw_retention: RawRetention,
     mut callback: F,
 ) -> anyhow::Result<()>
 where
@@ -2270,7 +2303,7 @@ where
     let reader = event_reader(path)?;
     match telemetry_profile {
         TelemetryProfile::AwsWaf => {
-            for item in WafLines::new(reader) {
+            for item in WafLines::with_raw_retention(reader, raw_retention) {
                 callback(
                     item.map(|mut event| {
                         trusted_proxies.resolve_client_ip(&mut event);
@@ -2281,7 +2314,11 @@ where
             }
         }
         TelemetryProfile::NginxCombined => {
-            for item in AccessLogLines::new(reader, AccessLogFormat::NginxCombined) {
+            for item in AccessLogLines::with_raw_retention(
+                reader,
+                AccessLogFormat::NginxCombined,
+                raw_retention,
+            ) {
                 callback(
                     item.map(|mut event| {
                         trusted_proxies.resolve_client_ip(&mut event);
@@ -2292,7 +2329,11 @@ where
             }
         }
         TelemetryProfile::ApacheCombined => {
-            for item in AccessLogLines::new(reader, AccessLogFormat::ApacheCombined) {
+            for item in AccessLogLines::with_raw_retention(
+                reader,
+                AccessLogFormat::ApacheCombined,
+                raw_retention,
+            ) {
                 callback(
                     item.map(|mut event| {
                         trusted_proxies.resolve_client_ip(&mut event);
@@ -2303,7 +2344,11 @@ where
             }
         }
         TelemetryProfile::ApacheVhostCombined => {
-            for item in AccessLogLines::new(reader, AccessLogFormat::ApacheVhostCombined) {
+            for item in AccessLogLines::with_raw_retention(
+                reader,
+                AccessLogFormat::ApacheVhostCombined,
+                raw_retention,
+            ) {
                 callback(
                     item.map(|mut event| {
                         trusted_proxies.resolve_client_ip(&mut event);

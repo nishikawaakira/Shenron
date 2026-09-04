@@ -183,6 +183,47 @@ fn concentration_writes_private_detail_without_leaking_it_to_sanitized_or_defaul
 }
 
 #[test]
+fn concentration_artifacts_are_byte_stable_for_every_focus_shape() {
+    use std::collections::BTreeSet;
+
+    use shenron::concentration::{FocusPrefixLengths, FocusSelector};
+
+    let directory = tempdir().unwrap();
+    let focuses = [
+        None,
+        Some(FocusSelector::ExactPath("/vulnerable/execute".to_owned())),
+        Some(FocusSelector::PathPrefix("/vulnerable".to_owned())),
+        Some(FocusSelector::SourceIp(BTreeSet::from([
+            "198.51.100.1".to_owned(),
+            "198.51.100.2".to_owned(),
+        ]))),
+    ];
+
+    for (index, focus) in focuses.into_iter().enumerate() {
+        let first = directory.path().join(format!("focus-{index}-first"));
+        let second = directory.path().join(format!("focus-{index}-second"));
+        for output in [&first, &second] {
+            concentration(
+                Path::new("tests/fixtures/production/waf.jsonl"),
+                output,
+                TelemetryProfile::AwsWaf,
+                HuntTimeRange::default(),
+                focus.clone(),
+                FocusPrefixLengths::default(),
+            )
+            .unwrap();
+        }
+        for artifact in ["request-concentration.json", "sanitized-research.json"] {
+            assert_eq!(
+                fs::read(first.join(artifact)).unwrap(),
+                fs::read(second.join(artifact)).unwrap(),
+                "{artifact} changed between identical runs for focus {index}"
+            );
+        }
+    }
+}
+
+#[test]
 fn concentration_path_focus_keeps_sources_private_until_explicitly_requested() {
     let directory = tempdir().unwrap();
     let output = directory.path().join("focused");
@@ -2163,6 +2204,55 @@ fn explain_allows_explicit_non_default_triage_thresholds() {
         .stdout(contains(
             "198.51.100.10\n  Grouping identity: observed-peer\n  Triage basis: breadth",
         ));
+}
+
+#[test]
+fn hunt_records_response_bytes_on_private_findings() {
+    let directory = tempdir().unwrap();
+    let input = directory.path().join("access.log");
+    // Standard Apache combined records the response byte size; the bundled
+    // secret/config-file probe Sigma rule matches /.env.
+    fs::write(
+        &input,
+        "203.0.113.5 - - [24/Aug/2026:00:00:00 +0000] \"GET /.env HTTP/1.1\" 200 4096 \"-\" \"curl/8.0\"\n",
+    )
+    .unwrap();
+    let data_dir = directory.path().join("empty-data");
+    fs::create_dir_all(&data_dir).unwrap();
+    let output = directory.path().join("out");
+
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .env("SHENRON_DATA_DIR", &data_dir)
+        .args([
+            "hunt",
+            "--input",
+            input.to_str().unwrap(),
+            "--format",
+            "apache",
+            "--nuclei-templates",
+            "tests/fixtures/nuclei",
+            "--nuclei-report",
+            "tests/fixtures/production/nuclei-report.json",
+            "--kev-report",
+            "tests/fixtures/production/kev-report.json",
+            "--rules",
+            "sigma-rules",
+            "--output",
+            output.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let findings = fs::read_to_string(output.join("private-findings.jsonl")).unwrap();
+    let finding = findings
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .find(|finding| finding["template_id"] == "shenron-secret-config-file-probe")
+        .expect("sigma secret/config-file finding");
+    assert_eq!(finding["response_bytes"], 4096);
+    assert_eq!(finding["response_status"], 200);
+    assert_eq!(finding["uri_path"], "/.env");
 }
 
 #[test]
