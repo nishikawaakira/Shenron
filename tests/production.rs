@@ -291,7 +291,10 @@ fn concentration_focus_optionally_groups_private_peers_by_local_asn() {
         .stdout(contains("Private ASN aggregation"))
         .stdout(contains("AS64500 Example Transit"))
         .stdout(contains("Distinct observed peer IPs: 2"))
-        .stdout(contains("Unresolved observed peer IPs: 1 (1 requests)"));
+        .stdout(contains("Unresolved observed peer IPs: 1 (1 requests)"))
+        .stdout(contains(
+            "An ASN is a routing-level grouping. It does not establish that one operator controls the traffic, and it is not attribution or a determination of a denial-of-service attempt, attack, or abuse.",
+        ));
 
     let private = fs::read_to_string(output.join("request-concentration.json")).unwrap();
     assert!(private.contains("Example Transit"));
