@@ -2674,7 +2674,11 @@ fn reputation_json(
     }
 }
 
-fn base_group_json(group: &shenron::triage::EntityGroup) -> GroupJson {
+fn base_group_json(group: &shenron::triage::EntityGroup, show_request: bool) -> GroupJson {
+    let mut sequence = group.sequence.clone();
+    if !show_request {
+        sequence.ordered_observations.clear();
+    }
     GroupJson {
         key: group.key.clone(),
         identity: group.identity.map(|identity| identity.label()),
@@ -2689,7 +2693,7 @@ fn base_group_json(group: &shenron::triage::EntityGroup) -> GroupJson {
         request_specific_observations: group.request_specific_observations,
         response_unverified_observations: group.response_unverified_observations,
         windowed_burst_windows: group.windowed_burst_windows.clone(),
-        sequence: group.sequence.clone(),
+        sequence,
         score: group.score.clone(),
         reputation: None,
     }
@@ -2699,8 +2703,9 @@ fn connection_ip_group_json(
     group: &shenron::triage::EntityGroup,
     asn_database: Option<&AsnDatabase>,
     reputation_database: Option<&ReputationDatabase>,
+    show_request: bool,
 ) -> GroupJson {
-    let mut json = base_group_json(group);
+    let mut json = base_group_json(group, show_request);
     if let Ok(ip) = group.key.parse::<IpAddr>() {
         let asn = asn_database
             .and_then(|database| database.lookup(ip))
@@ -2725,8 +2730,9 @@ fn connection_ip_group_json(
 fn asn_group_json(
     group: &shenron::triage::EntityGroup,
     reputation_database: Option<&ReputationDatabase>,
+    show_request: bool,
 ) -> GroupJson {
-    let mut json = base_group_json(group);
+    let mut json = base_group_json(group, show_request);
     if let Some(database) = reputation_database {
         if let Ok(asn) = group.key.parse::<u32>() {
             json.reputation = Some(reputation_json(database.lookup_asn(asn), None));
@@ -2820,7 +2826,14 @@ fn build_explain_report(
                 triage.capabilities,
             )
             .iter()
-            .map(|group| connection_ip_group_json(group, asn_database, reputation_database))
+            .map(|group| {
+                connection_ip_group_json(
+                    group,
+                    asn_database,
+                    reputation_database,
+                    display.show_request,
+                )
+            })
             .collect(),
         )
     });
@@ -2841,7 +2854,9 @@ fn build_explain_report(
                     result
                         .groups
                         .iter()
-                        .map(|group| asn_group_json(group, reputation_database))
+                        .map(|group| {
+                            asn_group_json(group, reputation_database, display.show_request)
+                        })
                         .collect(),
                 ),
                 unresolved_findings: result.unresolved_findings,
@@ -2857,7 +2872,7 @@ fn build_explain_report(
                 triage.capabilities,
             )
             .iter()
-            .map(base_group_json)
+            .map(|group| base_group_json(group, display.show_request))
             .collect(),
         )
     });

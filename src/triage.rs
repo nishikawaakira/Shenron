@@ -540,6 +540,7 @@ pub struct RequestSequenceSummary {
     pub maximum_distinctive_patterns_in_window: usize,
     pub minimum_interval_seconds: Option<f64>,
     pub median_interval_seconds: Option<f64>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub ordered_observations: Vec<OrderedRequestObservation>,
 }
 

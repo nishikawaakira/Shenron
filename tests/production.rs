@@ -954,6 +954,13 @@ fn hunt_triage_keeps_private_entities_gated_and_marks_baseline_first_seen_entiti
         .unwrap()
         .iter()
         .any(|entity| entity["key"] == "198.51.100.2" && entity["first_seen"] == true));
+    assert!(triage_view["entities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|entity| entity["sequence"]["ordered_observations"]
+            .as_array()
+            .is_some_and(|observations| !observations.is_empty())));
 
     Command::cargo_bin("shenron")
         .unwrap()
@@ -2775,6 +2782,63 @@ fn explain_json_omits_private_evidence_without_show_flags() {
             "private value leaked into JSON: {secret}"
         );
     }
+}
+
+#[test]
+fn explain_json_gates_ordered_request_patterns_behind_show_request() {
+    let directory = tempdir().unwrap();
+    let findings_path = directory.path().join("private-findings.jsonl");
+    let record = |template: &str, path: &str, second: u8| {
+        format!(
+            r#"{{"template_id":"{template}","cves":["CVE-2024-0001"],"detectability":"HIGH","request_specificity":"request-specific","timestamp":"2026-08-24T00:00:0{second}+00:00","source_ip":"203.0.113.77","client_ip":null,"host":null,"method":"GET","uri_path":"{path}","uri_query":null,"headers":[],"ja3":null,"ja4":null,"waf_action":null,"request_id":"request-{second}","log_source":"apache_combined"}}"#
+        )
+    };
+    fs::write(
+        &findings_path,
+        [
+            record("tpl-a", "/distinctive-one", 1),
+            record("tpl-b", "/distinctive-two", 2),
+        ]
+        .join("\n"),
+    )
+    .unwrap();
+
+    let run = |show_request: bool| {
+        let mut command = Command::cargo_bin("shenron").unwrap();
+        command.args([
+            "explain",
+            "--findings",
+            findings_path.to_str().unwrap(),
+            "--show-source-ips",
+            "--output-format",
+            "json",
+        ]);
+        if show_request {
+            command.arg("--show-request");
+        }
+        let stdout = command.assert().success().get_output().stdout.clone();
+        serde_json::from_slice::<serde_json::Value>(&stdout).unwrap()
+    };
+
+    let gated = run(false);
+    let gated_sequence = &gated["connection_ip_groups"][0]["sequence"];
+    assert_eq!(gated_sequence["retained_observations"], 2);
+    assert!(gated_sequence.get("ordered_observations").is_none());
+    let gated_text = serde_json::to_string(&gated).unwrap();
+    assert!(!gated_text.contains("GET /distinctive-one"));
+    assert!(!gated_text.contains("GET /distinctive-two"));
+
+    let shown = run(true);
+    let observations = shown["connection_ip_groups"][0]["sequence"]["ordered_observations"]
+        .as_array()
+        .unwrap();
+    assert_eq!(observations.len(), 2);
+    assert!(observations
+        .iter()
+        .any(|item| item["request_pattern"] == "GET /distinctive-one"));
+    assert!(observations
+        .iter()
+        .any(|item| item["request_pattern"] == "GET /distinctive-two"));
 }
 
 #[test]
