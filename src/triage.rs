@@ -84,12 +84,14 @@ impl GroupingIdentity {
 }
 
 /// The thresholds used to decide whether a group requires investigation.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct TriagePolicy {
     pub breadth_observations: usize,
     pub breadth_templates: usize,
     pub depth_observations: usize,
-    pub window: Option<Duration>,
+    /// Sliding windows evaluated independently. They are sorted and
+    /// deduplicated so reports are stable for equivalent CLI input.
+    pub windows: Vec<Duration>,
 }
 
 impl Default for TriagePolicy {
@@ -98,7 +100,7 @@ impl Default for TriagePolicy {
             breadth_observations: DEFAULT_BREADTH_OBSERVATIONS,
             breadth_templates: DEFAULT_BREADTH_TEMPLATES,
             depth_observations: DEFAULT_DEPTH_OBSERVATIONS,
-            window: None,
+            windows: Vec::new(),
         }
     }
 }
@@ -110,19 +112,36 @@ impl TriagePolicy {
         depth_observations: Option<usize>,
         window: Option<Duration>,
     ) -> Self {
+        Self::with_windows(
+            breadth_observations,
+            breadth_templates,
+            depth_observations,
+            window.into_iter().collect(),
+        )
+    }
+
+    pub fn with_windows(
+        breadth_observations: Option<usize>,
+        breadth_templates: Option<usize>,
+        depth_observations: Option<usize>,
+        mut windows: Vec<Duration>,
+    ) -> Self {
+        windows.retain(|window| !window.is_zero());
+        windows.sort_unstable();
+        windows.dedup();
         Self {
             breadth_observations: breadth_observations.unwrap_or(DEFAULT_BREADTH_OBSERVATIONS),
             breadth_templates: breadth_templates.unwrap_or(DEFAULT_BREADTH_TEMPLATES),
             depth_observations: depth_observations.unwrap_or(DEFAULT_DEPTH_OBSERVATIONS),
-            window,
+            windows,
         }
     }
 
-    pub fn is_default(self) -> bool {
+    pub fn is_default(&self) -> bool {
         self.breadth_observations == DEFAULT_BREADTH_OBSERVATIONS
             && self.breadth_templates == DEFAULT_BREADTH_TEMPLATES
             && self.depth_observations == DEFAULT_DEPTH_OBSERVATIONS
-            && self.window.is_none()
+            && self.windows.is_empty()
     }
 }
 
@@ -246,8 +265,9 @@ pub struct EntitySignals {
     /// known enforcement outcome. `None` when no matched request has a known
     /// WAF outcome (for example nginx/Apache telemetry).
     pub unblocked_fraction: Option<f64>,
-    /// True when the entity met a windowed breadth-or-depth burst test.
-    pub windowed_burst: bool,
+    /// Exact sliding-window widths in which the entity met a breadth-or-depth
+    /// burst test. Multiple windows still contribute at most five points.
+    pub windowed_burst_windows: Vec<u64>,
 }
 
 /// Compute the deterministic behavior-priority score for one entity, normalized
@@ -351,7 +371,8 @@ pub fn score(signals: &EntitySignals, reachable: ReachableComponents) -> Behavio
         }
     };
 
-    let burst_points = if signals.windowed_burst {
+    let windowed_burst = !signals.windowed_burst_windows.is_empty();
+    let burst_points = if windowed_burst {
         WINDOWED_BURST_POINTS
     } else {
         0
@@ -359,8 +380,16 @@ pub fn score(signals: &EntitySignals, reachable: ReachableComponents) -> Behavio
     components.push(ScoreComponent {
         name: "windowed-burst",
         points: burst_points,
-        detail: if signals.windowed_burst {
-            "met a windowed breadth or depth burst".to_owned()
+        detail: if windowed_burst {
+            format!(
+                "met a windowed breadth or depth burst in {}",
+                signals
+                    .windowed_burst_windows
+                    .iter()
+                    .map(|seconds| format_duration_seconds(*seconds))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
         } else {
             "no windowed burst evaluated or met".to_owned()
         },
@@ -450,8 +479,17 @@ pub struct EntityGroup {
     /// verified and unverified identity evidence.
     pub distinct_observed_peers: usize,
     pub undated_observations: usize,
+    /// Exact windows and per-window basis that met the configured test. This
+    /// increases reporting detail only; the score receives one fixed component.
+    pub windowed_burst_windows: Vec<WindowedTriageMatch>,
     pub triage_basis: Option<&'static str>,
     pub score: BehaviorScore,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct WindowedTriageMatch {
+    pub window_seconds: u64,
+    pub basis: &'static str,
 }
 
 impl EntityGroup {
@@ -486,19 +524,42 @@ struct EntitySummary {
 }
 
 impl EntitySummary {
-    fn triage_basis(&self, policy: TriagePolicy) -> Option<&'static str> {
-        if policy.window.is_some() {
-            return self.windowed_triage_basis(policy);
+    fn triage_evaluation(
+        &self,
+        policy: &TriagePolicy,
+    ) -> (Option<&'static str>, Vec<WindowedTriageMatch>) {
+        if !policy.windows.is_empty() {
+            let windows = policy
+                .windows
+                .iter()
+                .filter_map(|window| {
+                    self.windowed_triage_basis(*window, policy)
+                        .map(|basis| WindowedTriageMatch {
+                            window_seconds: window.as_secs(),
+                            basis,
+                        })
+                })
+                .collect::<Vec<_>>();
+            let saw_breadth = windows.iter().any(|item| item.basis.contains("breadth"));
+            let saw_depth = windows.iter().any(|item| item.basis.contains("depth"));
+            let basis = match (saw_breadth, saw_depth) {
+                (true, true) => Some("windowed breadth + depth"),
+                (true, false) => Some("windowed breadth"),
+                (false, true) => Some("windowed depth"),
+                (false, false) => None,
+            };
+            return (basis, windows);
         }
         let breadth = self.request_patterns.len() >= policy.breadth_observations
             && self.templates.len() >= policy.breadth_templates;
         let depth = self.request_patterns.len() >= policy.depth_observations;
-        match (breadth, depth) {
+        let basis = match (breadth, depth) {
             (true, true) => Some("breadth + depth"),
             (true, false) => Some("breadth"),
             (false, true) => Some("depth"),
             (false, false) => None,
-        }
+        };
+        (basis, Vec::new())
     }
 
     fn undated_observations(&self) -> usize {
@@ -508,10 +569,14 @@ impl EntitySummary {
             .count()
     }
 
-    fn windowed_triage_basis(&self, policy: TriagePolicy) -> Option<&'static str> {
+    fn windowed_triage_basis(
+        &self,
+        window: Duration,
+        policy: &TriagePolicy,
+    ) -> Option<&'static str> {
         // CLI parsing bounds durations, but preserve fail-closed behavior if a
         // non-CLI caller supplies a duration chrono cannot represent.
-        let window = chrono::Duration::from_std(policy.window?).ok()?;
+        let window = chrono::Duration::from_std(window).ok()?;
         let mut observations = self
             .observations
             .iter()
@@ -558,7 +623,11 @@ impl EntitySummary {
         }
     }
 
-    fn signals(&self, dimension: EntityDimension, windowed_burst: bool) -> EntitySignals {
+    fn signals(
+        &self,
+        dimension: EntityDimension,
+        windowed_burst_windows: Vec<u64>,
+    ) -> EntitySignals {
         let spread = match dimension {
             EntityDimension::ConnectionIp => self.hosts.len(),
             // Do not sum these populations: the same sender can appear once
@@ -583,7 +652,7 @@ impl EntitySummary {
             request_specific_observations,
             spread,
             unblocked_fraction,
-            windowed_burst,
+            windowed_burst_windows,
         }
     }
 
@@ -817,9 +886,17 @@ fn finalize_entity_groups(
     let mut groups = summaries
         .into_iter()
         .map(|((identity, key), summary)| {
-            let triage_basis = summary.triage_basis(policy);
-            let windowed_burst = policy.window.is_some() && triage_basis.is_some();
-            let score = score(&summary.signals(dimension, windowed_burst), reachable);
+            let (triage_basis, windowed_burst_windows) = summary.triage_evaluation(&policy);
+            let score = score(
+                &summary.signals(
+                    dimension,
+                    windowed_burst_windows
+                        .iter()
+                        .map(|item| item.window_seconds)
+                        .collect(),
+                ),
+                reachable,
+            );
             let (request_specific_observations, response_unverified_observations) =
                 summary.specificity_observations();
             EntityGroup {
@@ -844,6 +921,7 @@ fn finalize_entity_groups(
                 distinct_validated_clients: summary.validated_clients.len(),
                 distinct_observed_peers: summary.observed_peers.len(),
                 undated_observations: summary.undated_observations(),
+                windowed_burst_windows,
                 triage_basis,
                 score,
             }
@@ -859,6 +937,18 @@ fn finalize_entity_groups(
             .then_with(|| left.identity.cmp(&right.identity))
     });
     groups
+}
+
+fn format_duration_seconds(seconds: u64) -> String {
+    if seconds.is_multiple_of(86_400) {
+        format!("{}d", seconds / 86_400)
+    } else if seconds.is_multiple_of(3_600) {
+        format!("{}h", seconds / 3_600)
+    } else if seconds.is_multiple_of(60) {
+        format!("{}m", seconds / 60)
+    } else {
+        format!("{seconds}s")
+    }
 }
 
 #[cfg(test)]
@@ -899,7 +989,7 @@ mod tests {
             request_specific_observations: 0,
             spread: 0,
             unblocked_fraction: None,
-            windowed_burst: false,
+            windowed_burst_windows: Vec::new(),
         }
     }
 
@@ -920,7 +1010,7 @@ mod tests {
             request_specific_observations: 1,
             spread: 100,
             unblocked_fraction: Some(1.0),
-            windowed_burst: true,
+            windowed_burst_windows: vec![600],
         });
         assert_eq!(scored.total, 100);
         assert_eq!(scored.tier, ScoreTier::High);
@@ -967,7 +1057,7 @@ mod tests {
             request_specific_observations: 0,
             spread: 100,
             unblocked_fraction: Some(1.0),
-            windowed_burst: true,
+            windowed_burst_windows: vec![600],
         });
         assert_eq!(uri_only.total, 74);
         assert_eq!(uri_only.tier, ScoreTier::Medium);
@@ -982,7 +1072,7 @@ mod tests {
                 request_specific_observations: 0,
                 spread: 100,
                 unblocked_fraction: Some(1.0),
-                windowed_burst: true,
+                windowed_burst_windows: vec![600],
             }
         });
         assert_eq!(request_specific.tier, ScoreTier::High);
@@ -1002,7 +1092,7 @@ mod tests {
             request_specific_observations: 5,
             spread: 0,
             unblocked_fraction: None,
-            windowed_burst: false,
+            windowed_burst_windows: Vec::new(),
         };
         let aws = super::score(
             &evidence,
@@ -1352,5 +1442,95 @@ mod tests {
         );
         assert!(groups.groups.is_empty());
         assert_eq!(groups.unresolved_findings, 1);
+    }
+
+    #[test]
+    fn multiple_windows_report_each_match_but_add_burst_points_once() {
+        let mut findings = vec![
+            finding(
+                "first",
+                "template-a",
+                None,
+                RequestSpecificity::RequestSpecific,
+                None,
+                Some("203.0.113.40"),
+                None,
+            ),
+            finding(
+                "second",
+                "template-b",
+                None,
+                RequestSpecificity::RequestSpecific,
+                None,
+                Some("203.0.113.40"),
+                None,
+            ),
+            finding(
+                "third",
+                "template-a",
+                None,
+                RequestSpecificity::RequestSpecific,
+                None,
+                Some("203.0.113.40"),
+                None,
+            ),
+        ];
+        for (finding, timestamp) in findings.iter_mut().zip([
+            "2026-01-01T00:00:00Z",
+            "2026-01-01T00:00:05Z",
+            "2026-01-01T00:00:10Z",
+        ]) {
+            finding.timestamp = Some(timestamp.to_owned());
+        }
+        let policy = TriagePolicy::with_windows(
+            Some(3),
+            Some(2),
+            Some(10),
+            vec![Duration::from_secs(3_600), Duration::from_secs(10)],
+        );
+        let group = entity_groups(
+            &findings,
+            EntityDimension::ConnectionIp,
+            policy,
+            TelemetryProfile::AwsWaf.capabilities(),
+        )
+        .pop()
+        .unwrap();
+        assert_eq!(
+            group
+                .windowed_burst_windows
+                .iter()
+                .map(|item| item.window_seconds)
+                .collect::<Vec<_>>(),
+            vec![10, 3_600]
+        );
+        let burst = group
+            .score
+            .components
+            .iter()
+            .find(|component| component.name == "windowed-burst")
+            .unwrap();
+        assert_eq!(burst.points, WINDOWED_BURST_POINTS);
+        assert!(burst.detail.contains("10s, 1h"));
+
+        let single = entity_groups(
+            &findings,
+            EntityDimension::ConnectionIp,
+            TriagePolicy::new(None, None, None, Some(Duration::from_secs(10))),
+            TelemetryProfile::AwsWaf.capabilities(),
+        )
+        .pop()
+        .unwrap();
+        assert_eq!(
+            single
+                .score
+                .components
+                .iter()
+                .find(|component| component.name == "windowed-burst")
+                .unwrap()
+                .points,
+            WINDOWED_BURST_POINTS
+        );
+        assert_eq!(single.windowed_burst_windows.len(), 1);
     }
 }

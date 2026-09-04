@@ -28,6 +28,9 @@ pub const DEFAULT_MAX_FOCUS_PATHS: usize = 1_000_000;
 /// Roughly 1.9 years of one-minute buckets. Both global and focus timelines
 /// stop admitting new minutes at this fixed cap and disclose omitted records.
 pub const DEFAULT_MAX_MINUTE_BUCKETS: usize = 1_000_000;
+/// Default deterministic rate windows: one minute, ten minutes, one hour, and
+/// one day. They describe volume shape only and are not alert thresholds.
+pub const DEFAULT_RATE_WINDOW_SECONDS: [u64; 4] = [60, 600, 3_600, 86_400];
 
 /// What a `concentration` focus selects. Exact and prefix focuses are keyed on
 /// the normalized URI path; the source-IP focus lists what one or more observed
@@ -153,6 +156,19 @@ pub struct RequestRateSummary {
     pub observations_without_timestamp: u64,
 }
 
+/// Request-volume statistics for one exact UTC bucket width. These are volume
+/// measurements, not a determination of attack, automation, or intent.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct WindowedRequestRateSummary {
+    pub bucket_width_seconds: u64,
+    pub peak_requests: Option<u64>,
+    pub median_requests: Option<f64>,
+    pub peak_to_median_ratio: Option<f64>,
+    pub observations_without_timestamp: u64,
+    /// Records in new buckets omitted after the deterministic bucket cap.
+    pub observations_beyond_bucket_cap: u64,
+}
+
 /// Aggregate-only focus output. The requested path and observed peer IPs stay
 /// exclusively in the private artifact, even though the path was supplied by
 /// the analyst on the command line.
@@ -173,6 +189,10 @@ pub struct SanitizedFocusSummary {
     pub paths_beyond_cap: u64,
     pub peak_requests_per_minute: Option<u64>,
     pub median_requests_per_minute: Option<f64>,
+    /// Multiple simultaneous bucket widths, sorted by width. No selector value
+    /// or other private request value is included.
+    #[serde(default)]
+    pub request_rates: Vec<WindowedRequestRateSummary>,
 }
 
 fn exact_path_kind() -> String {
@@ -200,6 +220,10 @@ pub struct RequestConcentrationSummary {
     pub top_ten_paths_request_share: f64,
     pub top_ten_source_ips_request_share: f64,
     pub requests_per_minute: RequestRateSummary,
+    /// Multiple simultaneous bucket widths, sorted by width. The existing
+    /// per-minute field above remains for artifact compatibility.
+    #[serde(default)]
+    pub request_rates: Vec<WindowedRequestRateSummary>,
     /// Present only when `production concentration --path` selected an exact
     /// URI path. This aggregate is safe for sanitized output.
     #[serde(default)]
@@ -384,12 +408,18 @@ pub struct RequestConcentration {
     source_ips_beyond_tracking_cap: u64,
     source_path_pairs_beyond_tracking_cap: u64,
     observations_without_timestamp: u64,
+    rate_window_seconds: Vec<u64>,
+    rate_buckets: BTreeMap<u64, BTreeMap<i64, u64>>,
+    rate_buckets_beyond_cap: BTreeMap<u64, u64>,
     focus: Option<FocusSelector>,
     focus_total: u64,
     focus_sources: BTreeMap<String, u64>,
     focus_paths: BTreeMap<String, u64>,
     focus_minute_buckets: BTreeMap<i64, u64>,
     focus_minute_buckets_beyond_cap: u64,
+    focus_observations_without_timestamp: u64,
+    focus_rate_buckets: BTreeMap<u64, BTreeMap<i64, u64>>,
+    focus_rate_buckets_beyond_cap: BTreeMap<u64, u64>,
     focus_status_classes: StatusClassCounts,
     focus_source_ips_beyond_cap: u64,
     focus_paths_beyond_cap: u64,
@@ -397,10 +427,45 @@ pub struct RequestConcentration {
 
 impl RequestConcentration {
     pub fn new(response_bytes_available: bool) -> Self {
-        Self::with_limits(response_bytes_available, ConcentrationLimits::default())
+        Self::with_limits_and_rate_windows(
+            response_bytes_available,
+            ConcentrationLimits::default(),
+            &DEFAULT_RATE_WINDOW_SECONDS,
+        )
     }
 
     pub fn with_limits(response_bytes_available: bool, limits: ConcentrationLimits) -> Self {
+        Self::with_limits_and_rate_windows(
+            response_bytes_available,
+            limits,
+            &DEFAULT_RATE_WINDOW_SECONDS,
+        )
+    }
+
+    /// Construct an accumulator with explicit simultaneous rate windows. Zero
+    /// widths are ignored; remaining widths are sorted and deduplicated.
+    pub fn with_limits_and_rate_windows(
+        response_bytes_available: bool,
+        limits: ConcentrationLimits,
+        rate_window_seconds: &[u64],
+    ) -> Self {
+        let rate_window_seconds = normalize_rate_windows(rate_window_seconds);
+        let rate_buckets = rate_window_seconds
+            .iter()
+            .map(|seconds| (*seconds, BTreeMap::new()))
+            .collect();
+        let rate_buckets_beyond_cap = rate_window_seconds
+            .iter()
+            .map(|seconds| (*seconds, 0))
+            .collect();
+        let focus_rate_buckets = rate_window_seconds
+            .iter()
+            .map(|seconds| (*seconds, BTreeMap::new()))
+            .collect();
+        let focus_rate_buckets_beyond_cap = rate_window_seconds
+            .iter()
+            .map(|seconds| (*seconds, 0))
+            .collect();
         Self {
             limits,
             response_bytes_available,
@@ -418,12 +483,18 @@ impl RequestConcentration {
             source_ips_beyond_tracking_cap: 0,
             source_path_pairs_beyond_tracking_cap: 0,
             observations_without_timestamp: 0,
+            rate_window_seconds,
+            rate_buckets,
+            rate_buckets_beyond_cap,
             focus: None,
             focus_total: 0,
             focus_sources: BTreeMap::new(),
             focus_paths: BTreeMap::new(),
             focus_minute_buckets: BTreeMap::new(),
             focus_minute_buckets_beyond_cap: 0,
+            focus_observations_without_timestamp: 0,
+            focus_rate_buckets,
+            focus_rate_buckets_beyond_cap,
             focus_status_classes: StatusClassCounts::default(),
             focus_source_ips_beyond_cap: 0,
             focus_paths_beyond_cap: 0,
@@ -504,6 +575,11 @@ impl RequestConcentration {
                 peak_to_median_ratio: ratio,
                 observations_without_timestamp: self.observations_without_timestamp,
             },
+            request_rates: self.windowed_rate_summaries(
+                &self.rate_buckets,
+                &self.rate_buckets_beyond_cap,
+                self.observations_without_timestamp,
+            ),
             focus: self.sanitized_focus_summary(),
         }
     }
@@ -564,6 +640,15 @@ impl RequestConcentration {
                 self.limits.max_minute_buckets,
                 timestamp.timestamp().div_euclid(60),
             );
+            Self::track_rate_windows(
+                &self.rate_window_seconds,
+                &mut self.focus_rate_buckets,
+                &mut self.focus_rate_buckets_beyond_cap,
+                self.limits.max_minute_buckets,
+                timestamp,
+            );
+        } else {
+            self.focus_observations_without_timestamp += 1;
         }
         record_status_class(&mut self.focus_status_classes, event.status);
         if let Some(source_ip) = source_ip {
@@ -598,6 +683,11 @@ impl RequestConcentration {
                 paths_beyond_cap: self.focus_paths_beyond_cap,
                 peak_requests_per_minute: peak,
                 median_requests_per_minute: median,
+                request_rates: self.windowed_rate_summaries(
+                    &self.focus_rate_buckets,
+                    &self.focus_rate_buckets_beyond_cap,
+                    self.focus_observations_without_timestamp,
+                ),
             }
         })
     }
@@ -672,6 +762,13 @@ impl RequestConcentration {
                 status,
             );
         }
+        Self::track_rate_windows(
+            &self.rate_window_seconds,
+            &mut self.rate_buckets,
+            &mut self.rate_buckets_beyond_cap,
+            self.limits.max_minute_buckets,
+            timestamp,
+        );
     }
 
     fn track_path(&mut self, path: &str, event: &WebEvent) -> bool {
@@ -832,6 +929,57 @@ impl RequestConcentration {
         (Some(peak), Some(median), ratio)
     }
 
+    fn track_rate_windows(
+        widths: &[u64],
+        rate_buckets: &mut BTreeMap<u64, BTreeMap<i64, u64>>,
+        beyond_caps: &mut BTreeMap<u64, u64>,
+        maximum: usize,
+        timestamp: DateTime<Utc>,
+    ) {
+        for width in widths {
+            let Ok(width) = i64::try_from(*width) else {
+                continue;
+            };
+            let bucket = timestamp.timestamp().div_euclid(width);
+            Self::track_minute_bucket(
+                rate_buckets
+                    .get_mut(&u64::try_from(width).expect("positive configured rate width"))
+                    .expect("all configured rate widths have a bucket map"),
+                beyond_caps
+                    .get_mut(&u64::try_from(width).expect("positive configured rate width"))
+                    .expect("all configured rate widths have a cap counter"),
+                maximum,
+                bucket,
+            );
+        }
+    }
+
+    fn windowed_rate_summaries(
+        &self,
+        rate_buckets: &BTreeMap<u64, BTreeMap<i64, u64>>,
+        beyond_caps: &BTreeMap<u64, u64>,
+        observations_without_timestamp: u64,
+    ) -> Vec<WindowedRequestRateSummary> {
+        self.rate_window_seconds
+            .iter()
+            .map(|seconds| {
+                let (peak, median, ratio) = Self::request_rate_for(
+                    rate_buckets
+                        .get(seconds)
+                        .expect("all configured rate widths have a bucket map"),
+                );
+                WindowedRequestRateSummary {
+                    bucket_width_seconds: *seconds,
+                    peak_requests: peak,
+                    median_requests: median,
+                    peak_to_median_ratio: ratio,
+                    observations_without_timestamp,
+                    observations_beyond_bucket_cap: *beyond_caps.get(seconds).unwrap_or(&0),
+                }
+            })
+            .collect()
+    }
+
     fn share(&self, count: u64) -> f64 {
         if self.total_requests == 0 {
             0.0
@@ -839,6 +987,17 @@ impl RequestConcentration {
             count as f64 / self.total_requests as f64
         }
     }
+}
+
+fn normalize_rate_windows(widths: &[u64]) -> Vec<u64> {
+    let mut widths = widths
+        .iter()
+        .copied()
+        .filter(|width| *width != 0 && *width <= i64::MAX as u64)
+        .collect::<Vec<_>>();
+    widths.sort_unstable();
+    widths.dedup();
+    widths
 }
 
 /// Add deterministic network-prefix aggregations to an already-built private
@@ -1547,5 +1706,92 @@ mod tests {
         assert!(!json.contains("/secret-area"));
         assert!(!json.contains("203.0.113.5"));
         assert!(json.contains("path-prefix"));
+    }
+
+    #[test]
+    fn simultaneous_rate_windows_distinguish_short_spikes_from_long_elevation() {
+        let limits = ConcentrationLimits::default();
+        let mut short =
+            RequestConcentration::with_limits_and_rate_windows(true, limits, &[60, 3_600]);
+        short.focus_on_path("/focus");
+        for minute in 0..60 {
+            short.observe(&event(Some("/focus"), Some("198.51.100.1"), Some(minute)));
+        }
+        for _ in 0..99 {
+            short.observe(&event(Some("/focus"), Some("198.51.100.1"), Some(30)));
+        }
+        let short_summary = short.summary();
+        assert_eq!(
+            short_summary.request_rates[0].peak_to_median_ratio,
+            Some(100.0)
+        );
+        assert_eq!(
+            short_summary.request_rates[1].peak_to_median_ratio,
+            Some(1.0)
+        );
+        assert_eq!(
+            short_summary.focus.as_ref().unwrap().request_rates,
+            short_summary.request_rates
+        );
+
+        let mut sustained =
+            RequestConcentration::with_limits_and_rate_windows(true, limits, &[60, 3_600]);
+        sustained.observe(&event(Some("/focus"), Some("198.51.100.1"), Some(0)));
+        for minute in 60..120 {
+            sustained.observe(&event(Some("/focus"), Some("198.51.100.1"), Some(minute)));
+        }
+        sustained.observe(&event(Some("/focus"), Some("198.51.100.1"), Some(120)));
+        let sustained_summary = sustained.summary();
+        assert_eq!(
+            sustained_summary.request_rates[0].peak_to_median_ratio,
+            Some(1.0)
+        );
+        assert_eq!(
+            sustained_summary.request_rates[1].peak_to_median_ratio,
+            Some(60.0)
+        );
+    }
+
+    #[test]
+    fn simultaneous_rate_windows_are_deterministic_and_preserve_single_minute_semantics() {
+        let build = || {
+            let mut concentration = RequestConcentration::with_limits_and_rate_windows(
+                true,
+                ConcentrationLimits::default(),
+                &[3_600, 60, 600, 60],
+            );
+            for minute in [0, 0, 1, 10, 11, 59, 60] {
+                concentration.observe(&event(
+                    Some("/deterministic"),
+                    Some("203.0.113.7"),
+                    Some(minute),
+                ));
+            }
+            serde_json::to_string(&concentration.summary()).unwrap()
+        };
+        assert_eq!(build(), build());
+
+        let mut one_minute = RequestConcentration::with_limits_and_rate_windows(
+            true,
+            ConcentrationLimits::default(),
+            &[60],
+        );
+        for minute in [0, 0, 1] {
+            one_minute.observe(&event(Some("/one"), Some("192.0.2.1"), Some(minute)));
+        }
+        let summary = one_minute.summary();
+        let rate = &summary.request_rates[0];
+        assert_eq!(
+            rate.peak_requests,
+            summary.requests_per_minute.peak_requests_per_minute
+        );
+        assert_eq!(
+            rate.median_requests,
+            summary.requests_per_minute.median_requests_per_minute
+        );
+        assert_eq!(
+            rate.peak_to_median_ratio,
+            summary.requests_per_minute.peak_to_median_ratio
+        );
     }
 }

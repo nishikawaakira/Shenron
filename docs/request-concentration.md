@@ -14,7 +14,10 @@ shenron concentration \
 The command streams the input once and always prints aggregate-only volume
 context: distinct tracked URI paths and source IPs, the leading path and top-ten
 shares, distinct tracked source IPs for the leading path, peak and median
-requests per observed minute, plus every exclusion or tracking-cap count. It
+requests across simultaneous UTC bucket widths, plus every exclusion or
+tracking-cap count. The deterministic defaults are `1m`, `10m`, `1h`, and `1d`;
+repeat `--rate-window` (or comma-separate values) to select another exact set.
+It
 writes `sanitized-research.json`, which contains only counts, ratios, status
 classes, and availability metadata, and `request-concentration.json`, a private
 artifact containing URI paths and observed connection-peer IPs. The default
@@ -168,8 +171,14 @@ attempt. Distinguishing these possibilities requires human review and context
 outside the access log. Shenron deliberately has no concentration threshold,
 score, alert, candidate-generation path, or enforcement action.
 
-`requests per minute` is calculated from non-empty observed UTC minute buckets;
-events without timestamps are excluded from that rate and counted explicitly.
+The legacy `requests per minute` field is calculated from non-empty observed UTC
+minute buckets and remains unchanged. The additive `request_rates` array reports
+peak, median, peak-to-median ratio, undated observations, and bucket-cap
+exclusions for every configured width. Events without timestamps are excluded
+from every rate and counted explicitly. The same windows are evaluated for an
+exact-path, path-prefix, or source-IP focus. These profiles describe request
+volume shape only; they do not determine automation, denial of service, attack,
+abuse, compromise, or identity.
 Response-byte totals are reported only for telemetry profiles that record them;
 AWS WAF marks them unavailable rather than replacing them with zero.
 

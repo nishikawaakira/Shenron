@@ -24,7 +24,10 @@ use shenron::{
     comparison::{
         compare_runs, write_comparison, PrivateTemporalComparison, SanitizedTemporalComparison,
     },
-    concentration::{FocusPrefixLengths, FocusSelector, PrivateRequestConcentrationReport},
+    concentration::{
+        FocusPrefixLengths, FocusSelector, PrivateRequestConcentrationReport,
+        DEFAULT_RATE_WINDOW_SECONDS,
+    },
     cti_export::{export_run as export_cti_run, CtiExportFormat, TlpLevel},
     event::{TelemetryCapabilities, TelemetryProfile, TrustedProxy, TrustedProxySet},
     nuclei::{path_distinctiveness, PathDistinctiveness},
@@ -35,7 +38,7 @@ use shenron::{
     },
     production::{
         ablation_with_optional_kev as production_ablation,
-        concentration_with_asn as production_concentration,
+        concentration_with_asn_and_rate_windows as production_concentration,
         count_hypotheses_with_optional_kev as production_count_hypotheses,
         explain_private_findings,
         historical_replay_with_optional_kev as production_historical_replay,
@@ -315,6 +318,10 @@ enum ProductionCommand {
         /// for private focus grouping. No network lookup is performed.
         #[arg(long)]
         asn_dataset: Option<PathBuf>,
+        /// UTC bucket widths evaluated simultaneously for request-rate shape.
+        /// Repeat or comma-separate durations such as 1m,10m,1h,1d.
+        #[arg(long, value_delimiter = ',', value_parser = parse_triage_duration)]
+        rate_window: Vec<Duration>,
         /// Inclusive UTC start time in RFC 3339 format.
         #[arg(long, value_parser = parse_rfc3339_utc)]
         from: Option<DateTime<Utc>>,
@@ -449,7 +456,8 @@ enum ProductionCommand {
         triage_depth_observations: Option<usize>,
         /// Evaluate repeated behavior within this sliding duration (for example 10m, 1h, or 2d).
         #[arg(long, value_parser = parse_triage_duration)]
-        triage_window: Option<Duration>,
+        #[arg(value_delimiter = ',')]
+        triage_window: Vec<Duration>,
         /// Maximum individual findings to display. Use 0 to display all findings.
         #[arg(long, default_value_t = 20)]
         limit: usize,
@@ -808,6 +816,7 @@ fn main() -> Result<()> {
                 ipv4_group_prefix,
                 ipv6_group_prefix,
                 asn_dataset,
+                rate_window,
                 from,
                 to,
                 show_paths,
@@ -851,6 +860,17 @@ fn main() -> Result<()> {
                     ipv6: ipv6_group_prefix.unwrap_or(default_prefixes.ipv6),
                 };
                 let asn_database = asn_dataset.as_deref().map(load_asn_database).transpose()?;
+                let rate_window_seconds = if rate_window.is_empty() {
+                    DEFAULT_RATE_WINDOW_SECONDS.to_vec()
+                } else {
+                    let mut values = rate_window
+                        .into_iter()
+                        .map(|window| window.as_secs())
+                        .collect::<Vec<_>>();
+                    values.sort_unstable();
+                    values.dedup();
+                    values
+                };
                 let report = production_concentration(
                     &input,
                     &output,
@@ -859,6 +879,7 @@ fn main() -> Result<()> {
                     focus.clone(),
                     focus_prefix_lengths,
                     asn_database.as_ref(),
+                    &rate_window_seconds,
                 )?;
                 let private_path = output.join("request-concentration.json");
                 let private = (show_paths || show_source_ips || focus.is_some())
@@ -1045,7 +1066,7 @@ fn main() -> Result<()> {
                     show_fingerprints,
                 };
                 let triage = TriageContext {
-                    policy: TriagePolicy::new(
+                    policy: TriagePolicy::with_windows(
                         triage_breadth_observations,
                         triage_breadth_templates,
                         triage_depth_observations,
@@ -1848,6 +1869,7 @@ fn print_concentration(
             "\n{header} (aggregate requests only; not a DoS/attack/abuse/compromise/attribution determination):\n{}\n  Observed peers may be CDN/LB/NAT/proxy addresses and are not attacker attribution.",
             lines.join("\n"),
         );
+        print_windowed_request_rates("  Focus rate windows", &focus_summary.request_rates);
         let asn_available = private
             .and_then(|report| report.focus.as_ref())
             .and_then(|focus| focus.asn.as_ref())
@@ -2179,6 +2201,34 @@ fn print_request_concentration_summary(
         concentration.requests_per_minute.observations_without_timestamp,
         private_artifact_name,
     );
+    print_windowed_request_rates("  Simultaneous rate windows", &concentration.request_rates);
+}
+
+fn print_windowed_request_rates(
+    heading: &str,
+    rates: &[shenron::concentration::WindowedRequestRateSummary],
+) {
+    if rates.is_empty() {
+        return;
+    }
+    println!("{heading} (volume shape only):");
+    for rate in rates {
+        let width = format_triage_duration(Duration::from_secs(rate.bucket_width_seconds));
+        let values = match (
+            rate.peak_requests,
+            rate.median_requests,
+            rate.peak_to_median_ratio,
+        ) {
+            (Some(peak), Some(median), Some(ratio)) => {
+                format!("peak {peak} / median {median:.1} ({ratio:.1}x)")
+            }
+            _ => "unavailable (no timestamped events)".to_owned(),
+        };
+        println!(
+            "    {width}: {values}; undated {}; beyond bucket cap {}",
+            rate.observations_without_timestamp, rate.observations_beyond_bucket_cap,
+        );
+    }
 }
 
 fn display_limit(limit: usize) -> usize {
@@ -2350,7 +2400,7 @@ struct ExplainDisplay {
 
 /// The triage thresholds and the telemetry capabilities that bound the reachable
 /// behavior-score maximum. They travel together through the explain summaries.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct TriageContext {
     policy: TriagePolicy,
     capabilities: TelemetryCapabilities,
@@ -2412,6 +2462,7 @@ struct GroupJson {
     spread: usize,
     request_specific_observations: usize,
     response_unverified_observations: usize,
+    windowed_burst_windows: Vec<shenron::triage::WindowedTriageMatch>,
     score: shenron::triage::BehaviorScore,
     #[serde(skip_serializing_if = "Option::is_none")]
     reputation: Option<ReputationJson>,
@@ -2518,6 +2569,7 @@ fn base_group_json(group: &shenron::triage::EntityGroup) -> GroupJson {
         spread: group.spread,
         request_specific_observations: group.request_specific_observations,
         response_unverified_observations: group.response_unverified_observations,
+        windowed_burst_windows: group.windowed_burst_windows.clone(),
         score: group.score.clone(),
         reputation: None,
     }
@@ -2644,7 +2696,7 @@ fn build_explain_report(
             entity_groups(
                 grouped,
                 EntityDimension::ConnectionIp,
-                triage.policy,
+                triage.policy.clone(),
                 triage.capabilities,
             )
             .iter()
@@ -2658,7 +2710,12 @@ fn build_explain_report(
         .then_some(asn_database)
         .flatten()
         .map(|database| {
-            let result = asn_entity_groups(grouped, triage.policy, database, triage.capabilities);
+            let result = asn_entity_groups(
+                grouped,
+                triage.policy.clone(),
+                database,
+                triage.capabilities,
+            );
             AsnGroupsJson {
                 groups: truncate(
                     result
@@ -2676,7 +2733,7 @@ fn build_explain_report(
             entity_groups(
                 grouped,
                 EntityDimension::Ja4,
-                triage.policy,
+                triage.policy.clone(),
                 triage.capabilities,
             )
             .iter()
@@ -2747,7 +2804,13 @@ fn print_explanations(
         println!("\n{TRIAGE_INCLUDES_HIDDEN_NOTE}");
     }
     if display.show_source_ips {
-        print_source_ip_summary(grouped, limit, triage, asn_database, reputation_database);
+        print_source_ip_summary(
+            grouped,
+            limit,
+            triage.clone(),
+            asn_database,
+            reputation_database,
+        );
     } else if (asn_database.is_some() || reputation_database.is_some()) && !display.show_asn {
         println!(
             "Local reputation datasets were supplied, but --show-source-ips was not selected; no IP enrichment was displayed."
@@ -2756,7 +2819,13 @@ fn print_explanations(
     if display.show_asn {
         match asn_database {
             Some(database) => {
-                print_asn_summary(grouped, limit, triage, database, reputation_database)
+                print_asn_summary(
+                    grouped,
+                    limit,
+                    triage.clone(),
+                    database,
+                    reputation_database,
+                )
             }
             None => println!(
                 "ASN grouping was requested, but --asn-dataset was not supplied; no ASN groups were displayed."
@@ -3006,7 +3075,7 @@ fn print_source_ip_summary(
     let groups = entity_groups(
         findings,
         EntityDimension::ConnectionIp,
-        policy,
+        policy.clone(),
         triage.capabilities,
     );
     println!("\nConnection/client IP triage (private findings only):");
@@ -3028,8 +3097,8 @@ fn print_source_ip_summary(
             "Triage policy: CUSTOM (non-default; not comparable to the fixed research baseline)"
         );
     }
-    if let Some(window) = policy.window {
-        println!("Triage window: {} sliding", format_triage_duration(window));
+    if !policy.windows.is_empty() {
+        print_triage_windows(&policy.windows);
     }
     println!(
         "Grouping identity: validated-client when a trusted forwarded chain was verified; otherwise observed-peer. Validated-client and observed-peer groups are intentionally never merged: when forwarded resolution applies to only some requests, one actual sender may appear under both identities. A peer may be a CDN, load balancer, NAT, or proxy and is not attacker attribution. A group is marked \"requires investigation\" by breadth (at least {} matching request observations and {} Nuclei template patterns) or depth (at least {} matching request observations, even for one template). This is not an attacker, exploit-success, or compromise determination.",
@@ -3056,7 +3125,7 @@ fn print_source_ip_summary(
         for group in displayed_triaged {
             print_ip_group(
                 group,
-                policy.window.is_some(),
+                !policy.windows.is_empty(),
                 asn_database,
                 reputation_database,
             );
@@ -3082,7 +3151,7 @@ fn print_source_ip_summary(
     for group in displayed {
         print_ip_group(
             group,
-            policy.window.is_some(),
+            !policy.windows.is_empty(),
             asn_database,
             reputation_database,
         );
@@ -3119,6 +3188,7 @@ fn print_ip_group(
             "  Undated observations excluded from windowed triage: {}",
             group.undated_observations
         );
+        print_windowed_burst_windows(group);
     }
     println!("  Behavior priority score: {}", score_display(&group.score));
     println!(
@@ -3222,7 +3292,7 @@ fn print_asn_summary(
     reputation_database: Option<&ReputationDatabase>,
 ) {
     let policy = triage.policy;
-    let result = asn_entity_groups(findings, policy, asn_database, triage.capabilities);
+    let result = asn_entity_groups(findings, policy.clone(), asn_database, triage.capabilities);
     println!("\nASN triage (private findings only):");
     print_dataset_provenance("ASN dataset", asn_database.provenance());
     if let Some(database) = reputation_database {
@@ -3238,8 +3308,8 @@ fn print_asn_summary(
             "Triage policy: CUSTOM (non-default; not comparable to the fixed research baseline)"
         );
     }
-    if let Some(window) = policy.window {
-        println!("Triage window: {} sliding", format_triage_duration(window));
+    if !policy.windows.is_empty() {
+        print_triage_windows(&policy.windows);
     }
     println!(
         "Grouping identity: validated-client and observed-peer are intentionally never merged, including when they resolve to the same ASN. Distinct member IPs are the larger of those separately counted identity populations. This is not an attacker, exploit-success, or compromise determination."
@@ -3257,7 +3327,7 @@ fn print_asn_summary(
         println!("No ASN groups were resolved from the selected findings.");
     } else {
         for group in displayed {
-            print_asn_group(group, policy.window.is_some(), reputation_database);
+            print_asn_group(group, !policy.windows.is_empty(), reputation_database);
         }
         if displayed.len() < result.groups.len() {
             println!(
@@ -3301,6 +3371,7 @@ fn print_asn_group(
             "  Undated observations excluded from windowed triage: {}",
             group.undated_observations
         );
+        print_windowed_burst_windows(group);
     }
     println!("  Behavior priority score: {}", score_display(&group.score));
     println!(
@@ -3338,7 +3409,7 @@ fn print_ja4_summary(
     let groups = entity_groups(
         findings,
         EntityDimension::Ja4,
-        triage.policy,
+        triage.policy.clone(),
         triage.capabilities,
     );
     println!("\nJA4 fingerprint triage (private findings only):");
@@ -3370,11 +3441,54 @@ fn print_ja4_summary(
             group.request_specific_observations,
             group.response_unverified_observations,
         );
+        if !triage.policy.windows.is_empty() {
+            println!(
+                "  Undated observations excluded from windowed triage: {}",
+                group.undated_observations
+            );
+            print_windowed_burst_windows(group);
+        }
     }
     if displayed.len() < groups.len() {
         println!(
             "{} additional JA4 fingerprints omitted. Pass --limit 0 to display all.",
             groups.len() - displayed.len()
+        );
+    }
+}
+
+fn print_windowed_burst_windows(group: &shenron::triage::EntityGroup) {
+    if group.windowed_burst_windows.is_empty() {
+        println!("  Windowed burst matches: none");
+        return;
+    }
+    println!(
+        "  Windowed burst matches: {}",
+        group
+            .windowed_burst_windows
+            .iter()
+            .map(|item| format!(
+                "{} ({})",
+                format_triage_duration(Duration::from_secs(item.window_seconds)),
+                item.basis
+            ))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+}
+
+fn print_triage_windows(windows: &[Duration]) {
+    if let [window] = windows {
+        println!("Triage window: {} sliding", format_triage_duration(*window));
+    } else {
+        println!(
+            "Triage windows: {} sliding",
+            windows
+                .iter()
+                .copied()
+                .map(format_triage_duration)
+                .collect::<Vec<_>>()
+                .join(", ")
         );
     }
 }

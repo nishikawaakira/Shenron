@@ -59,6 +59,7 @@ Shenron の解析本体 `shenron` は、ターゲットへのスキャン、エ�
 - `replay`：ローカルの履歴コーパス全体に対し、既知検出の再観測カバレッジとその他の一致を、機微情報を含まない集計として算出
 - `count-hypotheses`：CVE ごとに「広い→狭い」WAF 条件を、ローカルの COUNT シミュレーションとして比較（推奨する条件を自動で選んだり、デプロイしたりはしません）
 - `concentration`：CTI 入力なしで、固定上限と上限超過件数を明示したリクエスト量分布を集計します。パスと観測した接続ピア IP は private artifact の `request-concentration.json` に分離し、sanitized 側には集計だけを残します。これは DoS・攻撃・悪用・侵害・攻撃者特定の判定ではありません。詳細は [Request concentration](docs/request-concentration.md) を参照してください。
+- `concentration` は既定で 1分・10分・1時間・1日の決定論的なリクエスト率を同時に表示し、`--rate-window` で集合を変更できます。`explain` の `--triage-window` も繰り返しまたはカンマ区切りで複数指定できますが、windowed-burst の加点は窓数にかかわらず5点の一度だけです。
 - `shenron-lab generate --profile volumetric-concentration`：実ログを共有せずに分散した量的集中の形状を再現できる、決定論的な 40,000 リクエストの合成コーパスを生成します。実在の攻撃・攻撃者・campaign・脆弱性・DoS を表すものではありません。詳細は [Synthetic corpus](docs/synthetic-corpus.md) を参照してください。
 - `concentration --path /example/path --show-source-ips`：特定の正規化済みパスに対する観測接続ピアごとのリクエスト件数を private 側で確認できます。`--path-prefix /example` はそのパス以下（サブツリー）をまとめて分析し、配下の個別パス（`--show-paths`）とアクセス元ピアを一覧表示します。`--source-ip <IP>` は逆向きで、カンマ区切りまたはフラグの繰り返しによって 1 件以上の IP を指定でき、それらの観測ピアが送った URI パスの union を表示します。複数 IP の場合、`--show-source-ips` は IP ごとの private なリクエスト件数内訳も表示します。選択したパス、IP、内訳は private artifact のみに保存し、sanitized 側は集計だけを残します。これは集中状況の文脈であり、観測 peer は攻撃者特定ではありません。
 - 同じ private フォーカス表示では、IP 単位の行を残したままネットワークプレフィックス単位にも集約します（IPv4 は既定 `/24`、IPv6 は既定 `/48`、`--ipv4-group-prefix` / `--ipv6-group-prefix` で変更可能）。プレフィックスの共有は所有者・運用主体・行為者の共有を意味しません。

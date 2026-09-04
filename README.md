@@ -56,6 +56,8 @@ Read-only local AWS WAF production inspection and validated Nuclei hunting are a
 
 `shenron concentration` measures bounded, aggregate request-volume distribution without CTI inputs and keeps paths/IPs in a separate private artifact. It is not a denial-of-service, attack, abuse, compromise, or attribution determination; see [request concentration](docs/request-concentration.md).
 
+It reports deterministic request-rate profiles for `1m`, `10m`, `1h`, and `1d` buckets simultaneously; `--rate-window` selects another set. `explain` likewise accepts repeated or comma-separated `--triage-window` values while keeping the windowed-burst score contribution fixed at five points.
+
 `shenron-lab generate --profile volumetric-concentration` produces a
 deterministic 40,000-request synthetic corpus for reproducing distributed
 volume-shape measurements without sharing real logs. It is synthetic research

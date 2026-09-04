@@ -1942,6 +1942,7 @@ mod tests {
                     peak_to_median_ratio: Some(4.0 / 3.0),
                     observations_without_timestamp: 0,
                 },
+                request_rates: Vec::new(),
                 focus: Some(SanitizedFocusSummary {
                     focus_kind: "exact-path".to_owned(),
                     total_requests: 3,
@@ -1951,6 +1952,7 @@ mod tests {
                     paths_beyond_cap: 0,
                     peak_requests_per_minute: Some(2),
                     median_requests_per_minute: Some(1.5),
+                    request_rates: Vec::new(),
                 }),
             },
             paths: vec![PrivatePathConcentration {

@@ -24,6 +24,7 @@ use crate::{
     concentration::{
         add_focus_asn_groups, add_focus_prefix_groups, FocusPrefixLengths, FocusSelector,
         PrivateRequestConcentrationReport, RequestConcentration, RequestConcentrationSummary,
+        DEFAULT_RATE_WINDOW_SECONDS,
     },
     event::{HttpHeader, LogSource, TelemetryProfile, TrustedProxySet, WebEvent},
     nuclei::{
@@ -1050,6 +1051,32 @@ pub fn concentration_with_asn(
     focus_prefix_lengths: FocusPrefixLengths,
     asn_database: Option<&AsnDatabase>,
 ) -> anyhow::Result<SanitizedConcentrationReport> {
+    concentration_with_asn_and_rate_windows(
+        input,
+        output,
+        telemetry_profile,
+        time_range,
+        focus,
+        focus_prefix_lengths,
+        asn_database,
+        &DEFAULT_RATE_WINDOW_SECONDS,
+    )
+}
+
+/// Variant of [`concentration_with_asn`] with explicit simultaneous rate
+/// windows. Widths are exact seconds and affect reporting only, never matching
+/// or any CVE metric.
+#[allow(clippy::too_many_arguments)]
+pub fn concentration_with_asn_and_rate_windows(
+    input: &Path,
+    output: &Path,
+    telemetry_profile: TelemetryProfile,
+    time_range: HuntTimeRange,
+    focus: Option<FocusSelector>,
+    focus_prefix_lengths: FocusPrefixLengths,
+    asn_database: Option<&AsnDatabase>,
+    rate_window_seconds: &[u64],
+) -> anyhow::Result<SanitizedConcentrationReport> {
     time_range.validate()?;
     ensure_separate_output(input, output)?;
     let files = input_files(input, telemetry_profile)?;
@@ -1071,8 +1098,11 @@ pub fn concentration_with_asn(
         )
         .summary(),
     };
-    let mut accumulator =
-        RequestConcentration::new(telemetry_profile.capabilities().response_bytes);
+    let mut accumulator = RequestConcentration::with_limits_and_rate_windows(
+        telemetry_profile.capabilities().response_bytes,
+        crate::concentration::ConcentrationLimits::default(),
+        rate_window_seconds,
+    );
     if let Some(selector) = focus {
         accumulator.focus_on(selector);
     }

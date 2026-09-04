@@ -641,6 +641,7 @@ mod tests {
                     peak_to_median_ratio: None,
                     observations_without_timestamp: 0,
                 },
+                request_rates: Vec::new(),
                 focus: None,
             },
             paths: paths
