@@ -60,6 +60,8 @@ It reports deterministic request-rate profiles for `1m`, `10m`, `1h`, and `1d` b
 
 Private entity triage also reports bounded [ordered request-sequence](docs/request-sequences.md) timing with `--sequence-window`; this is review context and not a determination of automation, attack, abuse, or identity.
 
+`hunt --observation-store <PATH>` explicitly enables a bounded, append-only [private observation memory](docs/observation-store.md) for recurring network prefixes and optional local ASNs across runs. It is disabled by default and does not establish common ownership, operation, or identity.
+
 `shenron-lab generate --profile volumetric-concentration` produces a
 deterministic 40,000-request synthetic corpus for reproducing distributed
 volume-shape measurements without sharing real logs. It is synthetic research

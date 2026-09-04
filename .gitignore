@@ -5,4 +5,5 @@
 *-hunt/
 *.log
 private-findings.jsonl
+observation-store*.jsonl
 sanitized-research.json

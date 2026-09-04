@@ -515,6 +515,63 @@ fn cti_export_defaults_to_sanitized_stix_and_requires_observable_opt_in() {
 }
 
 #[test]
+fn hunt_updates_only_an_explicit_private_observation_store() {
+    let directory = tempdir().unwrap();
+    let output = directory.path().join("hunt");
+    let store = directory.path().join("observation-store.jsonl");
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "hunt",
+            "--input",
+            "tests/fixtures/production/waf.jsonl",
+            "--format",
+            "aws-waf",
+            "--nuclei-templates",
+            "tests/fixtures/nuclei",
+            "--nuclei-report",
+            "tests/fixtures/production/nuclei-report.json",
+            "--kev-report",
+            "tests/fixtures/production/kev-report.json",
+            "--output",
+            output.to_str().unwrap(),
+            "--observation-store",
+            store.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(contains("Private append-only observation store"));
+
+    let memory = fs::read_to_string(&store).unwrap();
+    assert!(memory.contains("PRIVATE append-only observation memory"));
+    assert!(memory.contains("198.51.100.0/24"));
+    assert!(!memory.contains("198.51.100.1\""));
+    let sanitized = fs::read_to_string(output.join("sanitized-research.json")).unwrap();
+    assert!(!sanitized.contains("198.51.100.0/24"));
+
+    let no_store_output = directory.path().join("hunt-without-store");
+    let absent_store = directory.path().join("must-not-exist.jsonl");
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "hunt",
+            "--input",
+            "tests/fixtures/production/waf.jsonl",
+            "--format",
+            "aws-waf",
+            "--nuclei-templates",
+            "tests/fixtures/nuclei",
+            "--nuclei-report",
+            "tests/fixtures/production/nuclei-report.json",
+            "--output",
+            no_store_output.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    assert!(!absent_store.exists());
+}
+
+#[test]
 fn concentration_path_prefix_and_source_ip_focuses_keep_raw_values_private() {
     let directory = tempdir().unwrap();
 

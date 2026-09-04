@@ -31,6 +31,7 @@ use shenron::{
     cti_export::{export_run as export_cti_run, CtiExportFormat, TlpLevel},
     event::{TelemetryCapabilities, TelemetryProfile, TrustedProxy, TrustedProxySet},
     nuclei::{path_distinctiveness, PathDistinctiveness},
+    observation_store::{update_observation_store, ObservationStoreLimits},
     output::{Finding, FindingWriter},
     paths::{
         default_asn_dataset, default_bot_range_snapshot, default_nuclei_report,
@@ -257,6 +258,19 @@ enum ProductionCommand {
         /// data-directory snapshot when present; all matching remains offline.
         #[arg(long, conflicts_with = "results_dir")]
         bot_ranges: Option<PathBuf>,
+        /// Opt in to append-only private memory of recurring network prefixes
+        /// and optional locally resolved ASNs across completed runs.
+        #[arg(long, conflicts_with = "results_dir")]
+        observation_store: Option<PathBuf>,
+        /// IPv4 prefix length recorded in the private observation store (default: 24).
+        #[arg(long, value_parser = parse_ipv4_prefix_length, conflicts_with = "results_dir")]
+        ipv4_group_prefix: Option<u8>,
+        /// IPv6 prefix length recorded in the private observation store (default: 48).
+        #[arg(long, value_parser = parse_ipv6_prefix_length, conflicts_with = "results_dir")]
+        ipv6_group_prefix: Option<u8>,
+        /// Optional local ASN dataset for private observation-store entries.
+        #[arg(long, conflicts_with = "results_dir")]
+        asn_dataset: Option<PathBuf>,
         /// Prior local run-artifact directory to compare after this hunt completes.
         #[arg(long, conflicts_with = "results_dir")]
         baseline: Option<PathBuf>,
@@ -698,6 +712,10 @@ fn main() -> Result<()> {
                 rules,
                 no_sigma,
                 bot_ranges,
+                observation_store,
+                ipv4_group_prefix,
+                ipv6_group_prefix,
+                asn_dataset,
                 baseline,
                 show_triage,
                 limit,
@@ -726,6 +744,15 @@ fn main() -> Result<()> {
                 // clap requires one of --input or --results-dir. This branch is
                 // therefore the raw-log hunt path.
                 let input = input.expect("clap requires --input unless --results-dir is present");
+                if observation_store.is_none()
+                    && (ipv4_group_prefix.is_some()
+                        || ipv6_group_prefix.is_some()
+                        || asn_dataset.is_some())
+                {
+                    anyhow::bail!(
+                        "--ipv4-group-prefix, --ipv6-group-prefix, and --asn-dataset require --observation-store on hunt"
+                    );
+                }
                 let (nuclei_templates, nuclei_report) =
                     resolve_nuclei_inputs(nuclei_templates, nuclei_report)?;
                 let output = output.unwrap_or_else(default_hunt_output);
@@ -758,6 +785,35 @@ fn main() -> Result<()> {
                 let sanitized_path = output.join("sanitized-research.json");
                 serde_json::to_writer_pretty(File::create(&sanitized_path)?, &report)?;
                 print_hunt(&report, &sanitized_path);
+                if let Some(store_path) = observation_store {
+                    shenron::production::ensure_separate_output(&input, &store_path)?;
+                    let default_prefixes = FocusPrefixLengths::default();
+                    let prefixes = FocusPrefixLengths {
+                        ipv4: ipv4_group_prefix.unwrap_or(default_prefixes.ipv4),
+                        ipv6: ipv6_group_prefix.unwrap_or(default_prefixes.ipv6),
+                    };
+                    let asn_path = resolve_optional_local_dataset(asn_dataset, default_asn_dataset);
+                    let asn_database = asn_path.as_deref().map(load_asn_database).transpose()?;
+                    let update = update_observation_store(
+                        &store_path,
+                        &output,
+                        prefixes,
+                        asn_database.as_ref(),
+                        ObservationStoreLimits::default(),
+                    )?;
+                    println!(
+                        "Private append-only observation store: {}\n  Run ID: {}\n  Already recorded: {}\n  Runs recorded: {}\n  Retained prefix/ASN entries: {}\n  Entity observations retained / beyond cap: {} / {}\n  Invalid source IPs excluded: {}",
+                        store_path.display(),
+                        terminal_safe(&update.run_id),
+                        update.already_recorded,
+                        update.runs_recorded,
+                        update.retained_entities,
+                        update.retained_entity_observations,
+                        update.entity_observations_beyond_cap,
+                        update.invalid_source_ips_excluded,
+                    );
+                    println!("{}", update.safety_note);
+                }
                 let mut first_seen_source_ips = BTreeSet::new();
                 if let Some(baseline) = baseline {
                     let comparison = compare_runs(&baseline, &output)?;

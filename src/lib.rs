@@ -11,6 +11,7 @@ pub mod kev;
 pub mod lab;
 pub mod minimum_telemetry;
 pub mod nuclei;
+pub mod observation_store;
 pub mod output;
 pub mod paths;
 pub mod production;

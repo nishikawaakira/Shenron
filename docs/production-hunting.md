@@ -286,6 +286,13 @@ ordered patterns private, while `triage-summary.json` contains numeric counts
 and seconds only. A short or regular sequence is an observation for review,
 not a determination of automation, attack, abuse, compromise, or identity.
 
+To retain recurring address-space observations across more than two runs,
+explicitly opt in with `--observation-store <PATH>`. The [private append-only
+observation memory](observation-store.md) records prefixes and optional locally
+resolved ASNs, never individual IPs, and uses the run-manifest SHA-256 for
+idempotency. It is not created when the option is absent, is never referenced
+from sanitized output, and makes no network request.
+
 `explain` writes the human-readable text report to stdout by default. Pass `--output-format json` to emit the same content — the path summary, the entity groupings with their behavior scores and score-component breakdowns, the triage basis, and (with `--show-*`) the requested private detail — as a machine-readable report carrying `report_kind: EXPLAIN_PRIVATE_TRIAGE`, and `--output <PATH>` to write it to a file. The JSON honors the identical privacy gates as the text: fields behind `--show-request`, `--show-evidence`, `--show-source-ips`, `--show-asn`, and `--show-fingerprints` stay gated, so no request value, IP, host, header, JA3/JA4, or request ID appears unless it was explicitly requested. Like the text report, the JSON is private analyst output and is never added to the sanitized report or run manifest.
 
 ## Behavior priority score
