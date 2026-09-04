@@ -793,6 +793,16 @@ fn compare_reads_existing_runs_without_leaking_private_values_by_default() {
         )
         .unwrap();
     }
+    assert_eq!(
+        fs::read(baseline.join("private-findings.jsonl")).unwrap(),
+        fs::read(current.join("private-findings.jsonl")).unwrap(),
+        "repeated hunts must preserve private finding bytes and order"
+    );
+    assert_eq!(
+        fs::read(baseline.join("sanitized-research.json")).unwrap(),
+        fs::read(current.join("sanitized-research.json")).unwrap(),
+        "repeated hunts must preserve sanitized report bytes"
+    );
     let output = directory.path().join("comparison");
     Command::cargo_bin("shenron")
         .unwrap()

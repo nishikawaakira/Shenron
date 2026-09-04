@@ -1034,8 +1034,9 @@ pub fn validate_corpus(
         match result {
             Ok(event) => {
                 let id = event.request_id.clone().unwrap_or_default();
+                let matcher = crate::sigma::EventMatcher::new(&event);
                 for rule in &rules.supported {
-                    if rule.matches(&event) {
+                    if matcher.matches(rule) {
                         actual
                             .entry(id.clone())
                             .or_default()

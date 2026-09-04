@@ -4,7 +4,7 @@
 //! separately from a sanitized aggregate report and are never uploaded.
 
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashMap},
     fs::{self, File},
     io::{BufRead, BufReader, BufWriter, Read, Write},
     path::{Path, PathBuf},
@@ -792,6 +792,7 @@ pub fn hunt_with_options(
     if detections.is_empty() {
         bail!("no validated Nuclei detections could be rebuilt from the supplied report and template checkout");
     }
+    let detection_index = DetectionPathIndex::new(&detections);
     let kev_cves = kev_cves(kev_report)?;
     let files = input_files(input, telemetry_profile)?;
     fs::create_dir_all(output)
@@ -884,13 +885,14 @@ pub fn hunt_with_options(
                 &mut metrics.latest_timestamp,
                 event.timestamp,
             );
-            let matches = matching_templates(&detections, &event);
+            let matches = detection_index.matching_templates(&detections, &event);
             // The Sigma pass is independent of the CVE pass: it must run even
             // when no Nuclei template matched, since its whole purpose is to
             // surface generic TTPs that no CVE template covers.
+            let sigma_matcher = crate::sigma::EventMatcher::new(&event);
             let sigma_matches = sigma_rules
                 .iter()
-                .filter(|rule| rule.matches(&event))
+                .filter(|rule| sigma_matcher.matches(rule))
                 .collect::<Vec<_>>();
             if matches.is_empty() && sigma_matches.is_empty() {
                 return Ok(());
@@ -1459,6 +1461,7 @@ pub fn historical_replay_with_optional_kev(
     if detections.is_empty() {
         bail!("no validated Nuclei detections could be rebuilt from the supplied report and template checkout");
     }
+    let detection_index = DetectionPathIndex::new(&detections);
     let kev_cves = kev_cves(kev_report)?;
     let known_sources = known_replay_sources(explain_private_findings(findings)?);
     let KnownReplaySources {
@@ -1510,7 +1513,8 @@ pub fn historical_replay_with_optional_kev(
                 return Ok(());
             }
             total_events_evaluated += 1;
-            let matched_cves = matching_templates(&detections, &event)
+            let matched_cves = detection_index
+                .matching_templates(&detections, &event)
                 .into_iter()
                 .flat_map(|detection| detection.cves.iter().cloned())
                 .collect::<BTreeSet<_>>();
@@ -1935,16 +1939,65 @@ fn kev_cves(path: Option<&Path>) -> anyhow::Result<BTreeSet<String>> {
         .collect())
 }
 
-fn matching_templates<'a>(
-    detections: &'a [ValidatedNucleiDetection],
-    event: &WebEvent,
-) -> Vec<&'a ValidatedNucleiDetection> {
-    let mut template_ids = BTreeSet::new();
-    detections
-        .iter()
-        .filter(|detection| detection.matches(event))
-        .filter(|detection| template_ids.insert(detection.template_id.clone()))
-        .collect()
+struct DetectionPathIndex {
+    exact: HashMap<String, Vec<usize>>,
+    unindexed: Vec<usize>,
+}
+
+impl DetectionPathIndex {
+    fn new(detections: &[ValidatedNucleiDetection]) -> Self {
+        let mut exact = HashMap::<String, Vec<usize>>::new();
+        let mut unindexed = Vec::new();
+        for (index, detection) in detections.iter().enumerate() {
+            if let Some(path) = detection.exact_path_requirement() {
+                // `index` increases monotonically, preserving the source
+                // detection order inside every path bucket.
+                exact.entry(path.to_owned()).or_default().push(index);
+            } else {
+                // Future non-literal matchers remain correct by falling back
+                // to ordered evaluation rather than being silently skipped.
+                unindexed.push(index);
+            }
+        }
+        Self { exact, unindexed }
+    }
+
+    fn matching_templates<'a>(
+        &self,
+        detections: &'a [ValidatedNucleiDetection],
+        event: &WebEvent,
+    ) -> Vec<&'a ValidatedNucleiDetection> {
+        let exact_candidates = event
+            .uri_path
+            .as_deref()
+            .and_then(|path| self.exact.get(path))
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        let mut template_ids = BTreeSet::new();
+
+        if self.unindexed.is_empty() {
+            return exact_candidates
+                .iter()
+                .map(|index| &detections[*index])
+                .filter(|detection| detection.matches(event))
+                .filter(|detection| template_ids.insert(detection.template_id.as_str()))
+                .collect();
+        }
+
+        // This path is dormant for today's literal-only IR. If a future
+        // matcher cannot be indexed, merge both sorted index lists so the
+        // original first-match and output ordering semantics remain exact.
+        let mut candidates = Vec::with_capacity(exact_candidates.len() + self.unindexed.len());
+        candidates.extend_from_slice(exact_candidates);
+        candidates.extend_from_slice(&self.unindexed);
+        candidates.sort_unstable();
+        candidates
+            .into_iter()
+            .map(|index| &detections[index])
+            .filter(|detection| detection.matches(event))
+            .filter(|detection| template_ids.insert(detection.template_id.as_str()))
+            .collect()
+    }
 }
 
 fn private_finding(detection: &ValidatedNucleiDetection, event: &WebEvent) -> PrivateFinding {
@@ -2292,4 +2345,40 @@ pub fn ensure_separate_output(input: &Path, output: &Path) -> anyhow::Result<()>
         bail!("output directory must be separate from immutable raw input");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod matcher_index_tests {
+    use super::*;
+
+    #[test]
+    fn path_index_preserves_linear_match_and_first_template_order() {
+        let detections = crate::nuclei::supported_detections(Path::new("tests/fixtures/nuclei"));
+        let index = DetectionPathIndex::new(&detections);
+        let mut inputs = include_str!("../tests/fixtures/production/waf.jsonl")
+            .lines()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        inputs.push(
+            r#"{"timestamp":1735689600000,"action":"ALLOW","httpRequest":{"clientIp":"198.51.100.10","headers":[],"uri":"/not-indexed","httpMethod":"GET"}}"#
+                .to_owned(),
+        );
+
+        for input in inputs {
+            let event = crate::waf::parse_line(&input).unwrap();
+            let mut seen = BTreeSet::new();
+            let linear = detections
+                .iter()
+                .filter(|detection| detection.matches(&event))
+                .filter(|detection| seen.insert(detection.template_id.clone()))
+                .map(|detection| detection.template_id.as_str())
+                .collect::<Vec<_>>();
+            let indexed = index
+                .matching_templates(&detections, &event)
+                .into_iter()
+                .map(|detection| detection.template_id.as_str())
+                .collect::<Vec<_>>();
+            assert_eq!(indexed, linear);
+        }
+    }
 }

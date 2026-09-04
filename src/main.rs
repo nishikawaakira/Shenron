@@ -3789,8 +3789,9 @@ where
         match result {
             Ok(event) => {
                 stats.events += 1;
+                let matcher = shenron::sigma::EventMatcher::new(&event);
                 for rule in rules {
-                    if rule.matches(&event) {
+                    if matcher.matches(rule) {
                         writer.write(&Finding::from_rule_and_event(rule, &event))?;
                         stats.findings += 1;
                     }

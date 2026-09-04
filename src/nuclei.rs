@@ -409,6 +409,13 @@ impl ValidatedNucleiDetection {
         self.detection.matches(event)
     }
 
+    /// Returns the literal path that every current full-IR match requires.
+    /// Callers may use this as an exact-match index key, while still invoking
+    /// [`Self::matches`] for all remaining request conditions.
+    pub fn exact_path_requirement(&self) -> Option<&str> {
+        Some(&self.detection.path)
+    }
+
     /// A deliberately weaker predicate derived from the same Detection IR for
     /// ablation volume comparisons only. It is not a precision, attack, or
     /// compromise assessment.

@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, fs, path::Path};
+use std::{cell::OnceCell, collections::BTreeMap, fs, path::Path};
 
 use regex::Regex;
 use serde::Deserialize;
@@ -28,8 +28,36 @@ pub struct CompiledRule {
 
 impl CompiledRule {
     pub fn matches(&self, event: &WebEvent) -> bool {
+        self.matches_with_keyword_haystack(event, &OnceCell::new())
+    }
+
+    fn matches_with_keyword_haystack(
+        &self,
+        event: &WebEvent,
+        keyword_haystack: &OnceCell<String>,
+    ) -> bool {
         source_matches(&self.logsource, event.log_source)
-            && evaluate_condition(&self.condition, &self.selections, event)
+            && evaluate_condition(&self.condition, &self.selections, event, keyword_haystack)
+    }
+}
+
+/// Event-scoped Sigma matching state. Keyword text is assembled and folded at
+/// most once per event, then shared by every rule without changing rule order.
+pub struct EventMatcher<'a> {
+    event: &'a WebEvent,
+    keyword_haystack: OnceCell<String>,
+}
+
+impl<'a> EventMatcher<'a> {
+    pub fn new(event: &'a WebEvent) -> Self {
+        Self {
+            event,
+            keyword_haystack: OnceCell::new(),
+        }
+    }
+
+    pub fn matches(&self, rule: &CompiledRule) -> bool {
+        rule.matches_with_keyword_haystack(self.event, &self.keyword_haystack)
     }
 }
 
@@ -208,6 +236,12 @@ fn compile_selection(name: &str, value: &Value) -> Result<Selection, CompileErro
                     .iter()
                     .map(yaml_string)
                     .collect::<Result<Vec<_>, _>>()
+                    .map(|values| {
+                        values
+                            .into_iter()
+                            .map(|value| value.to_ascii_lowercase())
+                            .collect()
+                    })
                     .map(Selection::Keywords)
             });
     }
@@ -218,7 +252,10 @@ fn compile_selection(name: &str, value: &Value) -> Result<Selection, CompileErro
     for (field, expected) in map {
         let key = yaml_string(field)?;
         let (field, modifiers) = split_field_key(&key)?;
-        let values = yaml_strings(expected)?;
+        let values = yaml_strings(expected)?
+            .into_iter()
+            .map(|value| value.to_ascii_lowercase())
+            .collect();
         matches.push(FieldMatch {
             field,
             contains: modifiers.contains(&"contains"),
@@ -342,30 +379,34 @@ fn evaluate_condition(
     condition: &Condition,
     selections: &BTreeMap<String, Selection>,
     event: &WebEvent,
+    keyword_haystack: &OnceCell<String>,
 ) -> bool {
     match condition {
         Condition::Selection(name) => selections
             .get(name)
-            .is_some_and(|selection| selection_matches(selection, event)),
+            .is_some_and(|selection| selection_matches(selection, event, keyword_haystack)),
         Condition::And(left, right) => {
-            evaluate_condition(left, selections, event)
-                && evaluate_condition(right, selections, event)
+            evaluate_condition(left, selections, event, keyword_haystack)
+                && evaluate_condition(right, selections, event, keyword_haystack)
         }
         Condition::Or(left, right) => {
-            evaluate_condition(left, selections, event)
-                || evaluate_condition(right, selections, event)
+            evaluate_condition(left, selections, event, keyword_haystack)
+                || evaluate_condition(right, selections, event, keyword_haystack)
         }
-        Condition::Not(inner) => !evaluate_condition(inner, selections, event),
+        Condition::Not(inner) => !evaluate_condition(inner, selections, event, keyword_haystack),
     }
 }
 
-fn selection_matches(selection: &Selection, event: &WebEvent) -> bool {
+fn selection_matches(
+    selection: &Selection,
+    event: &WebEvent,
+    keyword_haystack: &OnceCell<String>,
+) -> bool {
     match selection {
         Selection::Keywords(keywords) => {
-            let haystack = event.keyword_haystack().to_ascii_lowercase();
-            keywords
-                .iter()
-                .any(|keyword| haystack.contains(&keyword.to_ascii_lowercase()))
+            let haystack =
+                keyword_haystack.get_or_init(|| event.keyword_haystack().to_ascii_lowercase());
+            keywords.iter().any(|keyword| haystack.contains(keyword))
         }
         Selection::Fields(matches) => matches.iter().all(|matcher| field_match(matcher, event)),
     }
@@ -378,9 +419,7 @@ fn field_match(matcher: &FieldMatch, event: &WebEvent) -> bool {
     let matches = |expected: &str| {
         actuals.iter().any(|actual| {
             if matcher.contains {
-                actual
-                    .to_ascii_lowercase()
-                    .contains(&expected.to_ascii_lowercase())
+                actual.to_ascii_lowercase().contains(expected)
             } else {
                 actual.eq_ignore_ascii_case(expected)
             }
@@ -569,7 +608,13 @@ mod tests {
             "other".to_owned(),
             Selection::Keywords(vec!["nope".to_owned()]),
         );
-        assert!(evaluate_condition(&parsed, &selections, &event()));
+        let event = event();
+        assert!(evaluate_condition(
+            &parsed,
+            &selections,
+            &event,
+            &OnceCell::new()
+        ));
     }
 
     #[test]
@@ -581,5 +626,31 @@ mod tests {
             values: vec!["core-rule-set".to_owned(), "threat-hunt".to_owned()],
         };
         assert!(field_match(&matcher, &event()));
+    }
+
+    #[test]
+    fn compiled_literals_and_shared_keyword_haystack_remain_case_insensitive() {
+        let rule = compile_rule(
+            r#"
+title: Mixed Case
+id: mixed-case
+logsource:
+  category: webserver
+  product: aws
+  service: waf
+detection:
+  fields:
+    cs-uri|contains: '${JnDi:'
+  keywords:
+    - '${JnDi:'
+  condition: fields and keywords
+"#,
+            Path::new("mixed-case.yml"),
+        )
+        .unwrap();
+        let event = event();
+        let matcher = EventMatcher::new(&event);
+        assert!(matcher.matches(&rule));
+        assert!(rule.matches(&event));
     }
 }

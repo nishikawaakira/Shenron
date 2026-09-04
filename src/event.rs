@@ -372,20 +372,35 @@ impl WebEvent {
 
     /// A stable documented request representation for Sigma `keywords`.
     pub fn keyword_haystack(&self) -> String {
-        let headers = self
-            .headers
-            .iter()
-            .map(|header| format!("{}: {}", header.name, header.value))
-            .collect::<Vec<_>>()
-            .join("\n");
-        [
-            self.method.as_deref().unwrap_or_default(),
-            self.host.as_deref().unwrap_or_default(),
-            self.uri.as_deref().unwrap_or_default(),
-            &headers,
-            self.raw.as_str(),
-        ]
-        .join("\n")
+        let mut haystack = String::with_capacity(
+            self.method.as_ref().map_or(0, String::len)
+                + self.host.as_ref().map_or(0, String::len)
+                + self.uri.as_ref().map_or(0, String::len)
+                + self.raw.len()
+                + self
+                    .headers
+                    .iter()
+                    .map(|header| header.name.len() + header.value.len() + 3)
+                    .sum::<usize>()
+                + 4,
+        );
+        haystack.push_str(self.method.as_deref().unwrap_or_default());
+        haystack.push('\n');
+        haystack.push_str(self.host.as_deref().unwrap_or_default());
+        haystack.push('\n');
+        haystack.push_str(self.uri.as_deref().unwrap_or_default());
+        haystack.push('\n');
+        for (index, header) in self.headers.iter().enumerate() {
+            if index != 0 {
+                haystack.push('\n');
+            }
+            haystack.push_str(&header.name);
+            haystack.push_str(": ");
+            haystack.push_str(&header.value);
+        }
+        haystack.push('\n');
+        haystack.push_str(&self.raw);
+        haystack
     }
 }
 
