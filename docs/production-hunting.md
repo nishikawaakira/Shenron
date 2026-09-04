@@ -97,9 +97,15 @@ and the other analysis commands read automatically. If you pass `--data-dir` to
 write somewhere else, those commands do not look there by default, so pass the
 matching `--nuclei-templates`, `--nuclei-report`, `--reputation-dataset`, and
 `--asn-dataset` paths at analysis time. A partial failure (for example, one
-temporarily unreachable list) still completes the other steps, prints a summary,
-and exits non-zero; the privacy guarantee that no customer data is transmitted
-holds on every outcome.
+temporarily unreachable list) still completes the other setup steps. Within the
+reputation/ASN step, every configured public source is attempted independently:
+successfully parsed records are written even when another source fails, while
+`reputation-manifest.json` records each failed source and its reason. A source
+failure is never hidden: setup prints its summary and exits non-zero. If all
+reputation sources produce zero usable records, the reputation step fails; an
+ASN failure likewise does not discard a successfully built reputation dataset.
+The privacy guarantee that no customer data is transmitted holds on every
+outcome.
 
 If the direct peer is a known CDN, load balancer, or reverse proxy, supply every trusted proxy IP or CIDR explicitly to verify a forwarded end-client address. Shenron ignores `X-Forwarded-For` unless the observed direct peer is in this configured set: an untrusted peer can forge that header. Shenron evaluates a verified chain from right to left, removes only trusted proxy hops, and uses the first non-trusted address as `client_ip`. A missing, malformed, or all-trusted chain remains unavailable. Standard nginx/Apache Combined Log Format does not retain `X-Forwarded-For`, so it normally cannot provide `client_ip` even when `--trusted-proxy` is supplied.
 

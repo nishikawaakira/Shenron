@@ -53,8 +53,12 @@ Army, blocklist.de, and iptoasn IPv4 data; it never uploads customer logs,
 findings, observed IPs, request values, or any other customer data. The command
 writes local `reputation.jsonl`, `asn-ranges.tsv`, and
 `reputation-manifest.json` files under `SHENRON_DATA_DIR` (or the standard
-XDG/home data directory), recording source URLs, retrieval time, output hashes,
-and record counts. The main `shenron` binary remains offline and automatically
+XDG/home data directory), recording successful source URLs, retrieval times,
+source and output SHA-256 hashes, record counts, and any failed source with its
+reason. Each public source is attempted independently. Records from reachable
+sources are retained, but any source failure is disclosed and makes the update
+exit non-zero; zero usable reputation records makes that step fail. The main
+`shenron` binary remains offline and automatically
 uses those local files during `explain` when no explicit dataset
 paths are supplied.
 

@@ -121,6 +121,8 @@ shenron hunt --input ./waf-logs
 
 個別の公開入力だけを更新したい場合は、従来どおり `shenron-lab nuclei update`、`shenron-lab reputation update`、`shenron-lab bot-ranges update` も使えます。`setup` が取得するのは公開インテリジェンスだけで、顧客データを送信しません。
 
+レピュテーション／ASN の各公開ソースは独立に取得を試みます。一部が失敗しても取得・変換できたレコードは保持し、失敗したソースと理由を `reputation-manifest.json` に記録したうえで非ゼロ終了します。
+
 凍結済み bot-range snapshot がある場合、hunt は自己申告された bot User-Agent と運営者の公開レンジをオフライン照合し、レンジ内外の集計を sanitized 出力へ、レンジ外の観測 peer IP を private `bot-range-observations.json` へ保存します。snapshot が無ければ注記してスキップし、CVE/Sigma 指標は変えません。レンジ外という観測は、レンジの古さ・欠落、中継、自由に設定できる User-Agent の影響を受けるため、なりすまし・攻撃・悪用・帰属の判定ではありません。詳細は [Published bot ranges](docs/published-bot-ranges.md) を参照してください。
 
 `hunt` は CVE 主体の Nuclei パスに加えて、汎用的な **Sigma** 検出パスを**既定で ON**にして同一ストリームで実行します。CVE テンプレートに対応しない汎用 TTP（例：`.env` などの機密ファイル探索）を拾えます。ルールは `--rules <DIR>` か準備済みの `<data-dir>/sigma-rules` から読み込み、`--no-sigma` で無効化できます。`shenron-lab setup` が Shenron 対応の同梱パックをそこへ配置するので、追加設定なしで動きます。さらに `setup --sigma-source <git-url>` で外部ソース（例：SigmaHQ）の `rules/web` も取得できます。Sigma の finding は `source` フィールドを持ち、CVE 指標とは別に集計され、`candidate build` には入りません（候補は CVE / Nuclei-IR 主体のまま）。詳細は [Sigma detection inside hunt](docs/sigma-in-hunt.md) を参照。

@@ -151,6 +151,9 @@ set. `setup --skip-kev` omits KEV preparation.
 `shenron-lab nuclei update`, `shenron-lab reputation update`, and `shenron-lab bot-ranges update` remain available
 when only one public input family should be refreshed. `setup` downloads public
 intelligence only and never transmits customer data.
+Reputation and ASN sources are attempted independently: usable records from
+successful sources are retained, while failures and their reasons are recorded
+in `reputation-manifest.json` and cause a non-zero exit.
 
 When the frozen bot-range snapshot is present, hunt reports aggregate counts for self-declared bot User-Agents whose observed peers are inside or outside the named operator's published ranges; outside-range IPs stay in private `bot-range-observations.json`. Missing snapshots are skipped without changing CVE/Sigma metrics. Outside-range is a review label only—not impersonation, attack, abuse, or attribution—because ranges may be stale or incomplete, intermediaries can alter the peer, and any client can set a User-Agent. See [published bot ranges](docs/published-bot-ranges.md).
 
