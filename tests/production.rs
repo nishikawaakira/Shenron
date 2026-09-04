@@ -392,10 +392,25 @@ fn hunt_compares_declared_bot_ua_with_frozen_ranges_without_changing_cve_metrics
 
     let sanitized = fs::read_to_string(with_snapshot.join("sanitized-research.json")).unwrap();
     assert!(sanitized.contains("outside_published_ranges_requests"));
+    let consistency = serde_json::from_str::<serde_json::Value>(&sanitized).unwrap();
+    let checks = consistency["metrics"]["declared_observed_consistency"]["checks"]
+        .as_array()
+        .unwrap();
+    let bot_check = checks
+        .iter()
+        .find(|check| check["check_id"] == "declared-bot-published-range")
+        .unwrap();
+    assert_eq!(bot_check["matches"], 2);
+    assert_eq!(bot_check["mismatches"], 1);
+    assert_eq!(bot_check["unavailable"], 0);
     assert!(!sanitized.contains("203.0.113.9"));
     assert!(!sanitized.contains("/ordinary"));
     let private = fs::read_to_string(with_snapshot.join("bot-range-observations.json")).unwrap();
     assert!(private.contains("203.0.113.9"));
+    let private_consistency =
+        fs::read_to_string(with_snapshot.join("declared-observed-observations.json")).unwrap();
+    assert!(private_consistency.contains("203.0.113.9"));
+    assert!(private_consistency.contains("user-agent-operator"));
 
     let without_snapshot = directory.path().join("without-snapshot");
     Command::cargo_bin("shenron")
@@ -430,6 +445,19 @@ fn hunt_compares_declared_bot_ua_with_frozen_ranges_without_changing_cve_metrics
     assert_eq!(
         with_report["metrics"]["unique_cves_observed"],
         without_report["metrics"]["unique_cves_observed"]
+    );
+    let without_checks = without_report["metrics"]["declared_observed_consistency"]["checks"]
+        .as_array()
+        .unwrap();
+    let bot_check = without_checks
+        .iter()
+        .find(|check| check["check_id"] == "declared-bot-published-range")
+        .unwrap();
+    assert_eq!(bot_check["mismatches"], 0);
+    assert_eq!(bot_check["unavailable"], 3);
+    assert_eq!(
+        bot_check["unavailable_reasons"]["reference_data_missing"],
+        3
     );
 }
 

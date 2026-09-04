@@ -1162,6 +1162,8 @@ mod tests {
             request_id: None,
             ja3: None,
             ja4: None,
+            tls_protocol: None,
+            tls_cipher: None,
             waf_action: None,
             waf_rule_id: None,
             waf_rule_type: None,

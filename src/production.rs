@@ -19,12 +19,17 @@ use walkdir::WalkDir;
 use crate::{
     access_log::{AccessLogFormat, AccessLogLines},
     bot_ranges::{
-        BotOperatorObservation, BotRangeAccumulator, BotRangeDatabase, PrivateBotRangeReport,
+        default_source_catalog, observe_without_range_snapshot, BotOperatorObservation,
+        BotRangeAccumulator, BotRangeDatabase, PrivateBotRangeReport,
     },
     concentration::{
         add_focus_asn_groups, add_focus_prefix_groups, FocusPrefixLengths, FocusSelector,
         PrivateRequestConcentrationReport, RequestConcentration, RequestConcentrationSummary,
         DEFAULT_RATE_WINDOW_SECONDS,
+    },
+    consistency::{
+        compare_declared_with_observed, declared_browser_family, ConsistencyAccumulator,
+        ConsistencySummary, PrivateConsistencyReport,
     },
     event::{HttpHeader, LogSource, TelemetryProfile, TrustedProxySet, WebEvent},
     nuclei::{
@@ -44,6 +49,8 @@ pub struct FieldAvailability {
     pub client_ip: usize,
     pub ja4: usize,
     pub ja3: usize,
+    pub tls_protocol: usize,
+    pub tls_cipher: usize,
     pub uri: usize,
     pub query: usize,
     pub headers: usize,
@@ -138,6 +145,9 @@ pub struct HuntMetrics {
     /// False when no local snapshot was configured. In that case evaluation is
     /// skipped without changing any CVE or Sigma metric.
     pub bot_range_snapshot_loaded: bool,
+    /// Aggregate-only outcomes for declared-versus-observed consistency
+    /// checks. Raw declarations and observed values are private-only.
+    pub declared_observed_consistency: ConsistencySummary,
     /// Aggregate request-volume distribution only. This is separate from CVE
     /// metrics and does not determine attack, abuse, or compromise.
     pub request_concentration: Option<RequestConcentrationSummary>,
@@ -811,6 +821,13 @@ pub fn hunt_with_options(
         RequestConcentration::new(telemetry_profile.capabilities().response_bytes);
     let mut bot_ranges = BotRangeAccumulator::default();
     metrics.bot_range_snapshot_loaded = bot_range_database.is_some();
+    let bot_catalog = if bot_range_database.is_none() {
+        default_source_catalog()?
+    } else {
+        Vec::new()
+    };
+    let capabilities = telemetry_profile.capabilities();
+    let mut consistency = ConsistencyAccumulator::default();
     let mut progress = ProgressReporter::new("hunt");
     for path in files {
         stream_events_with_trusted_proxies(&path, telemetry_profile, &trusted_proxies, |result| {
@@ -833,7 +850,34 @@ pub fn hunt_with_options(
             metrics.total_requests_analyzed += 1;
             concentration.observe(&event);
             if let Some(database) = &bot_range_database {
-                database.observe(&event, &mut bot_ranges);
+                database.observe_with_consistency(
+                    &event,
+                    capabilities,
+                    &mut bot_ranges,
+                    &mut consistency,
+                );
+            } else {
+                observe_without_range_snapshot(
+                    &bot_catalog,
+                    &event,
+                    capabilities,
+                    &mut consistency,
+                );
+            }
+            if let Some(browser_family) = declared_browser_family(event.user_agent.as_deref()) {
+                let result = compare_declared_with_observed(
+                    capabilities.tls_cipher,
+                    event.tls_cipher.as_deref(),
+                    None,
+                );
+                consistency.record(
+                    "declared-browser-tls-cipher",
+                    "user-agent-browser-family",
+                    browser_family,
+                    "tls-cipher-suite",
+                    event.tls_cipher.as_deref(),
+                    result,
+                );
             }
             update_time_range(
                 &mut metrics.earliest_timestamp,
@@ -957,6 +1001,9 @@ pub fn hunt_with_options(
         metrics.bot_range_observations = observations;
         write_private_bot_ranges(output, &private_report)?;
     }
+    let (consistency_summary, private_consistency) = consistency.reports();
+    metrics.declared_observed_consistency = consistency_summary;
+    write_private_consistency(output, &private_consistency)?;
     metrics.distinct_sigma_rules = matched_sigma_rules.len();
     metrics.unique_cves_observed = cves.len();
     metrics.unique_cisa_kevs_observed = cves.values().filter(|item| item.kev).count();
@@ -1220,6 +1267,18 @@ fn write_private_concentration(
 
 fn write_private_bot_ranges(output: &Path, report: &PrivateBotRangeReport) -> anyhow::Result<()> {
     let path = output.join("bot-range-observations.json");
+    serde_json::to_writer_pretty(
+        File::create(&path).with_context(|| format!("creating {}", path.display()))?,
+        report,
+    )?;
+    Ok(())
+}
+
+fn write_private_consistency(
+    output: &Path,
+    report: &PrivateConsistencyReport,
+) -> anyhow::Result<()> {
+    let path = output.join("declared-observed-observations.json");
     serde_json::to_writer_pretty(
         File::create(&path).with_context(|| format!("creating {}", path.display()))?,
         report,
@@ -1956,6 +2015,8 @@ fn record_availability(fields: &mut FieldAvailability, event: &WebEvent) {
     fields.client_ip += usize::from(event.client_ip.is_some());
     fields.ja4 += usize::from(event.ja4.is_some());
     fields.ja3 += usize::from(event.ja3.is_some());
+    fields.tls_protocol += usize::from(event.tls_protocol.is_some());
+    fields.tls_cipher += usize::from(event.tls_cipher.is_some());
     fields.uri += usize::from(event.uri_path.is_some());
     fields.query += usize::from(event.uri_query.is_some());
     fields.headers += usize::from(!event.headers.is_empty());

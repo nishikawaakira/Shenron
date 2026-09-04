@@ -124,6 +124,8 @@ pub fn parse_line(raw: &str) -> Result<WebEvent, WafParseError> {
             .and_then(|request| request.request_id.clone()),
         ja3: event.ja3_fingerprint,
         ja4: event.ja4_fingerprint,
+        tls_protocol: None,
+        tls_cipher: None,
         waf_action: event.action,
         waf_rule_id: event.terminating_rule_id,
         waf_rule_type: event.terminating_rule_type,

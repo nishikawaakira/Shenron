@@ -183,6 +183,10 @@ pub struct TelemetryCapabilities {
     pub response_bytes: bool,
     pub ja3: bool,
     pub ja4: bool,
+    /// Whether the source records the negotiated TLS protocol version.
+    pub tls_protocol: bool,
+    /// Whether the source records the negotiated TLS cipher suite.
+    pub tls_cipher: bool,
     pub waf_action: bool,
     pub waf_labels: bool,
     pub request_body: bool,
@@ -221,6 +225,8 @@ impl TelemetryCapabilities {
             response_bytes: self.response_bytes || other.response_bytes,
             ja3: self.ja3 || other.ja3,
             ja4: self.ja4 || other.ja4,
+            tls_protocol: self.tls_protocol || other.tls_protocol,
+            tls_cipher: self.tls_cipher || other.tls_cipher,
             waf_action: self.waf_action || other.waf_action,
             waf_labels: self.waf_labels || other.waf_labels,
             request_body: self.request_body || other.request_body,
@@ -248,6 +254,8 @@ impl TelemetryProfile {
                 response_bytes: false,
                 ja3: true,
                 ja4: true,
+                tls_protocol: false,
+                tls_cipher: false,
                 waf_action: true,
                 waf_labels: true,
                 request_body: false,
@@ -267,6 +275,8 @@ impl TelemetryProfile {
                 response_bytes: true,
                 ja3: false,
                 ja4: false,
+                tls_protocol: false,
+                tls_cipher: false,
                 waf_action: false,
                 waf_labels: false,
                 request_body: false,
@@ -317,6 +327,12 @@ pub struct WebEvent {
     pub request_id: Option<String>,
     pub ja3: Option<String>,
     pub ja4: Option<String>,
+    /// TLS protocol version observed by the telemetry source. Existing source
+    /// profiles do not expose this value, so parsers leave it unavailable.
+    pub tls_protocol: Option<String>,
+    /// TLS cipher suite observed by the telemetry source. It is never inferred
+    /// from a User-Agent or another request attribute.
+    pub tls_cipher: Option<String>,
     pub waf_action: Option<String>,
     pub waf_rule_id: Option<String>,
     pub waf_rule_type: Option<String>,
@@ -345,6 +361,8 @@ impl WebEvent {
             "sc-status" | "status" => self.status.map(|value| vec![value.to_string()]),
             "ja3" => one(&self.ja3),
             "ja4" => one(&self.ja4),
+            "tls_protocol" | "ssl_protocol" => one(&self.tls_protocol),
+            "tls_cipher" | "ssl_cipher" => one(&self.tls_cipher),
             "waf_action" => one(&self.waf_action),
             "waf_rule_id" => one(&self.waf_rule_id),
             "waf_labels" => Some(self.waf_labels.clone()),

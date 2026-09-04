@@ -19,10 +19,14 @@ use ipnet::IpNet;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::event::WebEvent;
+use crate::{
+    consistency::{compare_boolean_fact, ComparisonOutcome, ConsistencyAccumulator},
+    event::{TelemetryCapabilities, WebEvent},
+};
 
 pub const BOT_RANGE_REPORT_KIND: &str = "PUBLISHED_BOT_RANGE_SNAPSHOT";
 pub const BOT_RANGE_PRIVATE_REPORT_KIND: &str = "BOT_RANGE_OBSERVATIONS_PRIVATE";
+pub const BOT_RANGE_CONSISTENCY_CHECK_ID: &str = "declared-bot-published-range";
 pub const BOT_RANGE_SAFETY_NOTE: &str = "A User-Agent whose observed peer is outside the named operator's published ranges is only outside that frozen range snapshot. Published ranges can be incomplete or stale, an intermediary can rewrite the peer address, and any client can set a User-Agent. This is a labeled observation for review, not a determination of impersonation, attack, abuse, compromise, vulnerability, or attacker identity.";
 
 /// Download catalog kept as data rather than embedding UA/range pairs in
@@ -158,6 +162,30 @@ impl BotRangeDatabase {
     }
 
     pub fn observe(&self, event: &WebEvent, accumulator: &mut BotRangeAccumulator) {
+        self.observe_internal(event, accumulator, None, None);
+    }
+
+    /// Run the existing bot-range observation while also recording it through
+    /// the general declared-versus-observed framework. The legacy accumulator
+    /// is updated by the same comparison outcome, preserving its schema and
+    /// classification semantics.
+    pub fn observe_with_consistency(
+        &self,
+        event: &WebEvent,
+        capabilities: TelemetryCapabilities,
+        accumulator: &mut BotRangeAccumulator,
+        consistency: &mut ConsistencyAccumulator,
+    ) {
+        self.observe_internal(event, accumulator, Some(capabilities), Some(consistency));
+    }
+
+    fn observe_internal(
+        &self,
+        event: &WebEvent,
+        accumulator: &mut BotRangeAccumulator,
+        capabilities: Option<TelemetryCapabilities>,
+        mut consistency: Option<&mut ConsistencyAccumulator>,
+    ) {
         let Some(user_agent) = event.user_agent.as_deref() else {
             return;
         };
@@ -180,25 +208,84 @@ impl BotRangeDatabase {
                     )
                 });
             observed.declared_requests += 1;
-            let Some(source_ip) = event.source_ip.as_deref() else {
-                observed.unavailable_requests += 1;
-                continue;
-            };
-            let Ok(address) = source_ip.parse::<IpAddr>() else {
-                observed.unavailable_requests += 1;
-                continue;
-            };
-            if operator.ranges.iter().any(|range| range.contains(&address)) {
-                observed.inside_requests += 1;
-                observed.inside_sources.insert(source_ip.to_owned());
-            } else {
-                observed.outside_requests += 1;
-                *observed
-                    .outside_sources
-                    .entry(source_ip.to_owned())
-                    .or_default() += 1;
+            let source_ip = event.source_ip.as_deref();
+            let address = source_ip.and_then(|value| value.parse::<IpAddr>().ok());
+            let inside = address.is_some_and(|address| {
+                operator.ranges.iter().any(|range| range.contains(&address))
+            });
+            let result = compare_boolean_fact(
+                capabilities.is_none_or(|item| item.source_ip),
+                address.is_some(),
+                true,
+                inside,
+            );
+            if let Some(general) = consistency.as_deref_mut() {
+                general.record(
+                    BOT_RANGE_CONSISTENCY_CHECK_ID,
+                    "user-agent-operator",
+                    &operator.operator_id,
+                    "observed-source-ip-in-published-range",
+                    source_ip,
+                    result,
+                );
+            }
+            match result.outcome {
+                ComparisonOutcome::Match => {
+                    observed.inside_requests += 1;
+                    observed
+                        .inside_sources
+                        .insert(source_ip.expect("a matching fact has an IP").to_owned());
+                }
+                ComparisonOutcome::Mismatch => {
+                    observed.outside_requests += 1;
+                    *observed
+                        .outside_sources
+                        .entry(source_ip.expect("a mismatching fact has an IP").to_owned())
+                        .or_default() += 1;
+                }
+                ComparisonOutcome::Unavailable => observed.unavailable_requests += 1,
             }
         }
+    }
+}
+
+/// Record declarations recognized by the built-in public-source catalog when
+/// no frozen range snapshot is available. These observations are unavailable,
+/// never mismatches, because the reference facts are absent.
+pub fn observe_without_range_snapshot(
+    catalog: &[BotRangeSourceDefinition],
+    event: &WebEvent,
+    capabilities: TelemetryCapabilities,
+    consistency: &mut ConsistencyAccumulator,
+) {
+    let Some(user_agent) = event.user_agent.as_deref() else {
+        return;
+    };
+    let normalized = user_agent.to_ascii_lowercase();
+    let mut declared = BTreeMap::<&str, &str>::new();
+    for source in catalog {
+        if source
+            .user_agent_patterns
+            .iter()
+            .any(|pattern| normalized.contains(&pattern.to_ascii_lowercase()))
+        {
+            declared
+                .entry(source.operator_id.as_str())
+                .or_insert(source.operator_name.as_str());
+        }
+    }
+    let source_ip = event.source_ip.as_deref();
+    let observed_available = source_ip.is_some_and(|value| value.parse::<IpAddr>().is_ok());
+    for operator_id in declared.keys() {
+        let result = compare_boolean_fact(capabilities.source_ip, observed_available, false, false);
+        consistency.record(
+            BOT_RANGE_CONSISTENCY_CHECK_ID,
+            "user-agent-operator",
+            operator_id,
+            "observed-source-ip-in-published-range",
+            source_ip,
+            result,
+        );
     }
 }
 
@@ -385,7 +472,10 @@ mod tests {
     use chrono::{TimeZone, Utc};
 
     use super::*;
-    use crate::event::{LogSource, WebEvent};
+    use crate::{
+        consistency::ConsistencyAccumulator,
+        event::{LogSource, TelemetryProfile, WebEvent},
+    };
 
     fn event(source_ip: &str, user_agent: &str) -> WebEvent {
         WebEvent {
@@ -409,6 +499,8 @@ mod tests {
             request_id: None,
             ja3: None,
             ja4: None,
+            tls_protocol: None,
+            tls_cipher: None,
             waf_action: None,
             waf_rule_id: None,
             waf_rule_type: None,
@@ -486,6 +578,32 @@ mod tests {
         assert_eq!(summary[0].outside_published_ranges_requests, 1);
         assert_eq!(summary[1].within_published_ranges_requests, 1);
         assert_eq!(summary[1].outside_published_ranges_requests, 1);
+    }
+
+    #[test]
+    fn generalized_comparison_preserves_legacy_bot_report_bytes() {
+        let database = database();
+        let events = [
+            event("198.51.100.7", "AlphaBot/1.0"),
+            event("192.0.2.7", "AlphaBot/1.0"),
+            event("not-an-ip", "AlphaBot/1.0"),
+            event("203.0.113.7", "SharedBot/1.0"),
+        ];
+        let mut legacy = BotRangeAccumulator::default();
+        let mut generalized = BotRangeAccumulator::default();
+        let mut consistency = ConsistencyAccumulator::default();
+        for item in &events {
+            database.observe(item, &mut legacy);
+            database.observe_with_consistency(
+                item,
+                TelemetryProfile::ApacheCombined.capabilities(),
+                &mut generalized,
+                &mut consistency,
+            );
+        }
+        let legacy_bytes = serde_json::to_vec(&legacy.reports()).unwrap();
+        let generalized_bytes = serde_json::to_vec(&generalized.reports()).unwrap();
+        assert_eq!(legacy_bytes, generalized_bytes);
     }
 
     #[test]

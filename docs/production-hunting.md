@@ -72,6 +72,16 @@ ranges can be stale or incomplete, an intermediary can rewrite the peer, and
 any client can set a User-Agent. It is not a determination of impersonation,
 attack, or abuse. See [published bot ranges](published-bot-ranges.md).
 
+Hunt also records these bot-range comparisons through the general
+[declared-versus-observed consistency](declared-observed-consistency.md)
+framework. Aggregate match, mismatch, and unavailable counts and the distinct
+unavailable reasons are included in sanitized output; declaration and observed
+values remain private in `declared-observed-observations.json`. Missing
+reference data, an unsupported telemetry capability, and a missing event value
+are each unavailable and are never converted into mismatches. Optional TLS
+protocol/cipher fields exist in the normalized event model, but every current
+profile leaves them unsupported and no current parser invents them.
+
 By default `setup` writes to the standard data directory that `hunt`, `explain`,
 and the other analysis commands read automatically. If you pass `--data-dir` to
 write somewhere else, those commands do not look there by default, so pass the

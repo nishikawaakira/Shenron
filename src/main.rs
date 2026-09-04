@@ -1796,7 +1796,7 @@ fn print_inspection(report: &InspectionReport) {
             "not supported by telemetry profile".to_owned()
         }
     };
-    println!("Telemetry profile:          {:?}\nFiles found:                {}\nCompressed files:           {}\nApproximate input bytes:    {}\nParseable events sampled:   {}\nMalformed events sampled:   {}\nEarliest timestamp:         {}\nLatest timestamp:           {}\n\nField availability (sample counts):\nVerified forwarded client IP: {} (requires --trusted-proxy)\nJA4:                        {}\nJA3:                        {}\nURI:                        {}\nQuery:                      {}\nHeaders:                    {}\nHost:                       {}\nMethod:                     {}\nWAF action:                 {}\nWAF labels:                 {}\nTerminating rule ID:        {}\nNon-terminating rules:      {}", report.telemetry_profile, report.files_found, report.compressed_files, report.approximate_input_bytes, report.sampled_events, report.malformed_events, report.earliest_timestamp.as_deref().unwrap_or("unknown"), report.latest_timestamp.as_deref().unwrap_or("unknown"), fields.client_ip, supported(capabilities.ja4, fields.ja4), supported(capabilities.ja3, fields.ja3), supported(capabilities.uri_path, fields.uri), supported(capabilities.uri_query, fields.query), fields.headers, supported(capabilities.host, fields.host), supported(capabilities.method, fields.method), supported(capabilities.waf_action, fields.waf_action), supported(capabilities.waf_labels, fields.waf_labels), supported(capabilities.waf_action, fields.terminating_rule_id), supported(capabilities.waf_action, fields.non_terminating_rules));
+    println!("Telemetry profile:          {:?}\nFiles found:                {}\nCompressed files:           {}\nApproximate input bytes:    {}\nParseable events sampled:   {}\nMalformed events sampled:   {}\nEarliest timestamp:         {}\nLatest timestamp:           {}\n\nField availability (sample counts):\nVerified forwarded client IP: {} (requires --trusted-proxy)\nJA4:                        {}\nJA3:                        {}\nTLS protocol:               {}\nTLS cipher:                 {}\nURI:                        {}\nQuery:                      {}\nHeaders:                    {}\nHost:                       {}\nMethod:                     {}\nWAF action:                 {}\nWAF labels:                 {}\nTerminating rule ID:        {}\nNon-terminating rules:      {}", report.telemetry_profile, report.files_found, report.compressed_files, report.approximate_input_bytes, report.sampled_events, report.malformed_events, report.earliest_timestamp.as_deref().unwrap_or("unknown"), report.latest_timestamp.as_deref().unwrap_or("unknown"), fields.client_ip, supported(capabilities.ja4, fields.ja4), supported(capabilities.ja3, fields.ja3), supported(capabilities.tls_protocol, fields.tls_protocol), supported(capabilities.tls_cipher, fields.tls_cipher), supported(capabilities.uri_path, fields.uri), supported(capabilities.uri_query, fields.query), fields.headers, supported(capabilities.host, fields.host), supported(capabilities.method, fields.method), supported(capabilities.waf_action, fields.waf_action), supported(capabilities.waf_labels, fields.waf_labels), supported(capabilities.waf_action, fields.terminating_rule_id), supported(capabilities.waf_action, fields.non_terminating_rules));
 }
 
 fn print_hunt(report: &SanitizedHuntReport, sanitized_path: &Path) {
@@ -1855,6 +1855,36 @@ fn print_hunt(report: &SanitizedHuntReport, sanitized_path: &Path) {
         println!(
             "\nSelf-declared bot range comparison: skipped (no frozen snapshot; run `shenron-lab bot-ranges update`). CVE and Sigma metrics are unaffected."
         );
+    }
+    if !metrics.declared_observed_consistency.checks.is_empty() {
+        println!("\nDeclared-versus-observed consistency checks:");
+        for check in &metrics.declared_observed_consistency.checks {
+            println!(
+                "  {}\n    Match: {}\n    Mismatch: {}\n    Unavailable: {} (reference data missing: {}, telemetry does not expose: {}, observed value missing: {})",
+                terminal_safe(&check.check_id),
+                check.matches,
+                check.mismatches,
+                check.unavailable,
+                check.unavailable_reasons.reference_data_missing,
+                check.unavailable_reasons.telemetry_does_not_expose,
+                check.unavailable_reasons.observed_value_missing,
+            );
+        }
+        println!(
+            "  A mismatch between a self-declared attribute and an observed one is a labeled observation. Declarations are freely settable, reference data can be incomplete or stale, and intermediaries can rewrite both. It is not a determination of impersonation, automation, attack, abuse, compromise, or attacker identity."
+        );
+        if metrics
+            .declared_observed_consistency
+            .private_observations_beyond_cap
+            != 0
+        {
+            println!(
+                "  Private consistency observations beyond cap: {}",
+                metrics
+                    .declared_observed_consistency
+                    .private_observations_beyond_cap
+            );
+        }
     }
     if metrics.sensitive_config_probe_matches != 0 {
         println!(

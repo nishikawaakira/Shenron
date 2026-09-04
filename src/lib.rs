@@ -5,6 +5,7 @@ pub mod bot_ranges;
 pub mod candidate;
 pub mod comparison;
 pub mod concentration;
+pub mod consistency;
 pub mod cti_export;
 pub mod event;
 pub mod kev;
