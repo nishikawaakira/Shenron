@@ -8,9 +8,11 @@ use chrono::{DateTime, Utc};
 use predicates::prelude::PredicateBooleanExt;
 use predicates::str::contains;
 use shenron::event::{TelemetryProfile, TrustedProxy, TrustedProxySet};
+use shenron::nuclei::CatalogSeverity;
 use shenron::production::{
     ablation, concentration, count_hypotheses, explain_private_findings, historical_replay, hunt,
     hunt_with_options, inspect, inspect_with_trusted_proxies, HuntOptions, HuntTimeRange,
+    SanitizedCveFinding,
 };
 use tempfile::tempdir;
 use walkdir::WalkDir;
@@ -1585,13 +1587,21 @@ fn hunt_sorts_and_deduplicates_template_ids_per_sanitized_cve() {
     let data_dir = directory.path().join("empty-data");
     fs::create_dir_all(&templates).unwrap();
     fs::create_dir_all(&data_dir).unwrap();
-    let template = |id: &str| {
+    let template = |id: &str, severity: &str| {
         format!(
-            "id: {id}\ninfo:\n  name: Template provenance fixture\n  severity: high\n  classification:\n    cve-id: CVE-2024-10001\nhttp:\n  - method: GET\n    path:\n      - '{{{{BaseURL}}}}/vulnerable/execute?cmd=probe'\n    headers:\n      X-Synthetic-Exploit: marker-10001\n"
+            "id: {id}\ninfo:\n  name: Template provenance fixture\n  severity: {severity}\n  classification:\n    cve-id: CVE-2024-10001\nhttp:\n  - method: GET\n    path:\n      - '{{{{BaseURL}}}}/vulnerable/execute?cmd=probe'\n    headers:\n      X-Synthetic-Exploit: marker-10001\n"
         )
     };
-    fs::write(templates.join("z-template.yaml"), template("z-template")).unwrap();
-    fs::write(templates.join("a-template.yaml"), template("a-template")).unwrap();
+    fs::write(
+        templates.join("z-template.yaml"),
+        template("z-template", "high"),
+    )
+    .unwrap();
+    fs::write(
+        templates.join("a-template.yaml"),
+        template("a-template", "critical"),
+    )
+    .unwrap();
     let report_path = directory.path().join("nuclei-report.json");
     fs::write(
         &report_path,
@@ -1643,6 +1653,20 @@ fn hunt_sorts_and_deduplicates_template_ids_per_sanitized_cve() {
         sanitized["cve_findings"][0]["template_ids"],
         serde_json::json!(["a-template", "z-template"])
     );
+    assert_eq!(sanitized["cve_findings"][0]["severity"], "critical");
+    assert_eq!(
+        sanitized["metrics"]["cve_findings_by_severity"]["critical"],
+        1
+    );
+    assert_eq!(sanitized["metrics"]["cve_findings_by_severity"]["high"], 0);
+    let serialized = serde_json::to_string(&sanitized).unwrap();
+    assert!(!serialized.contains("198.51.100."));
+    assert!(!serialized.contains("/vulnerable/execute"));
+
+    let mut legacy = sanitized["cve_findings"][0].clone();
+    legacy.as_object_mut().unwrap().remove("severity");
+    let legacy: SanitizedCveFinding = serde_json::from_value(legacy).unwrap();
+    assert_eq!(legacy.severity, CatalogSeverity::Unknown);
 }
 
 #[test]
@@ -1807,6 +1831,8 @@ fn hunt_writes_and_rerenders_private_offline_html() {
         "<section id=\"observed-cves\">",
         "CVE-2024-10001",
         "テンプレート",
+        "Severity（カタログ宣言値）",
+        "<span class=\"severity severity-high\">high</span>",
         "synthetic-cve-2024-10001",
         "href=\"https://github.com/search?q=repo:projectdiscovery/nuclei-templates+synthetic-cve-2024-10001&amp;type=code\" rel=\"noreferrer noopener\" target=\"_blank\"",
         "hunt トリアージビュー",
@@ -2928,6 +2954,11 @@ fn hunt_runs_the_sigma_pass_and_keeps_it_distinct_from_cve_findings() {
         report.metrics.sigma_rule_matches,
         2 * report.metrics.sigma_matched_requests
     );
+    assert_eq!(
+        report.metrics.sigma_matches_by_severity.medium,
+        report.metrics.sigma_rule_matches
+    );
+    assert_eq!(report.metrics.sigma_matches_by_severity.critical, 0);
 
     // Both sources are present and distinguishable in the private findings.
     let private = fs::read_to_string(output.join("private-findings.jsonl")).unwrap();

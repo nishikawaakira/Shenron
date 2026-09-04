@@ -33,8 +33,8 @@ use crate::{
     },
     event::{HttpHeader, LogSource, RawRetention, TelemetryProfile, TrustedProxySet, WebEvent},
     nuclei::{
-        frozen_nuclei_selection, path_distinctiveness, validated_detections, Detectability,
-        PathDistinctiveness, RequestSpecificity, ValidatedNucleiDetection,
+        frozen_nuclei_selection, path_distinctiveness, validated_detections, CatalogSeverity,
+        Detectability, PathDistinctiveness, RequestSpecificity, ValidatedNucleiDetection,
     },
     reputation::AsnDatabase,
     waf::{maybe_gzip_reader, WafLines},
@@ -86,6 +86,31 @@ struct KevRecord {
     cve: String,
 }
 
+/// Counts catalog-declared severity values. These fields describe source
+/// metadata only; they are not Shenron judgments about impact or compromise.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct CatalogSeverityCounts {
+    pub unknown: usize,
+    pub info: usize,
+    pub low: usize,
+    pub medium: usize,
+    pub high: usize,
+    pub critical: usize,
+}
+
+impl CatalogSeverityCounts {
+    fn record(&mut self, severity: CatalogSeverity) {
+        match severity {
+            CatalogSeverity::Unknown => self.unknown += 1,
+            CatalogSeverity::Info => self.info += 1,
+            CatalogSeverity::Low => self.low += 1,
+            CatalogSeverity::Medium => self.medium += 1,
+            CatalogSeverity::High => self.high += 1,
+            CatalogSeverity::Critical => self.critical += 1,
+        }
+    }
+}
+
 #[derive(Debug, Default, Serialize)]
 pub struct HuntMetrics {
     pub waf_outcome_available: bool,
@@ -107,6 +132,9 @@ pub struct HuntMetrics {
     pub generic_path_matches: usize,
     pub unique_cves_observed: usize,
     pub unique_cisa_kevs_observed: usize,
+    /// Distinct observed CVEs grouped by the strongest severity declared by
+    /// their matching Nuclei templates.
+    pub cve_findings_by_severity: CatalogSeverityCounts,
     pub unique_source_clusters: usize,
     pub unique_ja4_fingerprints: usize,
     pub high_confidence_findings: usize,
@@ -129,6 +157,9 @@ pub struct HuntMetrics {
     pub sigma_rule_matches: usize,
     /// Distinct Sigma rules that matched at least one event.
     pub distinct_sigma_rules: usize,
+    /// Individual Sigma rule matches grouped by the source rule's declared
+    /// `level`, normalized to the shared catalog-severity vocabulary.
+    pub sigma_matches_by_severity: CatalogSeverityCounts,
     /// Distinct requests matching the sensitive/config-file probe rule. These
     /// are retained regardless of response status and do not assert attack.
     pub sensitive_config_probe_matches: usize,
@@ -220,7 +251,7 @@ impl Default for HuntTriagePolicy {
     }
 }
 
-#[derive(Debug, Default, Serialize)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 pub struct OutcomeCounts {
     pub blocked: usize,
     pub allowed_or_not_blocked: usize,
@@ -228,11 +259,15 @@ pub struct OutcomeCounts {
     pub unknown: usize,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct SanitizedCveFinding {
     pub cve: String,
     pub cisa_kev: bool,
     pub detectability: Detectability,
+    /// Strongest `info.severity` declared by the matching Nuclei templates.
+    /// This is catalog metadata, not a Shenron impact determination.
+    #[serde(default)]
+    pub severity: CatalogSeverity,
     pub first_seen: Option<String>,
     pub last_seen: Option<String>,
     pub request_count: usize,
@@ -675,6 +710,7 @@ pub fn terminal_safe(value: &str) -> String {
 struct CveAccumulator {
     kev: bool,
     detectability: Detectability,
+    severity: CatalogSeverity,
     first_seen: Option<DateTime<Utc>>,
     last_seen: Option<DateTime<Utc>>,
     requests: usize,
@@ -929,10 +965,18 @@ pub fn hunt_with_options(
                 serde_json::to_writer(&mut private, &sigma_finding(rule, &event))?;
                 private.write_all(b"\n")?;
                 metrics.sigma_rule_matches += 1;
+                metrics.sigma_matches_by_severity.record(rule.severity);
                 matched_sigma_rules.insert(rule.id.clone());
             }
-            let mut observed_cves =
-                BTreeMap::<String, (Detectability, RequestSpecificity, BTreeSet<String>)>::new();
+            let mut observed_cves = BTreeMap::<
+                String,
+                (
+                    Detectability,
+                    RequestSpecificity,
+                    CatalogSeverity,
+                    BTreeSet<String>,
+                ),
+            >::new();
             for detection in &matches {
                 for cve in &detection.cves {
                     observed_cves
@@ -941,12 +985,14 @@ pub fn hunt_with_options(
                             current.0 = strongest(current.0, detection.detectability);
                             current.1 =
                                 strongest_specificity(current.1, detection.request_specificity());
-                            current.2.insert(detection.template_id.clone());
+                            current.2 = current.2.max(detection.severity);
+                            current.3.insert(detection.template_id.clone());
                         })
                         .or_insert_with(|| {
                             (
                                 detection.detectability,
                                 detection.request_specificity(),
+                                detection.severity,
                                 BTreeSet::from([detection.template_id.clone()]),
                             )
                         });
@@ -954,7 +1000,8 @@ pub fn hunt_with_options(
             }
             let path_distinctiveness =
                 path_distinctiveness(event.uri_path.as_deref().unwrap_or_default());
-            for (cve, (detectability, request_specificity, template_ids)) in observed_cves {
+            for (cve, (detectability, request_specificity, severity, template_ids)) in observed_cves
+            {
                 metrics.cve_related_request_matches += 1;
                 match request_specificity {
                     RequestSpecificity::RequestSpecific => metrics.request_specific_matches += 1,
@@ -975,6 +1022,7 @@ pub fn hunt_with_options(
                 let accumulator = cves.entry(cve.clone()).or_default();
                 accumulator.kev = kev_cves.contains(&cve);
                 accumulator.detectability = strongest(accumulator.detectability, detectability);
+                accumulator.severity = accumulator.severity.max(severity);
                 accumulator.requests += 1;
                 accumulator.template_ids.extend(template_ids);
                 match path_distinctiveness {
@@ -1023,6 +1071,7 @@ pub fn hunt_with_options(
     metrics.unique_ja4_fingerprints = all_ja4s.len();
     metrics.request_concentration = Some(concentration.summary());
     for item in cves.values() {
+        metrics.cve_findings_by_severity.record(item.severity);
         metrics.blocked += item.outcomes.blocked;
         metrics.allowed_or_not_blocked += item.outcomes.allowed_or_not_blocked;
         metrics.count_related_evidence += item.outcomes.count_related_evidence;
@@ -1038,6 +1087,7 @@ pub fn hunt_with_options(
                 cve,
                 cisa_kev: item.kev,
                 detectability: item.detectability,
+                severity: item.severity,
                 first_seen: item.first_seen.map(|time| time.to_rfc3339()),
                 last_seen: item.last_seen.map(|time| time.to_rfc3339()),
                 request_count: item.requests,

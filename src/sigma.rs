@@ -6,7 +6,10 @@ use serde_yaml::Value;
 use thiserror::Error;
 use walkdir::WalkDir;
 
-use crate::event::{LogSource, WebEvent};
+use crate::{
+    event::{LogSource, WebEvent},
+    nuclei::CatalogSeverity,
+};
 
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct Logsource {
@@ -20,6 +23,9 @@ pub struct CompiledRule {
     pub id: String,
     pub title: String,
     pub level: Option<String>,
+    /// Sigma `level`, normalized as catalog metadata rather than a Shenron
+    /// judgment of impact, exploitation, compromise, or identity.
+    pub severity: CatalogSeverity,
     pub cves: Vec<String>,
     logsource: Logsource,
     selections: BTreeMap<String, Selection>,
@@ -210,6 +216,8 @@ fn compile_rule(input: &str, path: &Path) -> Result<CompiledRule, (Option<String
             })
         })
         .collect();
+    let level = raw.level;
+    let severity = CatalogSeverity::from_catalog_value(level.as_deref());
     Ok(CompiledRule {
         id: raw.id.unwrap_or_else(|| {
             path.file_stem()
@@ -218,7 +226,8 @@ fn compile_rule(input: &str, path: &Path) -> Result<CompiledRule, (Option<String
                 .to_string()
         }),
         title,
-        level: raw.level,
+        level,
+        severity,
         cves,
         logsource: raw.logsource,
         selections,
@@ -652,5 +661,41 @@ detection:
         let matcher = EventMatcher::new(&event);
         assert!(matcher.matches(&rule));
         assert!(rule.matches(&event));
+    }
+
+    #[test]
+    fn normalizes_sigma_level_as_catalog_declared_severity() {
+        let rule = compile_rule(
+            r#"
+title: Catalog Severity
+id: catalog-severity
+logsource:
+  category: webserver
+detection:
+  keywords:
+    - jndi
+  condition: keywords
+level: critical
+"#,
+            Path::new("catalog-severity.yml"),
+        )
+        .unwrap();
+        assert_eq!(rule.severity, CatalogSeverity::Critical);
+
+        let without_level = compile_rule(
+            r#"
+title: Missing Catalog Severity
+id: missing-catalog-severity
+logsource:
+  category: webserver
+detection:
+  keywords:
+    - jndi
+  condition: keywords
+"#,
+            Path::new("missing-catalog-severity.yml"),
+        )
+        .unwrap();
+        assert_eq!(without_level.severity, CatalogSeverity::Unknown);
     }
 }

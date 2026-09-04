@@ -239,7 +239,14 @@ The self-contained HTML uses inline CSS and server-generated inline SVG only:
 there is no JavaScript, external resource, fetch, or network access. It combines
 available aggregate provenance, private path/IP concentration and minute
 timelines, focused-path prefix groups, the private hunt triage view, and an
-observed-CVE table with matching Nuclei template IDs. Missing
+observed-CVE table with matching Nuclei template IDs and catalog-declared
+severity. The per-CVE `severity` is the strongest Nuclei `info.severity` among
+matching templates, while `sigma_matches_by_severity` normalizes each matching
+Sigma rule's `level`. These are source-catalog declarations, like KEV membership
+and detectability, not Shenron determinations of impact, exploitation,
+compromise, maliciousness, or attribution. The sanitized report contains only
+the per-CVE label and aggregate severity counts; it adds no raw request value.
+Missing
 artifacts are labeled unavailable, never inferred. The report is explicitly
 private because it contains raw paths and observed peer IPs; it is not a
 sanitized artifact. Every artifact-derived string is HTML-escaped. The charts

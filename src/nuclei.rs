@@ -32,6 +32,44 @@ pub enum Detectability {
     Unknown,
 }
 
+/// Severity declared by a public detection catalog. This is source metadata,
+/// not a Shenron judgment of impact, exploitation, compromise, or identity.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CatalogSeverity {
+    #[default]
+    Unknown,
+    Info,
+    Low,
+    Medium,
+    High,
+    Critical,
+}
+
+impl CatalogSeverity {
+    pub fn from_catalog_value(value: Option<&str>) -> Self {
+        match value.map(str::trim).map(str::to_ascii_lowercase).as_deref() {
+            Some("info" | "informational") => Self::Info,
+            Some("low") => Self::Low,
+            Some("medium") => Self::Medium,
+            Some("high") => Self::High,
+            Some("critical") => Self::Critical,
+            _ => Self::Unknown,
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::Info => "info",
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::Critical => "critical",
+        }
+    }
+}
+
 /// How resistant a request-side match is to an incidental URI-only match.
 /// This is neither attack severity nor evidence of exploitation or compromise.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
@@ -177,6 +215,8 @@ pub struct TemplateAnalysis {
     pub template_path: String,
     pub nuclei_revision: String,
     pub protocol: String,
+    /// Nuclei `info.severity`, normalized without reinterpreting it.
+    pub severity: CatalogSeverity,
     pub detectability: Detectability,
     pub detectability_reasons: Vec<String>,
     pub observable_features: Vec<String>,
@@ -364,6 +404,8 @@ pub struct ValidatedNucleiDetection {
     pub template_id: String,
     pub cves: Vec<String>,
     pub detectability: Detectability,
+    /// Nuclei `info.severity`; catalog metadata only.
+    pub severity: CatalogSeverity,
     detection: NucleiDetection,
 }
 
@@ -744,6 +786,7 @@ pub fn coverage(templates: &Path, nuclei_revision: &str) -> CoverageReport {
                     template_id: item.analysis.template_id.clone(),
                     cves: item.analysis.cves.clone(),
                     detectability: item.analysis.detectability,
+                    severity: item.analysis.severity,
                     detection: detection.clone(),
                 };
                 coverage.supported_request_ir_detections += 1;
@@ -839,12 +882,14 @@ pub fn validated_detections(
             let template_id = item.analysis.template_id;
             let cves = item.analysis.cves;
             let detectability = item.analysis.detectability;
+            let severity = item.analysis.severity;
             item.detections
                 .into_iter()
                 .map(move |detection| ValidatedNucleiDetection {
                     template_id: template_id.clone(),
                     cves: cves.clone(),
                     detectability,
+                    severity,
                     detection,
                 })
         })
@@ -1142,6 +1187,7 @@ fn non_cve_template(path: String) -> AnalyzedTemplate {
             template_path: path,
             nuclei_revision: "unknown".to_owned(),
             protocol: "not_analyzed_non_cve".to_owned(),
+            severity: CatalogSeverity::Unknown,
             detectability: Detectability::Unknown,
             detectability_reasons: vec!["not_cve_candidate".to_owned()],
             observable_features: Vec::new(),
@@ -1166,6 +1212,7 @@ fn unsupported_parse(path: String) -> AnalyzedTemplate {
             template_path: path,
             nuclei_revision: "unknown".to_owned(),
             protocol: "unknown".to_owned(),
+            severity: CatalogSeverity::Unknown,
             detectability: Detectability::Unknown,
             detectability_reasons: vec!["nuclei_parse_error".to_owned()],
             observable_features: Vec::new(),
@@ -1185,6 +1232,11 @@ fn unsupported_parse(path: String) -> AnalyzedTemplate {
 fn analyze_value(root: &Value, path: String) -> AnalyzedTemplate {
     let id = value_string(map_get(root, "id")).unwrap_or_else(|| path.clone());
     let cves = extract_cves(root);
+    let severity = CatalogSeverity::from_catalog_value(
+        map_get(root, "info")
+            .and_then(|info| value_string(map_get(info, "severity")))
+            .as_deref(),
+    );
     let requests = map_get(root, "http")
         .or_else(|| map_get(root, "requests"))
         .and_then(Value::as_sequence)
@@ -1207,6 +1259,7 @@ fn analyze_value(root: &Value, path: String) -> AnalyzedTemplate {
                 template_path: path,
                 nuclei_revision: "unknown".to_owned(),
                 protocol,
+                severity,
                 detectability: Detectability::Undetectable,
                 detectability_reasons: vec!["no_http_request".to_owned()],
                 observable_features: Vec::new(),
@@ -1390,6 +1443,7 @@ fn analyze_value(root: &Value, path: String) -> AnalyzedTemplate {
             template_path: path,
             nuclei_revision: "unknown".to_owned(),
             protocol,
+            severity,
             detectability,
             detectability_reasons: reasons,
             observable_features: observable,

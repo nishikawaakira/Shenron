@@ -85,6 +85,9 @@ struct Labels {
     kev_membership: &'static str,
     kev_badge: &'static str,
     detectability: &'static str,
+    catalog_severity: &'static str,
+    cve_severity_summary: &'static str,
+    sigma_severity_summary: &'static str,
     distinctive_matches: &'static str,
     generic_matches: &'static str,
     cve_first_seen: &'static str,
@@ -191,12 +194,15 @@ const EN_LABELS: Labels = Labels {
     sensitive_timestamp: "Timestamp",
     sensitive_records: "sensitive file/config 2xx records",
     cve_list_heading: "Observed CVEs",
-    cve_list_note: "Nuclei template IDs are public CTI metadata. Each template ID links to a public GitHub code search. Opening this report causes no external communication; following a link sends only the public template ID to GitHub, never private values. Template IDs, KEV membership, and detectability are catalog facts, not an exploitation, compromise, or attacker-identity determination. Request counts are observed matcher volume, not proof of exploitation.",
+    cve_list_note: "Nuclei template IDs are public CTI metadata. Each template ID links to a public GitHub code search. Opening this report causes no external communication; following a link sends only the public template ID to GitHub, never private values. Template IDs, KEV membership, detectability, and severity are catalog facts, not an exploitation, compromise, or attacker-identity determination. Severity is the Nuclei template's declared info.severity value, not a Shenron judgment of impact, exploitation, or compromise. Request counts are observed matcher volume, not proof of exploitation.",
     cve_id: "CVE ID",
     cve_templates: "Templates",
     kev_membership: "CISA KEV",
     kev_badge: "KEV",
     detectability: "Detectability",
+    catalog_severity: "Severity",
+    cve_severity_summary: "Observed CVEs by catalog severity",
+    sigma_severity_summary: "Sigma rule matches by catalog severity",
     distinctive_matches: "Distinctive-path matches",
     generic_matches: "Generic-path matches",
     cve_first_seen: "First-seen",
@@ -303,12 +309,15 @@ const JA_LABELS: Labels = Labels {
     sensitive_timestamp: "時刻",
     sensitive_records: "秘密・設定ファイルの 2xx レコード",
     cve_list_heading: "観測された CVE",
-    cve_list_note: "Nuclei テンプレート ID は公開 CTI メタデータで、公開 GitHub コード検索へのリンクです。このレポートを開くだけでは外部通信は発生せず、リンクを辿った場合も公開テンプレート ID だけが GitHub に送られ、private 値は送信されません。テンプレート ID・KEV 該否・detectability はカタログ上の情報であり、悪用・侵害・攻撃者特定の判定ではありません。リクエスト件数は観測されたマッチ量であり、悪用の証明ではありません。",
+    cve_list_note: "Nuclei テンプレート ID は公開 CTI メタデータで、公開 GitHub コード検索へのリンクです。このレポートを開くだけでは外部通信は発生せず、リンクを辿った場合も公開テンプレート ID だけが GitHub に送られ、private 値は送信されません。テンプレート ID・KEV 該否・detectability・severity はカタログ上の情報であり、悪用・侵害・攻撃者特定の判定ではありません。Severity は Nuclei テンプレートの info.severity 宣言値であり、Shenron による影響・悪用・侵害の判定ではありません。リクエスト件数は観測されたマッチ量であり、悪用の証明ではありません。",
     cve_id: "CVE ID",
     cve_templates: "テンプレート",
     kev_membership: "CISA KEV",
     kev_badge: "KEV",
     detectability: "検知可能性",
+    catalog_severity: "Severity（カタログ宣言値）",
+    cve_severity_summary: "カタログ severity 別の観測 CVE 数",
+    sigma_severity_summary: "カタログ severity 別の Sigma ルール一致数",
     distinctive_matches: "distinctive-path 一致数",
     generic_matches: "generic-path 一致数",
     cve_first_seen: "初回観測",
@@ -570,7 +579,7 @@ pub fn render_report(
 
     let mut html = format!(
         "<!doctype html><html lang=\"{}\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>{}</title><style>\
-        :root{{color-scheme:dark;--bg:#0b1020;--panel:#151d31;--muted:#a8b3c7;--text:#f4f7fb;--accent:#66d9c2;--warn:#ffcf66;--danger:#ff6b78;--line:#33415f}}*{{box-sizing:border-box}}body{{margin:0;overflow-x:hidden;background:var(--bg);color:var(--text);font:14px/1.5 system-ui,sans-serif}}main{{max-width:1240px;margin:auto;padding:24px;min-width:0}}a{{color:var(--accent)}}.private{{background:#6b1320;border:2px solid var(--danger);padding:16px;font-size:18px;font-weight:800;overflow-wrap:anywhere;word-break:break-word}}.note,.unavailable,.cap{{color:var(--muted)}}.note{{border-left:3px solid var(--warn);padding-left:12px}}.priority{{border:2px solid var(--danger);box-shadow:0 0 0 2px #ff6b7826}}.priority h2{{color:#ff9aa4}}.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;min-width:0}}.card,section{{background:var(--panel);border:1px solid var(--line);border-radius:10px;min-width:0}}.card{{padding:14px;overflow:hidden}}.card span,.card b{{overflow-wrap:anywhere;word-break:break-word}}.card b{{display:block;font-size:24px}}.badge{{display:inline-block;padding:1px 7px;border:1px solid var(--warn);border-radius:999px;color:var(--warn);font-weight:700}}section{{margin-top:18px;padding:18px;overflow:hidden}}h1,h2,h3{{margin-top:0;overflow-wrap:anywhere;word-break:break-word}}.chart-scroll,.table-scroll{{max-width:100%;overflow:auto;max-height:70vh}}svg{{width:100%;height:auto;background:#10172a;border-radius:8px}}.chart-scroll svg{{display:block;min-width:1000px}}.bar{{fill:var(--accent)}}.axis{{stroke:var(--line);stroke-width:1}}.timeline{{fill:none;stroke:var(--accent);stroke-width:3}}.timeline-area{{fill:#66d9c226;stroke:none}}.timeline-dot{{fill:var(--accent)}}.status-line{{fill:none;stroke-width:2.5}}.status-line.s1xx{{stroke:#c084fc}}.status-line.s2xx{{stroke:#4ade80}}.status-line.s3xx{{stroke:#38bdf8}}.status-line.s4xx{{stroke:#facc15}}.status-line.s5xx{{stroke:#fb7185}}.status-key.s1xx{{fill:#c084fc}}.status-key.s2xx{{fill:#4ade80}}.status-key.s3xx{{fill:#38bdf8}}.status-key.s4xx{{fill:#facc15}}.status-key.s5xx{{fill:#fb7185}}.col{{cursor:crosshair}}.hit{{fill:transparent;pointer-events:all}}.col:hover .hit{{fill:#66d9c22e}}.tip{{visibility:hidden;pointer-events:none}}.col:hover .tip{{visibility:visible}}.tip-bg{{fill:#070b14;stroke:var(--accent);stroke-width:1}}.tip-label{{fill:#fff;font-weight:700}}svg text{{fill:var(--text);font:12px system-ui,sans-serif}}table{{width:100%;min-width:1000px;border-collapse:collapse}}th,td{{padding:9px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top;white-space:nowrap}}.score{{width:120px;background:#26334f;border-radius:9px;overflow:hidden}}.score span{{display:block;height:10px;background:var(--accent)}}code{{color:#b9f4e8;overflow-wrap:anywhere;word-break:break-word}}.small{{font-size:12px;color:var(--muted)}}</style></head><body><main>",
+        :root{{color-scheme:dark;--bg:#0b1020;--panel:#151d31;--muted:#a8b3c7;--text:#f4f7fb;--accent:#66d9c2;--warn:#ffcf66;--danger:#ff6b78;--line:#33415f}}*{{box-sizing:border-box}}body{{margin:0;overflow-x:hidden;background:var(--bg);color:var(--text);font:14px/1.5 system-ui,sans-serif}}main{{max-width:1240px;margin:auto;padding:24px;min-width:0}}a{{color:var(--accent)}}.private{{background:#6b1320;border:2px solid var(--danger);padding:16px;font-size:18px;font-weight:800;overflow-wrap:anywhere;word-break:break-word}}.note,.unavailable,.cap{{color:var(--muted)}}.note{{border-left:3px solid var(--warn);padding-left:12px}}.priority{{border:2px solid var(--danger);box-shadow:0 0 0 2px #ff6b7826}}.priority h2{{color:#ff9aa4}}.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;min-width:0}}.card,section{{background:var(--panel);border:1px solid var(--line);border-radius:10px;min-width:0}}.card{{padding:14px;overflow:hidden}}.card span,.card b{{overflow-wrap:anywhere;word-break:break-word}}.card b{{display:block;font-size:24px}}.badge,.severity{{display:inline-block;padding:1px 7px;border:1px solid var(--warn);border-radius:999px;color:var(--warn);font-weight:700}}.severity-high{{border-color:#ff9a62;color:#ff9a62}}.severity-critical{{border-color:var(--danger);color:var(--danger)}}section{{margin-top:18px;padding:18px;overflow:hidden}}h1,h2,h3{{margin-top:0;overflow-wrap:anywhere;word-break:break-word}}.chart-scroll,.table-scroll{{max-width:100%;overflow:auto;max-height:70vh}}svg{{width:100%;height:auto;background:#10172a;border-radius:8px}}.chart-scroll svg{{display:block;min-width:1000px}}.bar{{fill:var(--accent)}}.axis{{stroke:var(--line);stroke-width:1}}.timeline{{fill:none;stroke:var(--accent);stroke-width:3}}.timeline-area{{fill:#66d9c226;stroke:none}}.timeline-dot{{fill:var(--accent)}}.status-line{{fill:none;stroke-width:2.5}}.status-line.s1xx{{stroke:#c084fc}}.status-line.s2xx{{stroke:#4ade80}}.status-line.s3xx{{stroke:#38bdf8}}.status-line.s4xx{{stroke:#facc15}}.status-line.s5xx{{stroke:#fb7185}}.status-key.s1xx{{fill:#c084fc}}.status-key.s2xx{{fill:#4ade80}}.status-key.s3xx{{fill:#38bdf8}}.status-key.s4xx{{fill:#facc15}}.status-key.s5xx{{fill:#fb7185}}.col{{cursor:crosshair}}.hit{{fill:transparent;pointer-events:all}}.col:hover .hit{{fill:#66d9c22e}}.tip{{visibility:hidden;pointer-events:none}}.col:hover .tip{{visibility:visible}}.tip-bg{{fill:#070b14;stroke:var(--accent);stroke-width:1}}.tip-label{{fill:#fff;font-weight:700}}svg text{{fill:var(--text);font:12px system-ui,sans-serif}}table{{width:100%;min-width:1000px;border-collapse:collapse}}th,td{{padding:9px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top;white-space:nowrap}}.score{{width:120px;background:#26334f;border-radius:9px;overflow:hidden}}.score span{{display:block;height:10px;background:var(--accent)}}code{{color:#b9f4e8;overflow-wrap:anywhere;word-break:break-word}}.small{{font-size:12px;color:var(--muted)}}</style></head><body><main>",
         language.html_lang(),
         html_escape(labels.title),
     );
@@ -698,7 +707,52 @@ fn render_summary(html: &mut String, artifacts: &ReportArtifacts, language: Repo
             group_thousands(tiers.get("high").copied().unwrap_or_default() as u64),
         ));
     }
+    render_catalog_severity_summary(html, artifacts, language);
     html.push_str("</section>");
+}
+
+fn render_catalog_severity_summary(
+    html: &mut String,
+    artifacts: &ReportArtifacts,
+    language: ReportLanguage,
+) {
+    let labels = language.labels();
+    for (label, path) in [
+        (
+            labels.cve_severity_summary,
+            "/metrics/cve_findings_by_severity",
+        ),
+        (
+            labels.sigma_severity_summary,
+            "/metrics/sigma_matches_by_severity",
+        ),
+    ] {
+        let Some(counts) = artifacts
+            .sanitized
+            .as_ref()
+            .and_then(|value| value.pointer(path))
+        else {
+            continue;
+        };
+        let count = |severity: &str| {
+            group_thousands(
+                counts
+                    .get(severity)
+                    .and_then(Value::as_u64)
+                    .unwrap_or_default(),
+            )
+        };
+        html.push_str(&format!(
+            "<p class=\"small\">{}: critical={}, high={}, medium={}, low={}, info={}, unknown={}.</p>",
+            html_escape(label),
+            count("critical"),
+            count("high"),
+            count("medium"),
+            count("low"),
+            count("info"),
+            count("unknown"),
+        ));
+    }
 }
 
 fn render_sensitive_success_findings(
@@ -1089,13 +1143,14 @@ fn render_cve_list(html: &mut String, artifacts: &ReportArtifacts, language: Rep
         "<section id=\"observed-cves\"><h2>{}</h2><p class=\"note\">{}</p>\
          <div class=\"table-scroll\"><table><thead><tr>\
          <th>{}</th><th>{}</th><th>{}</th><th>{}</th><th>{}</th><th>{}</th>\
-         <th>{}</th><th>{}</th><th>{}</th><th>{}</th></tr></thead><tbody>",
+         <th>{}</th><th>{}</th><th>{}</th><th>{}</th><th>{}</th></tr></thead><tbody>",
         html_escape(labels.cve_list_heading),
         html_escape(labels.cve_list_note),
         html_escape(labels.cve_id),
         html_escape(labels.cve_templates),
         html_escape(labels.kev_membership),
         html_escape(labels.detectability),
+        html_escape(labels.catalog_severity),
         html_escape(labels.requests),
         html_escape(labels.distinctive_matches),
         html_escape(labels.generic_matches),
@@ -1124,6 +1179,10 @@ fn render_cve_list(html: &mut String, artifacts: &ReportArtifacts, language: Rep
             .get("detectability")
             .and_then(Value::as_str)
             .unwrap_or(labels.unavailable);
+        let severity = finding
+            .get("severity")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
         let first_seen = finding
             .get("first_seen")
             .and_then(Value::as_str)
@@ -1137,12 +1196,13 @@ fn render_cve_list(html: &mut String, artifacts: &ReportArtifacts, language: Rep
             .and_then(Value::as_f64)
             .map_or_else(|| "—".to_owned(), |rate| format!("{:.1}%", rate * 100.0));
         html.push_str(&format!(
-            "<tr><td><code>{}</code></td><td>{}</td><td>{}</td><td>{}</td>\
+            "<tr><td><code>{}</code></td><td>{}</td><td>{}</td><td>{}</td><td>{}</td>\
              <td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
             html_escape(cve),
             cve_template_ids(finding),
             kev,
             html_escape(detectability),
+            catalog_severity_badge(severity),
             cve_count(finding, "request_count", language),
             cve_count(finding, "distinctive_path_matches", language),
             cve_count(finding, "generic_path_matches", language),
@@ -1152,6 +1212,18 @@ fn render_cve_list(html: &mut String, artifacts: &ReportArtifacts, language: Rep
         ));
     }
     html.push_str("</tbody></table></div></section>");
+}
+
+fn catalog_severity_badge(severity: &str) -> String {
+    let class = match severity {
+        "critical" => " severity-critical",
+        "high" => " severity-high",
+        _ => "",
+    };
+    format!(
+        "<span class=\"severity{class}\">{}</span>",
+        html_escape(severity)
+    )
 }
 
 fn cve_count(finding: &Value, field: &str, language: ReportLanguage) -> String {
@@ -2135,12 +2207,23 @@ mod tests {
     fn observed_cve_card_links_to_the_sanitized_cve_table() {
         let artifacts = ReportArtifacts {
             sanitized: Some(serde_json::json!({
+                "metrics": {
+                    "cve_findings_by_severity": {
+                        "unknown": 0, "info": 0, "low": 0,
+                        "medium": 0, "high": 0, "critical": 1
+                    },
+                    "sigma_matches_by_severity": {
+                        "unknown": 0, "info": 0, "low": 0,
+                        "medium": 1234, "high": 0, "critical": 0
+                    }
+                },
                 "cve_findings": [
                     {
                         "cve": "CVE-2026-10001",
                         "template_ids": ["nuclei-template-a", "nuclei-template-b", "nuclei-template-<escaped>"],
                         "cisa_kev": true,
                         "detectability": "HIGH",
+                        "severity": "critical",
                         "request_count": 1234,
                         "distinctive_path_matches": 1200,
                         "generic_path_matches": 34,
@@ -2170,6 +2253,11 @@ mod tests {
             "<section id=\"observed-cves\">",
             "CVE-2026-10001",
             "Templates",
+            "Severity",
+            "<span class=\"severity severity-critical\">critical</span>",
+            "Observed CVEs by catalog severity: critical=1",
+            "Sigma rule matches by catalog severity: critical=0, high=0, medium=1,234",
+            "Severity is the Nuclei template&#39;s declared info.severity value",
             "https://github.com/search?q=repo:projectdiscovery/nuclei-templates+nuclei-template-a&amp;type=code",
             "rel=\"noreferrer noopener\" target=\"_blank\">nuclei-template-a</a>",
             "nuclei-template-&lt;escaped&gt;</a>",
@@ -2186,8 +2274,9 @@ mod tests {
         }
         assert!(!html.contains("CVE-&<escaped>"));
         assert!(!html.contains("nuclei-template-<escaped>"));
-        assert_eq!(html.matches("<th>").count(), 10);
-        assert_eq!(html.matches("<td>").count(), 20);
+        assert_eq!(html.matches("<th>").count(), 11);
+        assert_eq!(html.matches("<td>").count(), 22);
+        assert!(html.contains("<span class=\"severity\">unknown</span>"));
         assert_eq!(
             cve_template_ids(&serde_json::json!({"template_ids": []})),
             "—"

@@ -39,12 +39,17 @@ focused-path request timelines, a five-line global timeline split into HTTP
 status classes 1xx through 5xx, focused-path network-prefix bars when present,
 the hunt triage table, and a sanitized aggregate row for each observed CVE. The
 Observed CVEs summary card links to that final section when CVE rows exist. It
-lists the matching Nuclei template IDs, catalog KEV membership, and
-detectability alongside aggregate request, path-distinctiveness, time-range,
+lists the matching Nuclei template IDs, catalog KEV membership, detectability,
+and catalog-declared severity alongside aggregate request, path-distinctiveness, time-range,
 and protection-gap fields. Template IDs are public CTI metadata and are also
 stored in each sanitized CVE finding as the sorted `template_ids` array; this
 adds no customer telemetry value. These fields remain catalog and matcher-volume
 context, not an exploitation, compromise, or attacker-identity determination.
+CVE severity is the strongest `info.severity` declared by a matching Nuclei
+template; Sigma severity counts normalize the matching rules' `level` values.
+Both are source-catalog declarations rather than Shenron judgments of impact,
+exploitation, compromise, maliciousness, or attribution. The aggregate summary
+shows both CVE and Sigma counts by normalized severity.
 `--limit` defaults to 20 and controls private
 path, IP, prefix, and triage rows; `0` shows all. The CVE list remains complete.
 The timeline uses at most 240 points.

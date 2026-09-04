@@ -8,7 +8,7 @@ use assert_cmd::Command;
 use predicates::str::contains;
 use shenron::nuclei::{
     combined_header_dependencies, compare_telemetry, coverage, inventory, path_distinctiveness,
-    ConversionStatus, Detectability, PathDistinctiveness, RequestSpecificity,
+    CatalogSeverity, ConversionStatus, Detectability, PathDistinctiveness, RequestSpecificity,
 };
 use shenron::waf::parse_line;
 use tempfile::tempdir;
@@ -54,6 +54,10 @@ fn classifies_detectability_separately_from_conversion() {
         ConversionStatus::Supported
     );
     assert_eq!(
+        template("synthetic-cve-2024-10001").severity,
+        CatalogSeverity::High
+    );
+    assert_eq!(
         template("synthetic-cve-2024-10002").conversion_status,
         ConversionStatus::Supported
     );
@@ -90,6 +94,26 @@ fn classifies_detectability_separately_from_conversion() {
             .conversion_reason
             .as_deref(),
         Some("multi_request_unsupported")
+    );
+}
+
+#[test]
+fn normalizes_catalog_severity_without_reinterpreting_unknown_values() {
+    assert_eq!(
+        CatalogSeverity::from_catalog_value(Some("CRITICAL")),
+        CatalogSeverity::Critical
+    );
+    assert_eq!(
+        CatalogSeverity::from_catalog_value(Some("informational")),
+        CatalogSeverity::Info
+    );
+    assert_eq!(
+        CatalogSeverity::from_catalog_value(Some("custom")),
+        CatalogSeverity::Unknown
+    );
+    assert_eq!(
+        CatalogSeverity::from_catalog_value(None),
+        CatalogSeverity::Unknown
     );
 }
 
@@ -428,6 +452,7 @@ fn malformed_template_is_reported_as_unknown_without_stopping_inventory() {
     let report = inventory(directory.path(), "fixture-revision");
     assert_eq!(report.metrics.templates_scanned, 1);
     assert_eq!(report.templates[0].detectability, Detectability::Unknown);
+    assert_eq!(report.templates[0].severity, CatalogSeverity::Unknown);
     assert_eq!(
         report.templates[0].conversion_reason.as_deref(),
         Some("nuclei_parse_error")
