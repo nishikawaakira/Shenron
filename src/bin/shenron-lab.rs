@@ -38,6 +38,9 @@ use shenron::reputation_update::{
     IPTOASN_V4_URL, SPAMHAUS_DROP_URL,
 };
 
+const CISA_KEV_URL: &str =
+    "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json";
+
 #[derive(Debug, Parser)]
 #[command(
     name = "shenron-lab",
@@ -115,11 +118,14 @@ enum Command {
         #[command(subcommand)]
         command: BotRangesCommand,
     },
-    /// Prepare public Nuclei, reputation, and ASN inputs in one download-only step.
+    /// Prepare public Nuclei, KEV, reputation, ASN, Sigma, and bot-range inputs.
     Setup {
         /// Skip the public Nuclei template checkout and frozen coverage report.
         #[arg(long)]
         skip_nuclei: bool,
+        /// Skip downloading and joining the public CISA KEV catalog.
+        #[arg(long)]
+        skip_kev: bool,
         /// Skip the public IP reputation dataset.
         #[arg(long)]
         skip_reputation: bool,
@@ -154,6 +160,9 @@ enum Command {
         /// Optional pinned Nuclei revision.
         #[arg(long)]
         nuclei_revision: Option<String>,
+        /// Public CISA Known Exploited Vulnerabilities catalog URL.
+        #[arg(long, default_value = CISA_KEV_URL)]
+        kev_source: String,
         /// Public Spamhaus DROP source URL.
         #[arg(long, default_value = SPAMHAUS_DROP_URL)]
         spamhaus_drop_source: String,
@@ -589,6 +598,7 @@ fn main() -> Result<()> {
         },
         Command::Setup {
             skip_nuclei,
+            skip_kev,
             skip_reputation,
             skip_asn,
             skip_sigma,
@@ -598,32 +608,37 @@ fn main() -> Result<()> {
             bot_range_catalog,
             nuclei_repo,
             nuclei_revision,
+            kev_source,
             spamhaus_drop_source,
             firehol_source,
             cins_source,
             blocklist_de_source,
             iptoasn_source,
-        } => run_setup(
-            &data_dir.unwrap_or_else(default_data_dir),
-            setup_plan(
+        } => {
+            let plan = setup_plan(
                 skip_nuclei,
+                skip_kev,
                 skip_reputation,
                 skip_asn,
                 skip_sigma,
                 skip_bot_ranges,
-            ),
-            &nuclei_repo,
-            nuclei_revision,
-            ReputationSources {
-                spamhaus_drop: &spamhaus_drop_source,
-                firehol: &firehol_source,
-                cins: &cins_source,
-                blocklist_de: &blocklist_de_source,
-                iptoasn: &iptoasn_source,
-            },
-            &sigma_source,
-            bot_range_catalog.as_deref(),
-        )?,
+            );
+            let inputs = SetupInputs {
+                nuclei_repo: &nuclei_repo,
+                nuclei_revision,
+                kev_source: &kev_source,
+                reputation_sources: ReputationSources {
+                    spamhaus_drop: &spamhaus_drop_source,
+                    firehol: &firehol_source,
+                    cins: &cins_source,
+                    blocklist_de: &blocklist_de_source,
+                    iptoasn: &iptoasn_source,
+                },
+                sigma_sources: &sigma_source,
+                bot_range_catalog: bot_range_catalog.as_deref(),
+            };
+            run_setup(&data_dir.unwrap_or_else(default_data_dir), plan, inputs)?;
+        }
         Command::MinimumTelemetry {
             templates,
             comparison,
@@ -745,9 +760,129 @@ fn run_nuclei_update(
     Ok(())
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum KevSetupOutcome {
+    Joined,
+    SnapshotOnly { reason: String },
+}
+
+#[derive(Serialize)]
+struct KevUpdateManifest {
+    report_kind: &'static str,
+    generated_at: chrono::DateTime<Utc>,
+    safety_note: &'static str,
+    source: KevSourceProvenance,
+    outputs: Vec<PublicOutputManifest>,
+    join_status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    join_reason: Option<String>,
+}
+
+#[derive(Serialize)]
+struct KevSourceProvenance {
+    url: String,
+    retrieved_at: chrono::DateTime<Utc>,
+    sha256: String,
+    records: usize,
+}
+
+/// Download the public CISA catalog and, when a frozen Nuclei report is
+/// available, build the existing deterministic KEV/Nuclei join. No telemetry
+/// or customer-derived value is passed to curl.
+fn update_kev_inputs(
+    data_dir: &Path,
+    source_url: &str,
+    nuclei_report: &Path,
+) -> Result<KevSetupOutcome> {
+    fs::create_dir_all(data_dir)
+        .with_context(|| format!("creating setup data directory {}", data_dir.display()))?;
+    let staging = data_dir.join(format!(
+        ".kev-download-{}-{}",
+        std::process::id(),
+        Utc::now().timestamp_nanos_opt().unwrap_or_default()
+    ));
+    let result = (|| {
+        curl_download(source_url, &staging)?;
+        let catalog_bytes = fs::read(&staging)
+            .with_context(|| format!("reading downloaded KEV catalog {}", staging.display()))?;
+        let records = kev_catalog_record_count(&catalog_bytes)?;
+        let retrieved_at = Utc::now();
+        let snapshot = data_dir.join("known_exploited_vulnerabilities.json");
+        fs::copy(&staging, &snapshot)
+            .with_context(|| format!("writing frozen KEV snapshot {}", snapshot.display()))?;
+        let source = KevSourceProvenance {
+            url: source_url.to_owned(),
+            retrieved_at,
+            sha256: sha256_file(&snapshot)?,
+            records,
+        };
+        let mut outputs = vec![output_manifest_entry(&snapshot, records)?];
+
+        let (join_status, join_reason, outcome, join_error) = if nuclei_report.is_file() {
+            match kev_coverage(&snapshot, nuclei_report) {
+                Ok(coverage) => {
+                    let report_path = data_dir.join("kev-report.json");
+                    serde_json::to_writer_pretty(File::create(&report_path)?, &coverage)?;
+                    outputs.push(output_manifest_entry(
+                        &report_path,
+                        coverage.metrics.total_kevs,
+                    )?);
+                    ("completed", None, Some(KevSetupOutcome::Joined), None)
+                }
+                Err(error) => (
+                    "failed",
+                    Some(error.to_string()),
+                    None,
+                    Some(error.context("joining the downloaded KEV catalog to the Nuclei report")),
+                ),
+            }
+        } else {
+            let reason = format!(
+                "KEV join omitted because no Nuclei report was available at {}",
+                nuclei_report.display()
+            );
+            (
+                "skipped",
+                Some(reason.clone()),
+                Some(KevSetupOutcome::SnapshotOnly { reason }),
+                None,
+            )
+        };
+
+        let manifest = KevUpdateManifest {
+            report_kind: "PUBLIC_CISA_KEV_UPDATE",
+            generated_at: retrieved_at,
+            safety_note: "Public CISA KEV download only. No customer logs, findings, observed IP addresses, request values, or other customer data were transmitted.",
+            source,
+            outputs,
+            join_status,
+            join_reason,
+        };
+        let manifest_path = data_dir.join("kev-manifest.json");
+        serde_json::to_writer_pretty(File::create(&manifest_path)?, &manifest)?;
+        if let Some(error) = join_error {
+            return Err(error);
+        }
+        outcome.context("KEV setup outcome is missing")
+    })();
+    let _ = fs::remove_file(staging);
+    result
+}
+
+fn kev_catalog_record_count(input: &[u8]) -> Result<usize> {
+    let value: serde_json::Value =
+        serde_json::from_slice(input).context("parsing downloaded CISA KEV catalog")?;
+    value
+        .get("vulnerabilities")
+        .and_then(serde_json::Value::as_array)
+        .map(Vec::len)
+        .context("downloaded CISA KEV catalog has no vulnerabilities array")
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct SetupPlan {
     include_nuclei: bool,
+    include_kev: bool,
     include_reputation: bool,
     include_asn: bool,
     include_sigma: bool,
@@ -756,6 +891,7 @@ struct SetupPlan {
 
 fn setup_plan(
     skip_nuclei: bool,
+    skip_kev: bool,
     skip_reputation: bool,
     skip_asn: bool,
     skip_sigma: bool,
@@ -763,6 +899,7 @@ fn setup_plan(
 ) -> SetupPlan {
     SetupPlan {
         include_nuclei: !skip_nuclei,
+        include_kev: !skip_kev,
         include_reputation: !skip_reputation,
         include_asn: !skip_asn,
         include_sigma: !skip_sigma,
@@ -770,44 +907,63 @@ fn setup_plan(
     }
 }
 
-fn run_setup(
-    data_dir: &Path,
-    plan: SetupPlan,
-    nuclei_repo: &str,
+struct SetupInputs<'a> {
+    nuclei_repo: &'a str,
     nuclei_revision: Option<String>,
-    reputation_sources: ReputationSources<'_>,
-    sigma_sources: &[String],
-    bot_range_catalog: Option<&Path>,
-) -> Result<()> {
+    kev_source: &'a str,
+    reputation_sources: ReputationSources<'a>,
+    sigma_sources: &'a [String],
+    bot_range_catalog: Option<&'a Path>,
+}
+
+fn run_setup(data_dir: &Path, plan: SetupPlan, inputs: SetupInputs<'_>) -> Result<()> {
     if !plan.include_nuclei
+        && !plan.include_kev
         && !plan.include_reputation
         && !plan.include_asn
         && !plan.include_sigma
         && !plan.include_bot_ranges
     {
         println!("Setup summary: no preparation steps selected (all were skipped).");
+        println!("  skipped: CISA KEV preparation (--skip-kev)");
         return Ok(());
     }
 
     let mut completed = Vec::new();
+    let mut skipped = Vec::new();
     let mut failures = Vec::new();
     if plan.include_nuclei {
         match run_nuclei_update(
             Some(data_dir.join("nuclei-templates")),
-            nuclei_revision,
-            nuclei_repo,
+            inputs.nuclei_revision,
+            inputs.nuclei_repo,
             Some(data_dir.join("nuclei-report.json")),
         ) {
             Ok(()) => completed.push("Nuclei templates and frozen report".to_owned()),
             Err(error) => failures.push(("Nuclei templates and frozen report", error)),
         }
     }
+    if plan.include_kev {
+        match update_kev_inputs(
+            data_dir,
+            inputs.kev_source,
+            &data_dir.join("nuclei-report.json"),
+        ) {
+            Ok(KevSetupOutcome::Joined) => {
+                completed.push("CISA KEV snapshot and frozen join report".to_owned())
+            }
+            Ok(KevSetupOutcome::SnapshotOnly { reason }) => skipped.push(reason),
+            Err(error) => failures.push(("CISA KEV snapshot and frozen join report", error)),
+        }
+    } else {
+        skipped.push("CISA KEV preparation (--skip-kev)".to_owned());
+    }
     if plan.include_reputation || plan.include_asn {
         match update_reputation_inputs(
             data_dir,
             plan.include_reputation,
             plan.include_asn,
-            reputation_sources,
+            inputs.reputation_sources,
             false,
         ) {
             Ok(()) => completed.push("reputation/ASN inputs".to_owned()),
@@ -815,13 +971,17 @@ fn run_setup(
         }
     }
     if plan.include_sigma {
-        match install_sigma_rules(data_dir, sigma_sources) {
+        match install_sigma_rules(data_dir, inputs.sigma_sources) {
             Ok(summary) => completed.push(summary),
             Err(error) => failures.push(("Sigma rules", error)),
         }
     }
     if plan.include_bot_ranges {
-        match update_bot_ranges(&data_dir.join("bot-ranges.json"), bot_range_catalog, false) {
+        match update_bot_ranges(
+            &data_dir.join("bot-ranges.json"),
+            inputs.bot_range_catalog,
+            false,
+        ) {
             Ok(()) => completed.push("published crawler ranges".to_owned()),
             Err(error) => failures.push(("published crawler ranges", error)),
         }
@@ -830,6 +990,9 @@ fn run_setup(
     println!("Setup summary:");
     for step in completed {
         println!("  completed: {step}");
+    }
+    for step in skipped {
+        println!("  skipped: {step}");
     }
     for (step, error) in &failures {
         println!("  failed: {step}: {error}");
@@ -1092,7 +1255,7 @@ struct ReputationUpdateManifest {
     generated_at: chrono::DateTime<Utc>,
     safety_note: &'static str,
     sources: Vec<ReputationSourceManifest>,
-    outputs: Vec<ReputationOutputManifest>,
+    outputs: Vec<PublicOutputManifest>,
 }
 
 #[derive(Serialize)]
@@ -1103,7 +1266,7 @@ struct ReputationSourceManifest {
 }
 
 #[derive(Serialize)]
-struct ReputationOutputManifest {
+struct PublicOutputManifest {
     path: String,
     sha256: String,
     records: usize,
@@ -1270,8 +1433,8 @@ fn curl_download(url: &str, destination: &Path) -> Result<()> {
     Ok(())
 }
 
-fn output_manifest_entry(path: &Path, records: usize) -> Result<ReputationOutputManifest> {
-    Ok(ReputationOutputManifest {
+fn output_manifest_entry(path: &Path, records: usize) -> Result<PublicOutputManifest> {
+    Ok(PublicOutputManifest {
         path: path.display().to_string(),
         sha256: sha256_file(path)?,
         records,
@@ -1404,14 +1567,19 @@ fn print_minimum_telemetry(report: &MinimumTelemetryReport) {
 
 #[cfg(test)]
 mod setup_tests {
-    use super::{setup_plan, SetupPlan};
+    use std::fs;
+
+    use tempfile::tempdir;
+
+    use super::{setup_plan, update_kev_inputs, KevSetupOutcome, SetupPlan};
 
     #[test]
     fn setup_skip_flags_select_the_expected_preparation_inputs() {
         assert_eq!(
-            setup_plan(false, false, false, false, false),
+            setup_plan(false, false, false, false, false, false),
             SetupPlan {
                 include_nuclei: true,
+                include_kev: true,
                 include_reputation: true,
                 include_asn: true,
                 include_sigma: true,
@@ -1419,9 +1587,10 @@ mod setup_tests {
             }
         );
         assert_eq!(
-            setup_plan(true, false, true, false, true),
+            setup_plan(true, false, false, true, false, true),
             SetupPlan {
                 include_nuclei: false,
+                include_kev: true,
                 include_reputation: true,
                 include_asn: false,
                 include_sigma: true,
@@ -1429,14 +1598,72 @@ mod setup_tests {
             }
         );
         assert_eq!(
-            setup_plan(true, true, true, true, true),
+            setup_plan(true, true, true, true, true, true),
             SetupPlan {
                 include_nuclei: false,
+                include_kev: false,
                 include_reputation: false,
                 include_asn: false,
                 include_sigma: false,
                 include_bot_ranges: false,
             }
         );
+    }
+
+    #[test]
+    fn kev_setup_freezes_snapshot_join_and_provenance_without_network_access() {
+        let directory = tempdir().unwrap();
+        let data_dir = directory.path();
+        fs::copy(
+            "tests/fixtures/kev/nuclei-report.json",
+            data_dir.join("nuclei-report.json"),
+        )
+        .unwrap();
+        let catalog = fs::canonicalize("tests/fixtures/kev/catalog.json").unwrap();
+        let source = format!("file://{}", catalog.display());
+
+        assert_eq!(
+            update_kev_inputs(data_dir, &source, &data_dir.join("nuclei-report.json")).unwrap(),
+            KevSetupOutcome::Joined
+        );
+        assert!(data_dir
+            .join("known_exploited_vulnerabilities.json")
+            .is_file());
+        assert!(data_dir.join("kev-report.json").is_file());
+        let manifest: serde_json::Value =
+            serde_json::from_reader(fs::File::open(data_dir.join("kev-manifest.json")).unwrap())
+                .unwrap();
+        assert_eq!(manifest["source"]["url"], source);
+        assert!(manifest["source"]["retrieved_at"].is_string());
+        assert_eq!(manifest["source"]["sha256"].as_str().unwrap().len(), 64);
+        assert!(manifest["source"]["records"].as_u64().unwrap() > 0);
+        assert_eq!(manifest["join_status"], "completed");
+        assert_eq!(manifest["outputs"].as_array().unwrap().len(), 2);
+        for output in manifest["outputs"].as_array().unwrap() {
+            assert_eq!(output["sha256"].as_str().unwrap().len(), 64);
+            assert!(output["records"].as_u64().is_some());
+        }
+    }
+
+    #[test]
+    fn kev_setup_keeps_the_snapshot_but_skips_join_without_a_nuclei_report() {
+        let directory = tempdir().unwrap();
+        let catalog = fs::canonicalize("tests/fixtures/kev/catalog.json").unwrap();
+        let source = format!("file://{}", catalog.display());
+        let missing = directory.path().join("nuclei-report.json");
+
+        let outcome = update_kev_inputs(directory.path(), &source, &missing).unwrap();
+        let KevSetupOutcome::SnapshotOnly { reason } = outcome else {
+            panic!("missing Nuclei report must skip only the KEV join");
+        };
+        assert!(reason.contains("no Nuclei report was available"));
+        assert!(directory
+            .path()
+            .join("known_exploited_vulnerabilities.json")
+            .is_file());
+        assert!(!directory.path().join("kev-report.json").exists());
+        let manifest = fs::read_to_string(directory.path().join("kev-manifest.json")).unwrap();
+        assert!(manifest.contains(r#""join_status": "skipped""#));
+        assert!(manifest.contains("no Nuclei report was available"));
     }
 }

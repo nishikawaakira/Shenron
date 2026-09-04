@@ -1,5 +1,7 @@
 use std::fs;
 
+use assert_cmd::Command;
+use predicates::str::contains;
 use shenron::{
     concentration::{FocusPrefixLengths, FocusSelector},
     event::TelemetryProfile,
@@ -191,4 +193,22 @@ fn volumetric_concentration_profile_renders_every_supported_telemetry_format() {
         assert!(fs::metadata(corpus).unwrap().len() > 0);
         assert!(fs::metadata(truth).unwrap().len() > 0);
     }
+}
+
+#[test]
+fn setup_reports_an_explicit_kev_skip_without_network_access() {
+    Command::cargo_bin("shenron-lab")
+        .unwrap()
+        .args([
+            "setup",
+            "--skip-nuclei",
+            "--skip-kev",
+            "--skip-reputation",
+            "--skip-asn",
+            "--skip-sigma",
+            "--skip-bot-ranges",
+        ])
+        .assert()
+        .success()
+        .stdout(contains("skipped: CISA KEV preparation (--skip-kev)"));
 }

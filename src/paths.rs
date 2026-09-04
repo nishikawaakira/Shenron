@@ -30,6 +30,16 @@ pub fn default_nuclei_report() -> PathBuf {
     default_data_dir().join("nuclei-report.json")
 }
 
+/// Default downloaded CISA KEV catalog created by `shenron-lab setup`.
+pub fn default_kev_snapshot() -> PathBuf {
+    default_data_dir().join("known_exploited_vulnerabilities.json")
+}
+
+/// Default frozen KEV/Nuclei join report created by `shenron-lab setup`.
+pub fn default_kev_report() -> PathBuf {
+    default_data_dir().join("kev-report.json")
+}
+
 /// Default local reputation dataset created by `shenron-lab reputation update`.
 pub fn default_reputation_dataset() -> PathBuf {
     default_data_dir().join("reputation.jsonl")

@@ -34,7 +34,7 @@ use shenron::{
     observation_store::{update_observation_store, ObservationStoreLimits},
     output::{Finding, FindingWriter},
     paths::{
-        default_asn_dataset, default_bot_range_snapshot, default_nuclei_report,
+        default_asn_dataset, default_bot_range_snapshot, default_kev_report, default_nuclei_report,
         default_reputation_dataset, default_sigma_rules_dir, default_templates_dir,
     },
     production::{
@@ -755,6 +755,7 @@ fn main() -> Result<()> {
                 }
                 let (nuclei_templates, nuclei_report) =
                     resolve_nuclei_inputs(nuclei_templates, nuclei_report)?;
+                let kev_report = resolve_optional_local_dataset(kev_report, default_kev_report);
                 let output = output.unwrap_or_else(default_hunt_output);
                 let sigma_ruleset = resolve_sigma_ruleset(rules, no_sigma);
                 let bot_range_path = bot_ranges.or_else(|| {
@@ -970,6 +971,7 @@ fn main() -> Result<()> {
             } => {
                 let (nuclei_templates, nuclei_report) =
                     resolve_nuclei_inputs(nuclei_templates, nuclei_report)?;
+                let kev_report = resolve_optional_local_dataset(kev_report, default_kev_report);
                 let report = production_ablation(
                     &input,
                     &nuclei_templates,
@@ -997,6 +999,7 @@ fn main() -> Result<()> {
             } => {
                 let (nuclei_templates, nuclei_report) =
                     resolve_nuclei_inputs(nuclei_templates, nuclei_report)?;
+                let kev_report = resolve_optional_local_dataset(kev_report, default_kev_report);
                 if let Some(path) = output.as_deref() {
                     shenron::production::ensure_separate_output(&input, path)?;
                 }
@@ -1029,6 +1032,7 @@ fn main() -> Result<()> {
             } => {
                 let (nuclei_templates, nuclei_report) =
                     resolve_nuclei_inputs(nuclei_templates, nuclei_report)?;
+                let kev_report = resolve_optional_local_dataset(kev_report, default_kev_report);
                 if let Some(path) = output.as_deref() {
                     shenron::production::ensure_separate_output(&input, path)?;
                 }

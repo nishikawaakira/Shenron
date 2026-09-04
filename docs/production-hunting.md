@@ -8,7 +8,7 @@ Inspect structure before a hunt. This command reports only counts, timestamps, a
 cargo run --bin shenron -- inspect --input ./production-waf-logs --sample 10000
 ```
 
-Prepare public Nuclei templates, reputation, ASN, and published crawler-range
+Prepare public Nuclei templates, CISA KEV, reputation, ASN, and published crawler-range
 inputs once. This
 downloads public intelligence only and never sends customer data:
 
@@ -18,8 +18,10 @@ shenron-lab setup
 
 The default data directory is `$SHENRON_DATA_DIR` when set, otherwise
 `$XDG_DATA_HOME/shenron` and then `~/.local/share/shenron`. Update writes
-`nuclei-templates/`, `nuclei-report.json`, `reputation.jsonl`,
-`asn-ranges.tsv`, `bot-ranges.json`, and the bundled Sigma pack under
+`nuclei-templates/`, `nuclei-report.json`, the downloaded CISA catalog as
+`known_exploited_vulnerabilities.json`, its frozen join as `kev-report.json`,
+KEV provenance as `kev-manifest.json`, `reputation.jsonl`, `asn-ranges.tsv`,
+`bot-ranges.json`, and the bundled Sigma pack under
 `sigma-rules/shenron-pack/` there. A full hunt then needs only a safely
 recognizable local input:
 
@@ -40,14 +42,16 @@ one of those explicit formats.
 `--nuclei-templates` and `--nuclei-report` remain available to select an
 explicit frozen checkout/report pair. If neither default input exists, Shenron
 asks you to run `shenron-lab nuclei update` or `shenron-lab setup` first. `--kev-report` is optional;
-when omitted, KEV membership is empty. The same prepared-input defaults apply
+when omitted, the prepared default is used if present and otherwise KEV
+membership is empty. The same prepared-input defaults apply
 to `ablation`, `replay`, and `count-hypotheses`.
 
 `shenron-lab setup` is an explicit download-only preparation command. It
-refreshes public Nuclei templates and their frozen report together with public
-reputation and ASN inputs in one local data directory; it never uploads logs,
+refreshes public Nuclei templates and their frozen report together with the
+public CISA KEV catalog and frozen Nuclei join, public reputation, and ASN
+inputs in one local data directory; it never uploads logs,
 findings, observed IPs, request values, or other customer data. Use
-`--skip-nuclei`, `--skip-reputation`, `--skip-asn`, `--skip-sigma`, or
+`--skip-nuclei`, `--skip-kev`, `--skip-reputation`, `--skip-asn`, `--skip-sigma`, or
 `--skip-bot-ranges` to omit a family. `setup` installs the bundled,
 Shenron-supported Sigma pack into
 `<data-dir>/sigma-rules/shenron-pack/` (no network needed for it), which the
@@ -60,6 +64,12 @@ user's responsibility. The existing `nuclei update` and `reputation update`
 commands remain available for individual refreshes, and `bot-ranges update`
 refreshes only the operator-published crawler snapshot. The main `shenron`
 analysis binary remains offline.
+
+KEV preparation records the source URL, retrieval time, SHA-256, record count,
+and output hashes in `kev-manifest.json`. If `--skip-nuclei` is used, setup
+joins the catalog to an existing `nuclei-report.json`; when no such report is
+available, it still freezes the public catalog but skips the join with an
+explicit reason and does not treat that dependency skip as a setup failure.
 
 When `bot-ranges.json` is present, hunt compares configured self-declared bot
 User-Agents with the frozen operator-published ranges in the existing event

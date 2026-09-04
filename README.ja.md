@@ -108,7 +108,7 @@ cargo run --bin shenron -- validate-rules --rules ./rules/
 
 ## Production hunt（本番ログのハンティング）
 
-公開 Nuclei テンプレート、IP レピュテーション、ASN、公開クローラーレンジを一度準備すれば、安全に識別できるログは入力だけで hunt を実行できます。
+公開 Nuclei テンプレート、CISA KEV、IP レピュテーション、ASN、公開クローラーレンジを一度準備すれば、安全に識別できるログは入力だけで hunt を実行できます。
 
 ```bash
 shenron-lab setup
@@ -117,7 +117,7 @@ shenron hunt --input ./waf-logs
 
 ログ入力コマンドの既定は `--format auto` です。AWS WAF JSON と vhost 前置き Apache Combined は自動識別します。標準 nginx Combined と標準 Apache Combined は構造が同一で安全に区別できないため、その場合だけ `--format nginx` または `--format apache` を指定してください。`--format apache` は標準行と vhost 前置き行の両方を受け付け、`--format apache-vhost` は vhost 前置きを厳格に要求します。
 
-`setup` は `SHENRON_DATA_DIR` があればその配下、なければ `$XDG_DATA_HOME/shenron`、さらに無ければ `~/.local/share/shenron` に `nuclei-templates/`、凍結済みの `nuclei-report.json`、任意の `reputation.jsonl`、`asn-ranges.tsv`、`bot-ranges.json` を保存します。`hunt`、`ablation`、`replay`、`count-hypotheses` は既定でこの場所を参照します。`hunt` の `--output` を省略した場合、`./private-results/hunt-<UTC日時>/` に private artifacts を出力します。従来どおり `--nuclei-templates`、`--nuclei-report`、`--kev-report`、`--output` で明示指定もできます。KEV は任意で、省略時は空集合として扱います。
+`setup` は `SHENRON_DATA_DIR` があればその配下、なければ `$XDG_DATA_HOME/shenron`、さらに無ければ `~/.local/share/shenron` に `nuclei-templates/`、凍結済みの `nuclei-report.json`、CISA KEV の `known_exploited_vulnerabilities.json`、凍結結合結果の `kev-report.json`、provenance を持つ `kev-manifest.json`、任意の `reputation.jsonl`、`asn-ranges.tsv`、`bot-ranges.json` を保存します。`hunt`、`ablation`、`replay`、`count-hypotheses` は既定でこの場所を参照します。`hunt` の `--output` を省略した場合、`./private-results/hunt-<UTC日時>/` に private artifacts を出力します。従来どおり `--nuclei-templates`、`--nuclei-report`、`--kev-report`、`--output` で明示指定もできます。`--kev-report` 省略時は準備済みの既定レポートがあれば参照し、無ければ空集合として扱います。`setup --skip-kev` で KEV 準備だけを省略できます。
 
 個別の公開入力だけを更新したい場合は、従来どおり `shenron-lab nuclei update`、`shenron-lab reputation update`、`shenron-lab bot-ranges update` も使えます。`setup` が取得するのは公開インテリジェンスだけで、顧客データを送信しません。
 

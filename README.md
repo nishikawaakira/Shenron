@@ -119,7 +119,7 @@ cargo run --bin shenron -- validate-rules --rules ./rules/
 
 ## Quick hunt
 
-Prepare public Nuclei, reputation, ASN, and published crawler-range intelligence once, then hunt a
+Prepare public Nuclei, CISA KEV, reputation, ASN, and published crawler-range intelligence once, then hunt a
 safely recognizable local log input without a format option:
 
 ```bash
@@ -137,13 +137,16 @@ and its reputation/ASN inputs in the same data directory when
 `SHENRON_DATA_DIR` is set; otherwise it uses
 `$XDG_DATA_HOME/shenron/nuclei-templates` or
 `~/.local/share/shenron/nuclei-templates`. It writes the matching frozen report
-alongside it as `nuclei-report.json`, plus optional `reputation.jsonl`,
-`asn-ranges.tsv`, and `bot-ranges.json`. Hunt, ablation, replay, and
+alongside it as `nuclei-report.json`, plus the downloaded
+`known_exploited_vulnerabilities.json`, its frozen `kev-report.json` join,
+`kev-manifest.json`, and optional `reputation.jsonl`, `asn-ranges.tsv`, and
+`bot-ranges.json`. Hunt, ablation, replay, and
 count-hypotheses use those locations by default. A hunt without `--output`
 writes private artifacts to `./private-results/hunt-<UTC timestamp>/`.
 `--nuclei-templates`, `--nuclei-report`, `--kev-report`, and `--output` remain
-available for an explicit, reproducible workflow. KEV is optional; omitting it
-uses an empty KEV set.
+available for an explicit, reproducible workflow. If `--kev-report` is omitted,
+the prepared default is used when present; otherwise Shenron uses an empty KEV
+set. `setup --skip-kev` omits KEV preparation.
 
 `shenron-lab nuclei update`, `shenron-lab reputation update`, and `shenron-lab bot-ranges update` remain available
 when only one public input family should be refreshed. `setup` downloads public
