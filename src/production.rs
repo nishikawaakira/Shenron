@@ -18,6 +18,9 @@ use walkdir::WalkDir;
 
 use crate::{
     access_log::{AccessLogFormat, AccessLogLines},
+    bot_ranges::{
+        BotOperatorObservation, BotRangeAccumulator, BotRangeDatabase, PrivateBotRangeReport,
+    },
     concentration::{
         add_focus_asn_groups, add_focus_prefix_groups, FocusPrefixLengths, FocusSelector,
         PrivateRequestConcentrationReport, RequestConcentration, RequestConcentrationSummary,
@@ -127,6 +130,13 @@ pub struct HuntMetrics {
     /// Matching requests whose telemetry did not expose a response status.
     /// Missing status is never treated as a success response.
     pub sensitive_config_probe_status_unavailable: usize,
+    /// Aggregate-only comparison between self-declared bot User-Agents and a
+    /// frozen published-range snapshot. Operator labels are public metadata;
+    /// source addresses remain in the private companion artifact.
+    pub bot_range_observations: Vec<BotOperatorObservation>,
+    /// False when no local snapshot was configured. In that case evaluation is
+    /// skipped without changing any CVE or Sigma metric.
+    pub bot_range_snapshot_loaded: bool,
     /// Aggregate request-volume distribution only. This is separate from CVE
     /// metrics and does not determine attack, abuse, or compromise.
     pub request_concentration: Option<RequestConcentrationSummary>,
@@ -167,6 +177,12 @@ pub struct HuntOptions {
     /// disables the generic Sigma detection layer; the CVE-anchored Nuclei pass
     /// is unaffected either way.
     pub sigma_ruleset: Option<crate::sigma::RuleSet>,
+    /// Optional frozen local published crawler-range database. It is evaluated
+    /// in the existing event stream and never performs network access.
+    pub bot_range_database: Option<BotRangeDatabase>,
+    /// Snapshot path recorded as additional run provenance without changing
+    /// the existing Nuclei/KEV provenance fields or hash behavior.
+    pub bot_range_snapshot_path: Option<PathBuf>,
 }
 
 /// The fixed baseline triage policy recorded with a hunt. Triage itself runs
@@ -460,6 +476,7 @@ struct RunManifestInputs {
     nuclei_templates: PathProvenance,
     nuclei_report: PathProvenance,
     kev_report: Option<PathProvenance>,
+    bot_range_snapshot: Option<PathProvenance>,
     approved_validated_template_count: usize,
 }
 
@@ -734,6 +751,8 @@ pub fn hunt(
             trusted_proxies: TrustedProxySet::default(),
             triage_policy: HuntTriagePolicy::default(),
             sigma_ruleset: None,
+            bot_range_database: None,
+            bot_range_snapshot_path: None,
         },
     )
 }
@@ -752,6 +771,8 @@ pub fn hunt_with_options(
         trusted_proxies,
         triage_policy,
         sigma_ruleset,
+        bot_range_database,
+        bot_range_snapshot_path,
     } = options;
     time_range.validate()?;
     ensure_separate_output(input, output)?;
@@ -787,6 +808,8 @@ pub fn hunt_with_options(
     let mut matched_sigma_rules = BTreeSet::new();
     let mut concentration =
         RequestConcentration::new(telemetry_profile.capabilities().response_bytes);
+    let mut bot_ranges = BotRangeAccumulator::default();
+    metrics.bot_range_snapshot_loaded = bot_range_database.is_some();
     let mut progress = ProgressReporter::new("hunt");
     for path in files {
         stream_events_with_trusted_proxies(&path, telemetry_profile, &trusted_proxies, |result| {
@@ -808,6 +831,9 @@ pub fn hunt_with_options(
             }
             metrics.total_requests_analyzed += 1;
             concentration.observe(&event);
+            if let Some(database) = &bot_range_database {
+                database.observe(&event, &mut bot_ranges);
+            }
             update_time_range(
                 &mut metrics.earliest_timestamp,
                 &mut metrics.latest_timestamp,
@@ -925,6 +951,11 @@ pub fn hunt_with_options(
     }
     private.flush()?;
     write_private_concentration(output, &concentration.private_report())?;
+    if bot_range_database.is_some() {
+        let (observations, private_report) = bot_ranges.reports();
+        metrics.bot_range_observations = observations;
+        write_private_bot_ranges(output, &private_report)?;
+    }
     metrics.distinct_sigma_rules = matched_sigma_rules.len();
     metrics.unique_cves_observed = cves.len();
     metrics.unique_cisa_kevs_observed = cves.values().filter(|item| item.kev).count();
@@ -974,6 +1005,7 @@ pub fn hunt_with_options(
         nuclei_templates,
         nuclei_report,
         kev_report,
+        bot_range_snapshot_path.as_deref(),
         nuclei_revision,
         approved_templates.len(),
         &time_range,
@@ -1149,6 +1181,15 @@ fn write_private_concentration(
     report: &PrivateRequestConcentrationReport,
 ) -> anyhow::Result<()> {
     let path = output.join("request-concentration.json");
+    serde_json::to_writer_pretty(
+        File::create(&path).with_context(|| format!("creating {}", path.display()))?,
+        report,
+    )?;
+    Ok(())
+}
+
+fn write_private_bot_ranges(output: &Path, report: &PrivateBotRangeReport) -> anyhow::Result<()> {
+    let path = output.join("bot-range-observations.json");
     serde_json::to_writer_pretty(
         File::create(&path).with_context(|| format!("creating {}", path.display()))?,
         report,
@@ -1719,6 +1760,7 @@ fn write_run_manifest(
     nuclei_templates: &Path,
     nuclei_report: &Path,
     kev_report: Option<&Path>,
+    bot_range_snapshot: Option<&Path>,
     nuclei_revision: Option<String>,
     approved_validated_template_count: usize,
     time_range: &HuntTimeRange,
@@ -1737,6 +1779,7 @@ fn write_run_manifest(
             nuclei_templates: path_provenance(nuclei_templates),
             nuclei_report: path_provenance(nuclei_report),
             kev_report: kev_report.map(path_provenance),
+            bot_range_snapshot: bot_range_snapshot.map(path_provenance),
             approved_validated_template_count,
         },
         hunt_parameters: RunManifestParameters {

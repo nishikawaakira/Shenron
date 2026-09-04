@@ -40,6 +40,12 @@ pub fn default_asn_dataset() -> PathBuf {
     default_data_dir().join("asn-ranges.tsv")
 }
 
+/// Default frozen published crawler-range snapshot created by
+/// `shenron-lab bot-ranges update` or `shenron-lab setup`.
+pub fn default_bot_range_snapshot() -> PathBuf {
+    default_data_dir().join("bot-ranges.json")
+}
+
 /// Default local Sigma rules directory for the `production hunt` Sigma pass.
 pub fn default_sigma_rules_dir() -> PathBuf {
     default_data_dir().join("sigma-rules")

@@ -1,0 +1,14 @@
+[
+  {
+    "operator_id": "google",
+    "operator_name": "Google",
+    "user_agent_patterns": ["Googlebot", "Google-InspectionTool", "Storebot-Google"],
+    "url": "https://developers.google.com/crawling/ipranges/common-crawlers.json"
+  },
+  {
+    "operator_id": "openai",
+    "operator_name": "OpenAI",
+    "user_agent_patterns": ["ChatGPT-User"],
+    "url": "https://openai.com/chatgpt-user.json"
+  }
+]

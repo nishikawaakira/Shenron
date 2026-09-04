@@ -15,6 +15,7 @@ use walkdir::WalkDir;
 
 use shenron::{
     access_log::{parse_combined_line, AccessLogFormat, AccessLogLines},
+    bot_ranges::load_bot_range_database,
     candidate::{
         build_batch_from_findings, compatibility as candidate_compatibility,
         export as export_candidate, load as load_candidate, replay as replay_candidate,
@@ -28,8 +29,8 @@ use shenron::{
     nuclei::{path_distinctiveness, PathDistinctiveness},
     output::{Finding, FindingWriter},
     paths::{
-        default_asn_dataset, default_nuclei_report, default_reputation_dataset,
-        default_sigma_rules_dir, default_templates_dir,
+        default_asn_dataset, default_bot_range_snapshot, default_nuclei_report,
+        default_reputation_dataset, default_sigma_rules_dir, default_templates_dir,
     },
     production::{
         ablation_with_optional_kev as production_ablation,
@@ -65,6 +66,9 @@ struct Cli {
 }
 
 #[derive(Debug, Subcommand)]
+// CLI variants intentionally keep their typed arguments together. Boxing the
+// entire production command would add dispatch indirection solely for enum size.
+#[allow(clippy::large_enum_variant)]
 enum Command {
     /// Match supported Sigma rules against historical web logs.
     Scan {
@@ -224,6 +228,10 @@ enum ProductionCommand {
         /// Disable the Sigma pass entirely (Nuclei CVE hunting is unaffected).
         #[arg(long, conflicts_with = "results_dir")]
         no_sigma: bool,
+        /// Frozen operator-published crawler ranges. Defaults to the prepared
+        /// data-directory snapshot when present; all matching remains offline.
+        #[arg(long, conflicts_with = "results_dir")]
+        bot_ranges: Option<PathBuf>,
         /// Prior local run-artifact directory to compare after this hunt completes.
         #[arg(long, conflicts_with = "results_dir")]
         baseline: Option<PathBuf>,
@@ -656,6 +664,7 @@ fn main() -> Result<()> {
                 trusted_proxy,
                 rules,
                 no_sigma,
+                bot_ranges,
                 baseline,
                 show_triage,
                 limit,
@@ -688,6 +697,14 @@ fn main() -> Result<()> {
                     resolve_nuclei_inputs(nuclei_templates, nuclei_report)?;
                 let output = output.unwrap_or_else(default_hunt_output);
                 let sigma_ruleset = resolve_sigma_ruleset(rules, no_sigma);
+                let bot_range_path = bot_ranges.or_else(|| {
+                    let path = default_bot_range_snapshot();
+                    path.is_file().then_some(path)
+                });
+                let bot_range_database = bot_range_path
+                    .as_deref()
+                    .map(load_bot_range_database)
+                    .transpose()?;
                 let telemetry_profile = format.telemetry_profile_for_input(&input)?;
                 let report = production_hunt(
                     &input,
@@ -701,6 +718,8 @@ fn main() -> Result<()> {
                         trusted_proxies: TrustedProxySet::new(trusted_proxy),
                         triage_policy: HuntTriagePolicy::default(),
                         sigma_ruleset,
+                        bot_range_database,
+                        bot_range_snapshot_path: bot_range_path,
                     },
                 )?;
                 let sanitized_path = output.join("sanitized-research.json");
@@ -1657,6 +1676,38 @@ fn print_hunt(report: &SanitizedHuntReport, sanitized_path: &Path) {
         metrics.sigma_rule_matches,
         metrics.distinct_sigma_rules,
     );
+    if metrics.bot_range_snapshot_loaded {
+        println!(
+            "\nSelf-declared bot User-Agent / published-range comparison (offline frozen snapshot):"
+        );
+        if metrics.bot_range_observations.is_empty() {
+            println!("  No configured self-declared bot User-Agent patterns were observed.");
+        }
+        for item in &metrics.bot_range_observations {
+            let rate = item
+                .outside_published_ranges_rate
+                .map(|value| format!("{:.1}%", value * 100.0))
+                .unwrap_or_else(|| "unavailable".to_owned());
+            println!(
+                "  {} ({})\n    User-Agent declarations: {}\n    Within published ranges: {} requests / {} distinct observed peers\n    Outside published ranges: {} requests / {} distinct observed peers ({rate})\n    Observed peer unavailable: {}",
+                terminal_safe(&item.operator_name),
+                terminal_safe(&item.operator_id),
+                item.declared_requests,
+                item.within_published_ranges_requests,
+                item.within_published_ranges_distinct_source_ips,
+                item.outside_published_ranges_requests,
+                item.outside_published_ranges_distinct_source_ips,
+                item.source_ip_unavailable_requests,
+            );
+        }
+        println!(
+            "  A User-Agent-named operator whose observed peer is outside its published ranges is only that: outside the frozen published ranges. Lists may be incomplete or stale, intermediaries can rewrite peers, and any client can set a User-Agent. This is for review, not a determination of impersonation, attack, or abuse."
+        );
+    } else {
+        println!(
+            "\nSelf-declared bot range comparison: skipped (no frozen snapshot; run `shenron-lab bot-ranges update`). CVE and Sigma metrics are unaffected."
+        );
+    }
     if metrics.sensitive_config_probe_matches != 0 {
         println!(
             "\nSensitive file/config probe review context:\n  Matching requests:         {}\n  2xx responses:             {}\n  Status unavailable:        {}",

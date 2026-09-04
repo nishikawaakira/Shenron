@@ -8,7 +8,8 @@ Inspect structure before a hunt. This command reports only counts, timestamps, a
 cargo run --bin shenron -- inspect --input ./production-waf-logs --sample 10000
 ```
 
-Prepare public Nuclei templates, reputation, and ASN inputs once. This
+Prepare public Nuclei templates, reputation, ASN, and published crawler-range
+inputs once. This
 downloads public intelligence only and never sends customer data:
 
 ```bash
@@ -18,8 +19,9 @@ shenron-lab setup
 The default data directory is `$SHENRON_DATA_DIR` when set, otherwise
 `$XDG_DATA_HOME/shenron` and then `~/.local/share/shenron`. Update writes
 `nuclei-templates/`, `nuclei-report.json`, `reputation.jsonl`,
-`asn-ranges.tsv`, and the bundled Sigma pack under `sigma-rules/shenron-pack/`
-there. A full hunt then needs only a safely recognizable local input:
+`asn-ranges.tsv`, `bot-ranges.json`, and the bundled Sigma pack under
+`sigma-rules/shenron-pack/` there. A full hunt then needs only a safely
+recognizable local input:
 
 ```bash
 cargo run --bin shenron -- hunt \
@@ -45,8 +47,9 @@ to `ablation`, `replay`, and `count-hypotheses`.
 refreshes public Nuclei templates and their frozen report together with public
 reputation and ASN inputs in one local data directory; it never uploads logs,
 findings, observed IPs, request values, or other customer data. Use
-`--skip-nuclei`, `--skip-reputation`, `--skip-asn`, or `--skip-sigma` to omit a
-family. `setup` installs the bundled, Shenron-supported Sigma pack into
+`--skip-nuclei`, `--skip-reputation`, `--skip-asn`, `--skip-sigma`, or
+`--skip-bot-ranges` to omit a family. `setup` installs the bundled,
+Shenron-supported Sigma pack into
 `<data-dir>/sigma-rules/shenron-pack/` (no network needed for it), which the
 default-on hunt Sigma pass then picks up automatically. Pass
 `--sigma-source <git-url>` (repeatable; suggested public source
@@ -54,8 +57,20 @@ default-on hunt Sigma pass then picks up automatically. Pass
 `rules/web` subtree — download-only, into a sibling `sigma-rules/external/`
 directory, with only the supported subset loaded and each source's license the
 user's responsibility. The existing `nuclei update` and `reputation update`
-commands remain available for individual refreshes. The main `shenron` analysis
-binary remains offline.
+commands remain available for individual refreshes, and `bot-ranges update`
+refreshes only the operator-published crawler snapshot. The main `shenron`
+analysis binary remains offline.
+
+When `bot-ranges.json` is present, hunt compares configured self-declared bot
+User-Agents with the frozen operator-published ranges in the existing event
+stream. An explicit `--bot-ranges <PATH>` overrides the default. Aggregate
+operator/count/rate results enter the sanitized report; outside-range peer IPs
+stay only in private `bot-range-observations.json`. Without a snapshot, hunt
+prints a skip note and does not change CVE or Sigma metrics. An observed peer
+outside a named operator's ranges is only outside that frozen list: published
+ranges can be stale or incomplete, an intermediary can rewrite the peer, and
+any client can set a User-Agent. It is not a determination of impersonation,
+attack, or abuse. See [published bot ranges](published-bot-ranges.md).
 
 By default `setup` writes to the standard data directory that `hunt`, `explain`,
 and the other analysis commands read automatically. If you pass `--data-dir` to

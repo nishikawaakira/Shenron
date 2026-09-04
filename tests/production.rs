@@ -324,6 +324,113 @@ fn concentration_focus_optionally_groups_private_peers_by_local_asn() {
 }
 
 #[test]
+fn hunt_compares_declared_bot_ua_with_frozen_ranges_without_changing_cve_metrics() {
+    let directory = tempdir().unwrap();
+    let input = directory.path().join("bots.log");
+    fs::write(
+        &input,
+        concat!(
+            "198.51.100.7 - - [01/Jan/2026:00:00:00 +0000] \"GET /ordinary HTTP/1.1\" 200 10 \"-\" \"ChatGPT-User/1.0\"\n",
+            "203.0.113.9 - - [01/Jan/2026:00:00:01 +0000] \"GET /ordinary HTTP/1.1\" 200 10 \"-\" \"ChatGPT-User/1.0\"\n",
+            "2001:db8:1::7 - - [01/Jan/2026:00:00:02 +0000] \"GET /ordinary HTTP/1.1\" 200 10 \"-\" \"ChatGPT-User/1.0\"\n",
+        ),
+    )
+    .unwrap();
+    let snapshot = directory.path().join("bot-ranges.json");
+    fs::write(
+        &snapshot,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "report_kind": "PUBLISHED_BOT_RANGE_SNAPSHOT",
+            "generated_at": "2026-01-01T00:00:00Z",
+            "safety_note": "fixture",
+            "operators": [{
+                "operator_id": "openai",
+                "operator_name": "OpenAI",
+                "user_agent_patterns": ["ChatGPT-User"],
+                "cidrs": ["198.51.100.0/24", "2001:db8::/32"],
+                "sources": []
+            }]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    let with_snapshot = directory.path().join("with-snapshot");
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .env("SHENRON_DATA_DIR", directory.path().join("empty-data"))
+        .args([
+            "hunt",
+            "--input",
+            input.to_str().unwrap(),
+            "--format",
+            "apache",
+            "--nuclei-templates",
+            "tests/fixtures/nuclei",
+            "--nuclei-report",
+            "tests/fixtures/production/nuclei-report.json",
+            "--no-sigma",
+            "--bot-ranges",
+            snapshot.to_str().unwrap(),
+            "--output",
+            with_snapshot.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(contains(
+            "Self-declared bot User-Agent / published-range comparison",
+        ))
+        .stdout(contains(
+            "Within published ranges: 2 requests / 2 distinct observed peers",
+        ))
+        .stdout(contains(
+            "Outside published ranges: 1 requests / 1 distinct observed peers",
+        ));
+
+    let sanitized = fs::read_to_string(with_snapshot.join("sanitized-research.json")).unwrap();
+    assert!(sanitized.contains("outside_published_ranges_requests"));
+    assert!(!sanitized.contains("203.0.113.9"));
+    assert!(!sanitized.contains("/ordinary"));
+    let private = fs::read_to_string(with_snapshot.join("bot-range-observations.json")).unwrap();
+    assert!(private.contains("203.0.113.9"));
+
+    let without_snapshot = directory.path().join("without-snapshot");
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .env("SHENRON_DATA_DIR", directory.path().join("empty-data"))
+        .args([
+            "hunt",
+            "--input",
+            input.to_str().unwrap(),
+            "--format",
+            "apache",
+            "--nuclei-templates",
+            "tests/fixtures/nuclei",
+            "--nuclei-report",
+            "tests/fixtures/production/nuclei-report.json",
+            "--no-sigma",
+            "--output",
+            without_snapshot.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(contains("Self-declared bot range comparison: skipped"));
+    let with_report: serde_json::Value = serde_json::from_str(&sanitized).unwrap();
+    let without_report: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(without_snapshot.join("sanitized-research.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        with_report["metrics"]["cve_related_request_matches"],
+        without_report["metrics"]["cve_related_request_matches"]
+    );
+    assert_eq!(
+        with_report["metrics"]["unique_cves_observed"],
+        without_report["metrics"]["unique_cves_observed"]
+    );
+}
+
+#[test]
 fn concentration_path_prefix_and_source_ip_focuses_keep_raw_values_private() {
     let directory = tempdir().unwrap();
 

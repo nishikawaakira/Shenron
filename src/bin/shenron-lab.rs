@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     fs::{self, File},
     io::Read,
     path::{Path, PathBuf},
@@ -12,6 +13,9 @@ use flate2::read::GzDecoder;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
+use shenron::bot_ranges::{
+    default_source_catalog, parse_source_catalog, snapshot_from_downloads, BotRangeSourceDefinition,
+};
 use shenron::event::TelemetryProfile;
 use shenron::kev::{coverage as kev_coverage, KevCoverageReport};
 use shenron::lab::{
@@ -25,7 +29,9 @@ use shenron::nuclei::{
     validated_detections, CoverageReport, InventoryReport, RequestMatcherView,
     TelemetryComparisonReport, TelemetryCoverageReport,
 };
-use shenron::paths::{default_data_dir, default_nuclei_report, default_templates_dir};
+use shenron::paths::{
+    default_bot_range_snapshot, default_data_dir, default_nuclei_report, default_templates_dir,
+};
 use shenron::reputation_update::{
     parse_blocklist_de, parse_cins, parse_firehol_level1, parse_iptoasn_v4, parse_spamhaus_drop,
     write_asn_ranges, write_reputation_jsonl, BLOCKLIST_DE_URL, CINS_URL, FIREHOL_LEVEL1_URL,
@@ -104,6 +110,11 @@ enum Command {
         #[command(subcommand)]
         command: ReputationCommand,
     },
+    /// Download operator-published crawler ranges for offline UA/peer comparison.
+    BotRanges {
+        #[command(subcommand)]
+        command: BotRangesCommand,
+    },
     /// Prepare public Nuclei, reputation, and ASN inputs in one download-only step.
     Setup {
         /// Skip the public Nuclei template checkout and frozen coverage report.
@@ -118,6 +129,9 @@ enum Command {
         /// Skip installing the bundled Sigma rule pack (and fetching any --sigma-source).
         #[arg(long)]
         skip_sigma: bool,
+        /// Skip operator-published crawler range preparation.
+        #[arg(long)]
+        skip_bot_ranges: bool,
         /// Also fetch external Sigma rules from this git repository's `rules/web`
         /// subtree (download-only, public rules). Repeat for several sources. The
         /// suggested public source is https://github.com/SigmaHQ/sigma.git; review
@@ -127,6 +141,10 @@ enum Command {
         /// Local directory for every prepared input.
         #[arg(long)]
         data_dir: Option<PathBuf>,
+        /// Optional local source catalog overriding the bundled public URLs and
+        /// UA patterns. The catalog itself is never sent anywhere.
+        #[arg(long)]
+        bot_range_catalog: Option<PathBuf>,
         /// Nuclei templates git repository URL.
         #[arg(
             long,
@@ -290,6 +308,19 @@ enum ReputationCommand {
         /// Public iptoasn IPv4 source URL.
         #[arg(long, default_value = IPTOASN_V4_URL)]
         iptoasn_source: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum BotRangesCommand {
+    /// Download public range JSON and freeze a local offline snapshot.
+    Update {
+        /// Output snapshot path (defaults to <data-dir>/bot-ranges.json).
+        #[arg(long)]
+        output: Option<PathBuf>,
+        /// Optional local source catalog overriding the bundled source data.
+        #[arg(long)]
+        catalog: Option<PathBuf>,
     },
 }
 
@@ -547,13 +578,24 @@ fn main() -> Result<()> {
                 true,
             )?,
         },
+        Command::BotRanges { command } => match command {
+            BotRangesCommand::Update { output, catalog } => {
+                update_bot_ranges(
+                    &output.unwrap_or_else(default_bot_range_snapshot),
+                    catalog.as_deref(),
+                    true,
+                )?;
+            }
+        },
         Command::Setup {
             skip_nuclei,
             skip_reputation,
             skip_asn,
             skip_sigma,
+            skip_bot_ranges,
             sigma_source,
             data_dir,
+            bot_range_catalog,
             nuclei_repo,
             nuclei_revision,
             spamhaus_drop_source,
@@ -563,7 +605,13 @@ fn main() -> Result<()> {
             iptoasn_source,
         } => run_setup(
             &data_dir.unwrap_or_else(default_data_dir),
-            setup_plan(skip_nuclei, skip_reputation, skip_asn, skip_sigma),
+            setup_plan(
+                skip_nuclei,
+                skip_reputation,
+                skip_asn,
+                skip_sigma,
+                skip_bot_ranges,
+            ),
             &nuclei_repo,
             nuclei_revision,
             ReputationSources {
@@ -574,6 +622,7 @@ fn main() -> Result<()> {
                 iptoasn: &iptoasn_source,
             },
             &sigma_source,
+            bot_range_catalog.as_deref(),
         )?,
         Command::MinimumTelemetry {
             templates,
@@ -702,6 +751,7 @@ struct SetupPlan {
     include_reputation: bool,
     include_asn: bool,
     include_sigma: bool,
+    include_bot_ranges: bool,
 }
 
 fn setup_plan(
@@ -709,12 +759,14 @@ fn setup_plan(
     skip_reputation: bool,
     skip_asn: bool,
     skip_sigma: bool,
+    skip_bot_ranges: bool,
 ) -> SetupPlan {
     SetupPlan {
         include_nuclei: !skip_nuclei,
         include_reputation: !skip_reputation,
         include_asn: !skip_asn,
         include_sigma: !skip_sigma,
+        include_bot_ranges: !skip_bot_ranges,
     }
 }
 
@@ -725,8 +777,13 @@ fn run_setup(
     nuclei_revision: Option<String>,
     reputation_sources: ReputationSources<'_>,
     sigma_sources: &[String],
+    bot_range_catalog: Option<&Path>,
 ) -> Result<()> {
-    if !plan.include_nuclei && !plan.include_reputation && !plan.include_asn && !plan.include_sigma
+    if !plan.include_nuclei
+        && !plan.include_reputation
+        && !plan.include_asn
+        && !plan.include_sigma
+        && !plan.include_bot_ranges
     {
         println!("Setup summary: no preparation steps selected (all were skipped).");
         return Ok(());
@@ -761,6 +818,12 @@ fn run_setup(
         match install_sigma_rules(data_dir, sigma_sources) {
             Ok(summary) => completed.push(summary),
             Err(error) => failures.push(("Sigma rules", error)),
+        }
+    }
+    if plan.include_bot_ranges {
+        match update_bot_ranges(&data_dir.join("bot-ranges.json"), bot_range_catalog, false) {
+            Ok(()) => completed.push("published crawler ranges".to_owned()),
+            Err(error) => failures.push(("published crawler ranges", error)),
         }
     }
 
@@ -965,6 +1028,62 @@ struct ReputationSources<'a> {
     cins: &'a str,
     blocklist_de: &'a str,
     iptoasn: &'a str,
+}
+
+/// Download only the public JSON URLs described by a local source catalog and
+/// write one frozen snapshot for offline hunt evaluation. No telemetry value
+/// is passed to curl or any remote service.
+fn update_bot_ranges(output: &Path, catalog: Option<&Path>, announce: bool) -> Result<()> {
+    let sources: Vec<BotRangeSourceDefinition> = match catalog {
+        Some(path) => parse_source_catalog(
+            &fs::read_to_string(path)
+                .with_context(|| format!("reading bot-range source catalog {}", path.display()))?,
+        )?,
+        None => default_source_catalog()?,
+    };
+    if sources.is_empty() {
+        bail!("bot-range source catalog contains no sources");
+    }
+    if let Some(parent) = output
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        fs::create_dir_all(parent)?;
+    }
+    let parent = output.parent().unwrap_or_else(|| Path::new("."));
+    let download_dir = parent.join(format!(
+        ".bot-range-downloads-{}-{}",
+        std::process::id(),
+        Utc::now().timestamp_nanos_opt().unwrap_or_default()
+    ));
+    fs::create_dir(&download_dir).with_context(|| {
+        format!(
+            "creating temporary bot-range download directory {}",
+            download_dir.display()
+        )
+    })?;
+    let result = (|| {
+        let mut downloads = BTreeMap::new();
+        for (index, source) in sources.iter().enumerate() {
+            if downloads.contains_key(&source.url) {
+                continue;
+            }
+            let path = download_dir.join(format!("source-{index}.json"));
+            curl_download(&source.url, &path)?;
+            downloads.insert(source.url.clone(), fs::read(&path)?);
+        }
+        let retrieved_at = Utc::now().to_rfc3339();
+        let snapshot = snapshot_from_downloads(&sources, &downloads, &retrieved_at)?;
+        serde_json::to_writer_pretty(File::create(output)?, &snapshot)?;
+        if announce {
+            println!("Frozen published crawler ranges: {}", output.display());
+            println!("Public range JSON only was downloaded; no customer logs, findings, IPs, User-Agents, or request values were transmitted. The shenron analysis binary remains offline.");
+            println!("Published ranges can be incomplete or stale; this snapshot supports labeled review, not impersonation, attack, or abuse determinations.");
+        }
+        Ok(())
+    })();
+    let _ = fs::remove_dir_all(download_dir);
+    result
 }
 
 #[derive(Serialize)]
@@ -1290,30 +1409,33 @@ mod setup_tests {
     #[test]
     fn setup_skip_flags_select_the_expected_preparation_inputs() {
         assert_eq!(
-            setup_plan(false, false, false, false),
+            setup_plan(false, false, false, false, false),
             SetupPlan {
                 include_nuclei: true,
                 include_reputation: true,
                 include_asn: true,
                 include_sigma: true,
+                include_bot_ranges: true,
             }
         );
         assert_eq!(
-            setup_plan(true, false, true, false),
+            setup_plan(true, false, true, false, true),
             SetupPlan {
                 include_nuclei: false,
                 include_reputation: true,
                 include_asn: false,
                 include_sigma: true,
+                include_bot_ranges: false,
             }
         );
         assert_eq!(
-            setup_plan(true, true, true, true),
+            setup_plan(true, true, true, true, true),
             SetupPlan {
                 include_nuclei: false,
                 include_reputation: false,
                 include_asn: false,
                 include_sigma: false,
+                include_bot_ranges: false,
             }
         );
     }

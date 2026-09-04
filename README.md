@@ -34,7 +34,7 @@ Four design pillars: (1) static conversion — templates are never executed; (2)
 
 ## Capabilities
 
-The scanner pipeline streams AWS WAF JSONL (including gzip) → normalized `WebEvent` → a deliberately small Sigma subset → JSONL or CSV findings. It supports AWS WAF action, labels, request metadata, and optional JA3/JA4 fingerprints. Analysis commands, including `shenron hunt ...` and `shenron candidate ...`, never access the network, upload customer data, execute exploits, change AWS, deploy candidates, or take automatic BLOCK actions. Only explicit `shenron-lab` preparation commands such as `nuclei update` and `reputation update` may download public threat-intelligence inputs.
+The scanner pipeline streams AWS WAF JSONL (including gzip) → normalized `WebEvent` → a deliberately small Sigma subset → JSONL or CSV findings. It supports AWS WAF action, labels, request metadata, and optional JA3/JA4 fingerprints. Analysis commands, including `shenron hunt ...` and `shenron candidate ...`, never access the network, upload customer data, execute exploits, change AWS, deploy candidates, or take automatic BLOCK actions. Only explicit `shenron-lab` preparation commands such as `nuclei update`, `reputation update`, and `bot-ranges update` may download public threat-intelligence inputs.
 
 It also includes a reproducible synthetic validation loop: project-owned AWS WAF-shaped corpora, separate ground truth, mutation tests, regression fixtures, and machine-readable validation results. See [validation](docs/validation.md) and [synthetic corpus generation](docs/synthetic-corpus.md).
 
@@ -109,7 +109,7 @@ cargo run --bin shenron -- validate-rules --rules ./rules/
 
 ## Quick hunt
 
-Prepare public Nuclei, reputation, and ASN intelligence once, then hunt a
+Prepare public Nuclei, reputation, ASN, and published crawler-range intelligence once, then hunt a
 safely recognizable local log input without a format option:
 
 ```bash
@@ -127,17 +127,19 @@ and its reputation/ASN inputs in the same data directory when
 `SHENRON_DATA_DIR` is set; otherwise it uses
 `$XDG_DATA_HOME/shenron/nuclei-templates` or
 `~/.local/share/shenron/nuclei-templates`. It writes the matching frozen report
-alongside it as `nuclei-report.json`, plus optional `reputation.jsonl` and
-`asn-ranges.tsv`. Hunt, ablation, replay, and
+alongside it as `nuclei-report.json`, plus optional `reputation.jsonl`,
+`asn-ranges.tsv`, and `bot-ranges.json`. Hunt, ablation, replay, and
 count-hypotheses use those locations by default. A hunt without `--output`
 writes private artifacts to `./private-results/hunt-<UTC timestamp>/`.
 `--nuclei-templates`, `--nuclei-report`, `--kev-report`, and `--output` remain
 available for an explicit, reproducible workflow. KEV is optional; omitting it
 uses an empty KEV set.
 
-`shenron-lab nuclei update` and `shenron-lab reputation update` remain available
+`shenron-lab nuclei update`, `shenron-lab reputation update`, and `shenron-lab bot-ranges update` remain available
 when only one public input family should be refreshed. `setup` downloads public
 intelligence only and never transmits customer data.
+
+When the frozen bot-range snapshot is present, hunt reports aggregate counts for self-declared bot User-Agents whose observed peers are inside or outside the named operator's published ranges; outside-range IPs stay in private `bot-range-observations.json`. Missing snapshots are skipped without changing CVE/Sigma metrics. Outside-range is a review label only—not impersonation, attack, abuse, or attribution—because ranges may be stale or incomplete, intermediaries can alter the peer, and any client can set a User-Agent. See [published bot ranges](docs/published-bot-ranges.md).
 
 Alongside the CVE-anchored Nuclei pass, `hunt` runs a generic **Sigma** detection
 pass **on by default** in the same stream, catching generic request-pattern TTPs
