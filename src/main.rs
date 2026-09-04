@@ -1,6 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs::File,
+    fs::{self, File},
     io::{self, BufRead, BufReader, Write},
     net::IpAddr,
     path::{Path, PathBuf},
@@ -233,16 +233,26 @@ enum ProductionCommand {
         #[arg(
             long,
             value_parser = parse_rfc3339_utc,
-            conflicts_with = "results_dir"
+            conflicts_with_all = ["results_dir", "since"]
         )]
         from: Option<DateTime<Utc>>,
         /// Inclusive UTC end time in RFC 3339 format, for example 2026-04-30T23:59:59Z.
         #[arg(
             long,
             value_parser = parse_rfc3339_utc,
-            conflicts_with = "results_dir"
+            conflicts_with_all = ["results_dir", "since"]
         )]
         to: Option<DateTime<Utc>>,
+        /// Analyze events since DURATION before this run starts (for example
+        /// 24h or 1d). This moving boundary is convenient but not reproducible;
+        /// use explicit --from/--to timestamps for an auditable fixed window.
+        #[arg(
+            long,
+            value_name = "DURATION",
+            value_parser = parse_triage_duration,
+            conflicts_with_all = ["results_dir", "from", "to"]
+        )]
+        since: Option<Duration>,
         /// Trusted direct proxy IP or CIDR. Repeat to trust multiple proxy networks.
         /// Forwarded client IPs remain unavailable unless this is specified.
         #[arg(long, value_name = "IP-or-CIDR", conflicts_with = "results_dir")]
@@ -272,8 +282,16 @@ enum ProductionCommand {
         #[arg(long, conflicts_with = "results_dir")]
         asn_dataset: Option<PathBuf>,
         /// Prior local run-artifact directory to compare after this hunt completes.
-        #[arg(long, conflicts_with = "results_dir")]
+        #[arg(long, conflicts_with_all = ["results_dir", "baseline_latest"])]
         baseline: Option<PathBuf>,
+        /// Select the lexicographically latest valid prior run below RUN-ROOT as
+        /// the baseline. Use sortable directory names such as hunt-<UTC>.
+        #[arg(
+            long,
+            value_name = "RUN-ROOT",
+            conflicts_with_all = ["results_dir", "baseline"]
+        )]
+        baseline_latest: Option<PathBuf>,
         /// Display ranked private connection/client-IP triage entries.
         #[arg(long, conflicts_with = "results_dir")]
         show_triage: bool,
@@ -708,6 +726,7 @@ fn main() -> Result<()> {
                 output,
                 from,
                 to,
+                since,
                 trusted_proxy,
                 rules,
                 no_sigma,
@@ -717,6 +736,7 @@ fn main() -> Result<()> {
                 ipv6_group_prefix,
                 asn_dataset,
                 baseline,
+                baseline_latest,
                 show_triage,
                 limit,
                 report: html_report,
@@ -767,6 +787,20 @@ fn main() -> Result<()> {
                     .map(load_bot_range_database)
                     .transpose()?;
                 let telemetry_profile = format.telemetry_profile_for_input(&input)?;
+                let time_range = if let Some(since) = since {
+                    let duration = chrono::Duration::from_std(since)
+                        .context("--since duration does not fit the supported UTC range")?;
+                    let run_time = Utc::now();
+                    let from = run_time
+                        .checked_sub_signed(duration)
+                        .context("--since resolves before the supported UTC timestamp range")?;
+                    HuntTimeRange {
+                        from: Some(from),
+                        to: None,
+                    }
+                } else {
+                    HuntTimeRange { from, to }
+                };
                 let report = production_hunt(
                     &input,
                     &nuclei_templates,
@@ -775,7 +809,7 @@ fn main() -> Result<()> {
                     &output,
                     telemetry_profile,
                     HuntOptions {
-                        time_range: HuntTimeRange { from, to },
+                        time_range,
                         trusted_proxies: TrustedProxySet::new(trusted_proxy),
                         triage_policy: HuntTriagePolicy::default(),
                         sigma_ruleset,
@@ -815,7 +849,31 @@ fn main() -> Result<()> {
                     );
                     println!("{}", update.safety_note);
                 }
+                let baseline = match (baseline, baseline_latest) {
+                    (Some(baseline), None) => Some(baseline),
+                    (None, Some(run_root)) => match latest_baseline_run(&run_root, &output)? {
+                        Some(selected) => {
+                            println!(
+                                "Latest baseline selected by directory-name order: {}",
+                                selected.display()
+                            );
+                            Some(selected)
+                        }
+                        None => {
+                            println!(
+                                "no prior run found under {}; skipping temporal comparison",
+                                run_root.display()
+                            );
+                            None
+                        }
+                    },
+                    (None, None) => None,
+                    (Some(_), Some(_)) => unreachable!(
+                        "clap prevents --baseline and --baseline-latest from being combined"
+                    ),
+                };
                 let mut first_seen_source_ips = BTreeSet::new();
+                let mut temporal_comparison = None;
                 if let Some(baseline) = baseline {
                     let comparison = compare_runs(&baseline, &output)?;
                     write_comparison(&output, &comparison)?;
@@ -831,14 +889,18 @@ fn main() -> Result<()> {
                         "Baseline comparison written: {}\n  Newly observed CVEs: {}\n  First-seen entities: {}\n  Elevated paths: {}",
                         output.join("comparison-summary.json").display(),
                         comparison.sanitized.cve_diff.newly_observed_cves.len(),
-                        comparison.sanitized.first_seen_counts.source_ips
-                            + comparison.sanitized.first_seen_counts.hosts
-                            + comparison.sanitized.first_seen_counts.uri_paths
-                            + comparison.sanitized.first_seen_counts.ja4_fingerprints,
+                        first_seen_entity_total(&comparison.sanitized),
                         comparison.sanitized.concentration_delta.elevated_paths,
                     );
+                    temporal_comparison = Some(comparison);
                 }
                 write_hunt_triage_view(&output, &first_seen_source_ips, show_triage, limit)?;
+                print_daily_review_summary(
+                    &report,
+                    temporal_comparison
+                        .as_ref()
+                        .map(|comparison| &comparison.sanitized),
+                );
                 if let Some(selected_report) = html_report {
                     let report_output =
                         selected_report.unwrap_or_else(|| output.join("report.html"));
@@ -1693,6 +1755,39 @@ fn default_hunt_output() -> PathBuf {
     PathBuf::from("private-results").join(format!("hunt-{}", Utc::now().format("%Y%m%dT%H%M%SZ")))
 }
 
+/// Select the lexicographically greatest valid immediate child run while
+/// explicitly excluding the current output directory. Filesystem mtimes are
+/// deliberately ignored so sortable run names remain deterministic.
+fn latest_baseline_run(run_root: &Path, current_output: &Path) -> Result<Option<PathBuf>> {
+    if !run_root.is_dir() {
+        return Ok(None);
+    }
+    let current_output = fs::canonicalize(current_output).with_context(|| {
+        format!(
+            "failed to resolve current hunt output {}",
+            current_output.display()
+        )
+    })?;
+    let mut candidates = Vec::new();
+    for entry in fs::read_dir(run_root)
+        .with_context(|| format!("failed to read run root {}", run_root.display()))?
+    {
+        let entry = entry
+            .with_context(|| format!("failed to read an entry under {}", run_root.display()))?;
+        let path = entry.path();
+        if !path.is_dir() || !path.join("run-manifest.json").is_file() {
+            continue;
+        }
+        let resolved = fs::canonicalize(&path)
+            .with_context(|| format!("failed to resolve candidate run {}", path.display()))?;
+        if resolved != current_output {
+            candidates.push((entry.file_name(), path));
+        }
+    }
+    candidates.sort_by(|left, right| left.0.cmp(&right.0));
+    Ok(candidates.pop().map(|(_, path)| path))
+}
+
 /// Resolve the Sigma ruleset for a hunt. The Sigma pass is on by default: it
 /// uses `--rules` when given, otherwise the prepared `<data-dir>/sigma-rules`
 /// when present. A missing directory is not an error — the hunt continues with
@@ -1890,23 +1985,73 @@ fn print_hunt(report: &SanitizedHuntReport, sanitized_path: &Path) {
             );
         }
     }
-    if metrics.sensitive_config_probe_matches != 0 {
-        println!(
-            "\nSensitive file/config probe review context:\n  Matching requests:         {}\n  2xx responses:             {}\n  Status unavailable:        {}",
-            metrics.sensitive_config_probe_matches,
-            metrics.sensitive_config_probe_success_responses,
-            metrics.sensitive_config_probe_status_unavailable,
-        );
-        if metrics.sensitive_config_probe_success_responses != 0 {
-            println!(
-                "Sensitive file/config probes returning a 2xx (success) response: {} — highest review priority. A 2xx is the response status only, not confirmation that file contents were disclosed or that exploitation or compromise occurred.",
-                metrics.sensitive_config_probe_success_responses,
-            );
-        }
-    }
     if let Some(concentration) = &metrics.request_concentration {
         print_request_concentration_summary(concentration, "request-concentration.json");
     }
+}
+
+fn print_daily_review_summary(
+    report: &SanitizedHuntReport,
+    comparison: Option<&SanitizedTemporalComparison>,
+) {
+    let metrics = &report.metrics;
+    println!("\nDaily review signals (aggregate observations only):");
+    println!(
+        "  Observed CVEs (unique):                          {}",
+        metrics.unique_cves_observed
+    );
+    if metrics.sensitive_config_probe_matches != 0 {
+        println!(
+            "  Sensitive file/config probe matches / 2xx response status: {} / {}",
+            metrics.sensitive_config_probe_matches,
+            metrics.sensitive_config_probe_success_responses,
+        );
+        println!(
+            "  Sensitive probe status unavailable:             {}",
+            metrics.sensitive_config_probe_status_unavailable
+        );
+        if metrics.sensitive_config_probe_success_responses != 0 {
+            println!(
+                "  HIGHEST REVIEW PRIORITY: {} sensitive file/config probe matches returned a 2xx response. A 2xx is the response status only, not confirmation that file contents were disclosed or that exploitation or compromise occurred.",
+                metrics.sensitive_config_probe_success_responses
+            );
+        }
+    }
+    println!(
+        "  Sigma-matched requests:                          {}",
+        metrics.sigma_matched_requests
+    );
+    if let Some(concentration) = &metrics.request_concentration {
+        let peak = concentration
+            .requests_per_minute
+            .peak_requests_per_minute
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "unavailable".to_owned());
+        println!(
+            "  Request-concentration peak/minute / top-10 path share: {} / {:.1}%",
+            peak,
+            concentration.top_ten_paths_request_share * 100.0
+        );
+    }
+    if let Some(comparison) = comparison {
+        println!(
+            "  Baseline delta — newly observed CVEs / first-seen entities / elevated paths: {} / {} / {}",
+            comparison.cve_diff.newly_observed_cves.len(),
+            first_seen_entity_total(comparison),
+            comparison.concentration_delta.elevated_paths
+        );
+    }
+    println!(
+        "Review signals are observed aggregates and priorities, not determinations of attack, exploitation, compromise, or attacker identity."
+    );
+}
+
+fn first_seen_entity_total(comparison: &SanitizedTemporalComparison) -> usize {
+    comparison.first_seen_counts.source_ips
+        + comparison.first_seen_counts.hosts
+        + comparison.first_seen_counts.uri_paths
+        + comparison.first_seen_counts.ja4_fingerprints
+        + comparison.first_seen_counts.client_ips.unwrap_or(0)
 }
 
 fn print_concentration(

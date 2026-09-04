@@ -127,6 +127,22 @@ cargo run --bin shenron -- hunt \
   --to 2026-04-30T23:59:59Z
 ```
 
+For a moving operational window, `--since 24h` (or `--since 1d`) is a
+shortcut for a start time computed once when the hunt begins, with no end
+boundary. It conflicts with `--from` and `--to`. Because the resolved boundary
+depends on execution time, use explicit UTC `--from/--to` values for a fixed,
+auditable rerun. The resolved start is still recorded as `filter_from` in the
+sanitized report and `run-manifest.json`, and the usual outside-window and
+missing-timestamp exclusion counts remain visible.
+
+Daily operation does not require one file per date. `--input` accepts a
+directory tree and compressed `.gz` rotations, so an appended or rotated log
+directory can be re-streamed with `--since`. Shenron is stateless and stores no
+file offset or checkpoint: every run reads the selected corpus again, which
+keeps each run self-contained but makes I/O proportional to corpus size. Use
+normal log rotation or select only recent files when an append-only corpus
+becomes very large.
+
 Alongside the CVE-anchored Nuclei pass, `hunt` runs a generic **Sigma** detection pass **on by default**, in the same single stream over the corpus. It loads supported Sigma rules from `--rules <DIR>`, or from the prepared `<data-dir>/sigma-rules` when present; a missing rules directory is not an error (the hunt continues with Nuclei only), and `--no-sigma` disables the pass. Sigma covers generic request-pattern TTPs — for example secret-file path enumeration (`.env`, `/.aws/credentials`, `/.git/config`) — that map to no CVE template and are otherwise invisible to a CVE-only hunt. Sigma findings are kept fully distinct from the CVE track: every finding carries a `source` (`nuclei` or `sigma`), the sanitized report counts `sigma_matched_requests` (distinct requests with a Sigma detection), `sigma_rule_matches` (rule matches, which can exceed the request count because one request can match several rules), `distinct_sigma_rules`, and `sigma_rules_evaluated` separately from the CVE metrics, and Sigma findings never feed `candidate build` (candidates stay CVE- and Nuclei-IR-anchored). See [Sigma detection inside hunt](sigma-in-hunt.md).
 
 For the bundled `shenron-secret-config-file-probe` rule, `hunt` additionally
@@ -252,6 +268,11 @@ The command writes sanitized `comparison-summary.json` and private
 private and print only with `--show-entities`, `--show-paths`, or
 `--show-source-ips`. `hunt --baseline ./private-results/previous-run` writes the
 same pair into the new hunt directory after the current artifact is complete.
+For daily runs, `hunt --baseline-latest ./private-results` selects the
+lexicographically greatest immediate child containing `run-manifest.json`,
+excluding the current output. Sortable `hunt-<UTC>` names therefore provide a
+deterministic latest-run selection without relying on mtimes; if none exists,
+the hunt continues and explicitly skips the comparison.
 First-seen and elevated-volume labels are triage context only; they are never a
 determination of DoS, attack, abuse, exploitation, compromise, or attribution.
 
@@ -266,6 +287,13 @@ score, optional local ASN/reputation enrichment, and first-seen marker. The
 normal hunt transcript prints only the sanitized counts. To intentionally view
 the private ranked entries, pass `--show-triage`; `--limit` defaults to 20 and
 accepts `0` to display all entries.
+
+After matching and any baseline comparison, stdout also prints a compact daily
+review block from existing aggregate metrics: observed CVEs, sensitive
+file/config response-status context, Sigma matches, request concentration, and
+the baseline delta when available. It adds no private IP or path data and is a
+review index, not a determination of attack, exploitation, compromise, or
+attacker identity.
 
 The ranking is deterministic: behavior score descending, then local
 reputation score descending (no opinion last), then first-seen entities, then

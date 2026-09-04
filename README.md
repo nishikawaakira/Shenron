@@ -127,6 +127,12 @@ shenron-lab setup
 shenron hunt --input ./waf-logs
 ```
 
+For daily appended or rotated logs, point `--input` at the log directory and
+combine `--since 24h` with `--baseline-latest ./private-results`; Shenron reads
+directory trees and gzip rotations, records the resolved moving boundary, and
+selects the latest valid prior run by sortable directory name. Use explicit
+`--from/--to` instead when the window itself must be exactly reproducible.
+
 AWS WAF JSON and vhost-prefixed Apache Combined logs are recognized
 automatically. Because standard nginx and Apache Combined lines are
 structurally identical, select those explicitly with `--format nginx` or

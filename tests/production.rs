@@ -928,7 +928,15 @@ fn hunt_baseline_writes_temporal_comparison_artifacts() {
         ])
         .assert()
         .success()
-        .stdout(contains("Baseline comparison written:"));
+        .stdout(contains("Baseline comparison written:"))
+        .stdout(contains(
+            "Daily review signals (aggregate observations only):",
+        ))
+        .stdout(contains("Observed CVEs (unique):"))
+        .stdout(contains(
+            "Request-concentration peak/minute / top-10 path share:",
+        ))
+        .stdout(contains("Baseline delta — newly observed CVEs"));
     assert!(output.join("comparison-summary.json").is_file());
     assert!(output.join("comparison-detail.json").is_file());
     assert!(output.join("triage-summary.json").is_file());
@@ -943,6 +951,138 @@ fn hunt_baseline_writes_temporal_comparison_artifacts() {
     let triage_view = fs::read_to_string(output.join("triage-view.json")).unwrap();
     assert!(triage_view.contains("HUNT_TRIAGE_VIEW_PRIVATE"));
     assert!(triage_view.contains("198.51.100.1"));
+}
+
+#[test]
+fn hunt_baseline_latest_selects_the_name_sorted_prior_run_and_excludes_current_output() {
+    let directory = tempdir().unwrap();
+    let run_root = directory.path().join("runs");
+    let older = run_root.join("hunt-20260901T000000Z");
+    let latest = run_root.join("hunt-20260902T000000Z");
+    let invalid = run_root.join("hunt-20260903T000000Z");
+    let output = run_root.join("hunt-20260904T000000Z");
+    for run in [&older, &latest, &invalid] {
+        fs::create_dir_all(run).unwrap();
+    }
+    fs::write(older.join("run-manifest.json"), "{}").unwrap();
+    fs::write(latest.join("run-manifest.json"), "{}").unwrap();
+
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "hunt",
+            "--input",
+            "tests/fixtures/production/waf.jsonl",
+            "--format",
+            "aws-waf",
+            "--nuclei-templates",
+            "tests/fixtures/nuclei",
+            "--nuclei-report",
+            "tests/fixtures/production/nuclei-report.json",
+            "--kev-report",
+            "tests/fixtures/production/kev-report.json",
+            "--output",
+            output.to_str().unwrap(),
+            "--baseline-latest",
+            run_root.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(contains(format!(
+            "Latest baseline selected by directory-name order: {}",
+            latest.display()
+        )))
+        .stdout(contains("Baseline comparison written:"));
+
+    assert!(output.join("comparison-summary.json").is_file());
+}
+
+#[test]
+fn hunt_baseline_latest_without_a_prior_run_continues_without_comparison() {
+    let directory = tempdir().unwrap();
+    let run_root = directory.path().join("runs");
+    let output = run_root.join("hunt-20260904T000000Z");
+
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "hunt",
+            "--input",
+            "tests/fixtures/production/waf.jsonl",
+            "--format",
+            "aws-waf",
+            "--nuclei-templates",
+            "tests/fixtures/nuclei",
+            "--nuclei-report",
+            "tests/fixtures/production/nuclei-report.json",
+            "--kev-report",
+            "tests/fixtures/production/kev-report.json",
+            "--output",
+            output.to_str().unwrap(),
+            "--baseline-latest",
+            run_root.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(contains(format!(
+            "no prior run found under {}; skipping temporal comparison",
+            run_root.display()
+        )));
+
+    assert!(!output.join("comparison-summary.json").exists());
+
+    let ordinary_output = directory.path().join("without-baseline-latest");
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "hunt",
+            "--input",
+            "tests/fixtures/production/waf.jsonl",
+            "--format",
+            "aws-waf",
+            "--nuclei-templates",
+            "tests/fixtures/nuclei",
+            "--nuclei-report",
+            "tests/fixtures/production/nuclei-report.json",
+            "--kev-report",
+            "tests/fixtures/production/kev-report.json",
+            "--output",
+            ordinary_output.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    for artifact in [
+        "private-findings.jsonl",
+        "sanitized-research.json",
+        "request-concentration.json",
+        "triage-view.json",
+    ] {
+        assert_eq!(
+            fs::read(output.join(artifact)).unwrap(),
+            fs::read(ordinary_output.join(artifact)).unwrap(),
+            "--baseline-latest and the stdout summary must not alter {artifact}"
+        );
+    }
+}
+
+#[test]
+fn hunt_rejects_baseline_and_baseline_latest_together() {
+    let directory = tempdir().unwrap();
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "hunt",
+            "--input",
+            "tests/fixtures/production/waf.jsonl",
+            "--baseline",
+            directory.path().join("baseline").to_str().unwrap(),
+            "--baseline-latest",
+            directory.path().join("runs").to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .stderr(contains("cannot be used with"));
 }
 
 #[test]
@@ -2548,6 +2688,112 @@ fn hunt_filters_an_inclusive_utc_time_range_before_matching() {
 }
 
 #[test]
+fn hunt_since_resolves_a_moving_start_time_and_records_the_window() {
+    let directory = tempdir().unwrap();
+    let input = directory.path().join("moving-window.jsonl");
+    let now = Utc::now();
+    let outside_timestamp = (now - chrono::Duration::hours(2)).timestamp_millis();
+    let inside_timestamp = (now - chrono::Duration::minutes(5)).timestamp_millis();
+    let fixture = fs::read_to_string("tests/fixtures/production/waf.jsonl").unwrap();
+    let mut events = fixture
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .collect::<Vec<_>>();
+    events[0]["timestamp"] = outside_timestamp.into();
+    events[1]["timestamp"] = inside_timestamp.into();
+    fs::write(
+        &input,
+        events
+            .iter()
+            .map(serde_json::Value::to_string)
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
+    .unwrap();
+    let output = directory.path().join("out");
+    let before_run = Utc::now();
+
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "hunt",
+            "--input",
+            input.to_str().unwrap(),
+            "--format",
+            "aws-waf",
+            "--nuclei-templates",
+            "tests/fixtures/nuclei",
+            "--nuclei-report",
+            "tests/fixtures/production/nuclei-report.json",
+            "--kev-report",
+            "tests/fixtures/production/kev-report.json",
+            "--output",
+            output.to_str().unwrap(),
+            "--since",
+            "30m",
+        ])
+        .assert()
+        .success()
+        .stdout(contains("Requests analyzed:           1"))
+        .stdout(contains("Outside range ignored:      1"));
+    let after_run = Utc::now();
+
+    let sanitized: serde_json::Value =
+        serde_json::from_reader(fs::File::open(output.join("sanitized-research.json")).unwrap())
+            .unwrap();
+    assert_eq!(sanitized["metrics"]["total_requests_analyzed"], 1);
+    assert_eq!(sanitized["metrics"]["requests_outside_time_range"], 1);
+    assert!(sanitized["metrics"]["filter_to"].is_null());
+    let filter_from = parse_utc(sanitized["metrics"]["filter_from"].as_str().unwrap());
+    assert!(filter_from >= before_run - chrono::Duration::minutes(30));
+    assert!(filter_from <= after_run - chrono::Duration::minutes(30));
+
+    let manifest: serde_json::Value =
+        serde_json::from_reader(fs::File::open(output.join("run-manifest.json")).unwrap()).unwrap();
+    assert_eq!(
+        manifest["hunt_parameters"]["filter_from"],
+        sanitized["metrics"]["filter_from"]
+    );
+    assert!(manifest["hunt_parameters"]["filter_to"].is_null());
+}
+
+#[test]
+fn hunt_since_conflicts_with_explicit_time_boundaries() {
+    for (flag, value) in [
+        ("--from", "2026-09-04T00:00:00Z"),
+        ("--to", "2026-09-04T23:59:59Z"),
+    ] {
+        Command::cargo_bin("shenron")
+            .unwrap()
+            .args([
+                "hunt",
+                "--input",
+                "tests/fixtures/production/waf.jsonl",
+                "--since",
+                "24h",
+                flag,
+                value,
+            ])
+            .assert()
+            .failure()
+            .stderr(contains("cannot be used with"));
+    }
+
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "hunt",
+            "--results-dir",
+            "tests/fixtures/production",
+            "--since",
+            "24h",
+        ])
+        .assert()
+        .failure()
+        .stderr(contains("cannot be used with"));
+}
+
+#[test]
 fn explain_scores_behavior_and_groups_shared_ja4_fingerprints() {
     let directory = tempdir().unwrap();
     let findings_path = directory.path().join("private-findings.jsonl");
@@ -2786,10 +3032,14 @@ fn hunt_counts_sensitive_config_probe_response_outcomes_without_inferring_succes
         ])
         .assert()
         .success()
-        .stdout(contains("Sensitive file/config probe review context:"))
-        .stdout(contains("2xx responses:"))
-        .stdout(contains("Status unavailable:"))
-        .stdout(contains("highest review priority"))
+        .stdout(contains(
+            "Daily review signals (aggregate observations only):",
+        ))
+        .stdout(contains(
+            "Sensitive file/config probe matches / 2xx response status: 3 / 1",
+        ))
+        .stdout(contains("Sensitive probe status unavailable:"))
+        .stdout(contains("HIGHEST REVIEW PRIORITY"))
         .stdout(contains(
             "not confirmation that file contents were disclosed",
         ));
