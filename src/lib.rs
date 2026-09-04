@@ -21,6 +21,7 @@ pub mod reputation;
 pub mod reputation_update;
 pub mod sigma;
 pub mod sigma_pack;
+pub mod slack;
 pub mod triage;
 pub mod triage_view;
 pub mod waf;

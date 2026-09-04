@@ -302,6 +302,31 @@ the baseline delta when available. It adds no private IP or path data and is a
 review index, not a determination of attack, exploitation, compromise, or
 attacker identity.
 
+### Optional Slack notification
+
+Hunt remains completely offline when `SHENRON_SLACK_WEBHOOK` is absent or
+empty. When that environment variable is explicitly set, the completed hunt
+uses system `curl` to send one Slack Incoming Webhook message after artifacts,
+baseline comparison, the stdout review summary, and any requested HTML report
+have finished. The notification type contains sanitized aggregate counters
+only: catalog-severity counts, CVE/KEV/Sigma totals, sensitive-file response
+status counts, concentration summaries, an optional sanitized baseline delta,
+and local artifact paths. It has no fields for IP addresses, request paths,
+hosts, headers, log values, or private findings, and it never reads
+`private-findings.jsonl` to build a message.
+
+Set `SHENRON_SLACK_MIN_SEVERITY` to `info`, `low`, `medium`, `high`, or
+`critical` to notify only when at least one observed CVE or Sigma rule match has
+that catalog-declared severity or higher. An observed KEV CVE or a sensitive
+file/config probe with a 2xx response also passes any configured threshold.
+Without the threshold, every explicitly configured hunt sends a summary.
+Invalid values are rejected. A missing `curl`, timeout, non-2xx response, or
+other transfer failure is reported without printing the webhook URL and does
+not fail the already completed hunt. These are aggregate review signals, and
+catalog severity is source metadata; neither determines attack, exploitation,
+compromise, maliciousness, or attacker identity. `hunt --results-dir` can send
+the same sanitized-only message after rerendering an existing run.
+
 The ranking is deterministic: behavior score descending, then local
 reputation score descending (no opinion last), then first-seen entities, then
 the entity key. It uses the same local prepared ASN/reputation datasets as

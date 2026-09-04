@@ -54,6 +54,10 @@ use shenron::{
     },
     reputation::{load_asn_database, load_reputation_database, AsnDatabase, ReputationDatabase},
     sigma::load_rules,
+    slack::{
+        notify_best_effort, SlackComparisonSummary, SlackNotificationConfig,
+        SlackNotificationMetrics,
+    },
     triage::{
         asn_entity_groups, entity_groups, EntityDimension, TriagePolicy,
         DEFAULT_MAX_SEQUENCE_OBSERVATIONS, DEFAULT_SEQUENCE_WINDOW_SECONDS,
@@ -742,6 +746,10 @@ fn main() -> Result<()> {
                 report: html_report,
                 lang,
             } => {
+                // Parse notification policy before any hunt or render work so
+                // an invalid explicit threshold fails clearly. With no webhook
+                // configured, the later notification call is a strict no-op.
+                let slack_config = SlackNotificationConfig::from_env()?;
                 if let Some(run_dir) = results_dir {
                     if !run_dir.is_dir() {
                         anyhow::bail!(
@@ -752,7 +760,9 @@ fn main() -> Result<()> {
                     let report_output = html_report
                         .flatten()
                         .unwrap_or_else(|| run_dir.join("report.html"));
-                    return write_html_report(&run_dir, &run_dir, &report_output, limit, lang);
+                    write_html_report(&run_dir, &run_dir, &report_output, limit, lang)?;
+                    notify_slack_from_existing_run(&slack_config, &run_dir, Some(&report_output));
+                    return Ok(());
                 }
 
                 // clap requires one of --input or --results-dir. This branch is
@@ -895,11 +905,23 @@ fn main() -> Result<()> {
                         .as_ref()
                         .map(|comparison| &comparison.sanitized),
                 );
-                if let Some(selected_report) = html_report {
-                    let report_output =
-                        selected_report.unwrap_or_else(|| output.join("report.html"));
-                    write_html_report(&output, &input, &report_output, limit, lang)?;
+                let report_output = html_report.map(|selected_report| {
+                    selected_report.unwrap_or_else(|| output.join("report.html"))
+                });
+                if let Some(report_output) = &report_output {
+                    write_html_report(&output, &input, report_output, limit, lang)?;
                 }
+                let slack_metrics = SlackNotificationMetrics::from_hunt(&report.metrics);
+                let slack_comparison = temporal_comparison.as_ref().map(|comparison| {
+                    SlackComparisonSummary::from_comparison(&comparison.sanitized)
+                });
+                notify_best_effort(
+                    &slack_config,
+                    &slack_metrics,
+                    slack_comparison,
+                    &output,
+                    report_output.as_deref(),
+                );
                 Ok(())
             }
             ProductionCommand::Compare {
@@ -1537,6 +1559,36 @@ fn load_report_artifacts(input: &Path) -> Result<ReportArtifacts> {
             &input.join("private-findings.jsonl"),
         )?,
     })
+}
+
+/// Load notification inputs only from sanitized artifacts. This deliberately
+/// does not call `load_report_artifacts`, because that report loader also reads
+/// private findings for the private HTML review view.
+fn notify_slack_from_existing_run(
+    config: &SlackNotificationConfig,
+    run_dir: &Path,
+    report_path: Option<&Path>,
+) {
+    if !config.is_enabled() {
+        return;
+    }
+    let context = (|| -> Result<_> {
+        let sanitized =
+            read_optional_json::<serde_json::Value>(&run_dir.join("sanitized-research.json"))?
+                .context("sanitized-research.json is unavailable for Slack notification")?;
+        let metrics = SlackNotificationMetrics::from_sanitized_value(&sanitized)?;
+        let comparison =
+            read_optional_json::<serde_json::Value>(&run_dir.join("comparison-summary.json"))?
+                .map(|value| SlackComparisonSummary::from_sanitized_value(&value))
+                .transpose()?;
+        Ok((metrics, comparison))
+    })();
+    match context {
+        Ok((metrics, comparison)) => {
+            notify_best_effort(config, &metrics, comparison, run_dir, report_path)
+        }
+        Err(error) => eprintln!("Slack notification failed: {error:#}"),
+    }
 }
 
 #[derive(Deserialize)]

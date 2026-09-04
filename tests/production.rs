@@ -1977,6 +1977,91 @@ fn hunt_requires_exactly_one_input_mode_and_rejects_hunt_options_for_results() {
         .stderr(contains("cannot be used with"));
 }
 
+#[test]
+fn slack_notification_is_disabled_without_a_webhook_and_rejects_invalid_thresholds() {
+    let directory = tempdir().unwrap();
+    let run_dir = directory.path().join("run");
+    fs::create_dir(&run_dir).unwrap();
+    let sanitized_path = run_dir.join("sanitized-research.json");
+    fs::write(
+        &sanitized_path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "report_kind": "SANITIZED_RESEARCH_OUTPUT",
+            "metrics": {
+                "unique_cves_observed": 0,
+                "unique_cisa_kevs_observed": 0,
+                "sigma_matched_requests": 0,
+                "sensitive_config_probe_matches": 0,
+                "sensitive_config_probe_success_responses": 0,
+                "cve_findings_by_severity": {},
+                "sigma_matches_by_severity": {}
+            },
+            "cve_findings": []
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let before = fs::read(&sanitized_path).unwrap();
+
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .env_remove("SHENRON_SLACK_WEBHOOK")
+        .env_remove("SHENRON_SLACK_MIN_SEVERITY")
+        .args(["hunt", "--results-dir", run_dir.to_str().unwrap()])
+        .assert()
+        .success()
+        .stderr(predicates::str::contains("Slack notification").not());
+    assert_eq!(fs::read(&sanitized_path).unwrap(), before);
+
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .env_remove("SHENRON_SLACK_WEBHOOK")
+        .env("SHENRON_SLACK_MIN_SEVERITY", "urgent")
+        .args(["hunt", "--results-dir", run_dir.to_str().unwrap()])
+        .assert()
+        .failure()
+        .stderr(contains(
+            "SHENRON_SLACK_MIN_SEVERITY must be one of info, low, medium, high, or critical",
+        ));
+}
+
+#[test]
+fn slack_threshold_skip_does_not_invoke_or_disclose_the_webhook() {
+    let directory = tempdir().unwrap();
+    let run_dir = directory.path().join("run");
+    fs::create_dir(&run_dir).unwrap();
+    fs::write(
+        run_dir.join("sanitized-research.json"),
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "metrics": {
+                "unique_cves_observed": 1,
+                "unique_cisa_kevs_observed": 0,
+                "sigma_matched_requests": 0,
+                "sensitive_config_probe_matches": 0,
+                "sensitive_config_probe_success_responses": 0,
+                "cve_findings_by_severity": {"high": 1},
+                "sigma_matches_by_severity": {}
+            },
+            "cve_findings": []
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let secret_webhook = "https://hooks.slack.invalid/services/secret-webhook-value";
+
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .env("SHENRON_SLACK_WEBHOOK", secret_webhook)
+        .env("SHENRON_SLACK_MIN_SEVERITY", "critical")
+        .args(["hunt", "--results-dir", run_dir.to_str().unwrap()])
+        .assert()
+        .success()
+        .stderr(contains(
+            "Slack notification skipped (below SHENRON_SLACK_MIN_SEVERITY)",
+        ))
+        .stderr(predicates::str::contains(secret_webhook).not());
+}
+
 fn copy_tree(source: &Path, destination: &Path) {
     for entry in WalkDir::new(source) {
         let entry = entry.unwrap();

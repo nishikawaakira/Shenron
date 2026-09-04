@@ -1,18 +1,24 @@
 # Daily threat-hunting runbook
 
 How a security researcher would run Shenron day to day — and **why** each step
-is shaped this way. Shenron is a passive, offline evidence-and-candidate engine:
+is shaped this way. Shenron is a passive, offline-by-default evidence-and-candidate engine:
 it turns public CTI plus your own historical logs into confidence-labeled
 evidence, triage priorities, and COUNT-only WAF rule candidates. It never
 asserts an attack, never blocks traffic, and never touches the source logs. The
 analyst stays in the loop; Shenron does the correlation, labeling, and
 bookkeeping.
 
+An optional post-hunt Slack notification is the only analysis-side network
+exception. It is disabled unless `SHENRON_SLACK_WEBHOOK` is set and sends only
+sanitized aggregate counters, never IPs, paths, hosts, headers, log values, or
+private findings.
+
 The companion driver is [`scripts/daily-hunt.sh`](../scripts/daily-hunt.sh).
 
 ## Prerequisites
 
 - The `shenron` and `shenron-lab` binaries.
+- System `curl` only when the optional Slack notification is enabled.
 - `git` on the PATH — `shenron-lab setup` clones the public
   `projectdiscovery/nuclei-templates` repository (a `--filter=blob:none
   --no-checkout` partial clone). **Why git is a good choice here:** it is
@@ -48,6 +54,27 @@ This single command is suitable for cron. The optional
 [`scripts/daily-hunt.sh`](../scripts/daily-hunt.sh) wrapper only supplies these
 arguments from environment variables and lowers the process priority; Shenron
 itself selects the prior run and prints the aggregate review signals.
+
+To add an aggregate-only daily Slack notification, place the webhook and an
+optional catalog-severity threshold in the cron environment rather than on the
+command line:
+
+```bash
+SHENRON_SLACK_WEBHOOK='https://hooks.slack.com/services/REDACTED' \
+SHENRON_SLACK_MIN_SEVERITY=high \
+nice -n 10 shenron hunt --input /var/log/nginx --format nginx --since 24h \
+  --baseline-latest ./private-results --report --lang ja
+```
+
+The message contains sanitized severity/CVE/KEV/Sigma, sensitive-file 2xx,
+concentration, and optional baseline-delta counts plus local artifact paths.
+It never contains raw IPs, paths, hosts, headers, log values, or private
+findings. The threshold also permits a notification for any observed KEV CVE
+or sensitive-file/config 2xx response. Delivery uses `curl` and is best effort:
+a missing executable, timeout, or non-2xx response is disclosed without the
+webhook URL and does not fail the completed hunt. Catalog severity and these
+aggregates remain review context, not determinations of attack, exploitation,
+compromise, or attacker identity.
 
 ## The daily loop
 
