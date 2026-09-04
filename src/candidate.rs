@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::production::{FindingExplanation, FindingSource};
 use crate::{
-    event::{TelemetryProfile, WebEvent},
+    event::{RawRetention, TelemetryProfile, WebEvent},
     nuclei::RequestSpecificity,
 };
 
@@ -322,20 +322,25 @@ pub fn replay(
     let mut matched_known_request_ids = BTreeSet::new();
     let mut other_historical_matches = 0_u64;
     for path in crate::production::input_files(input, telemetry_profile)? {
-        crate::production::stream_events(&path, telemetry_profile, |event| {
-            if let Ok(event) = event {
-                evaluated += 1;
-                if candidate.conditions.matches(&event) {
-                    match event.request_id.as_ref() {
-                        Some(request_id) if known_request_ids.contains(request_id) => {
-                            matched_known_request_ids.insert(request_id.clone());
+        crate::production::stream_events_with_raw_retention(
+            &path,
+            telemetry_profile,
+            RawRetention::Drop,
+            |event| {
+                if let Ok(event) = event {
+                    evaluated += 1;
+                    if candidate.conditions.matches(&event) {
+                        match event.request_id.as_ref() {
+                            Some(request_id) if known_request_ids.contains(request_id) => {
+                                matched_known_request_ids.insert(request_id.clone());
+                            }
+                            _ => other_historical_matches += 1,
                         }
-                        _ => other_historical_matches += 1,
                     }
                 }
-            }
-            Ok(())
-        })?;
+                Ok(())
+            },
+        )?;
     }
     let known = candidate.evidence.known_threat_findings;
     let matched_known = matched_known_request_ids.len() as u64;

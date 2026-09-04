@@ -4,6 +4,26 @@ use chrono::{DateTime, Utc};
 use ipnet::IpNet;
 use serde::{Deserialize, Serialize};
 
+/// Controls whether parsers retain a copy of the original input record.
+///
+/// Matching paths that build a keyword haystack must use [`Self::Keep`].
+/// Aggregate-only paths can use [`Self::Drop`] to avoid one allocation per
+/// parsed record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RawRetention {
+    Keep,
+    Drop,
+}
+
+impl RawRetention {
+    pub(crate) fn capture(self, raw: &str) -> String {
+        match self {
+            Self::Keep => raw.to_owned(),
+            Self::Drop => String::new(),
+        }
+    }
+}
+
 /// A configured proxy network that is permitted to supply a forwarded client
 /// address. Parsing accepts either a single IP address or a CIDR network.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -339,8 +359,9 @@ pub struct WebEvent {
     pub waf_labels: Vec<String>,
     pub waf_non_terminating_rule_ids: Vec<String>,
     pub log_source: LogSource,
-    /// The unmodified JSON record, for analyst follow-up rather than repeat
-    /// parsing of the source file.
+    /// The unmodified input record when the parsing path requests retention.
+    /// Aggregate-only streaming paths may leave this empty to avoid an unused
+    /// per-record allocation.
     pub raw: String,
 }
 

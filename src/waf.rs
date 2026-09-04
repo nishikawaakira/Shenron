@@ -5,7 +5,7 @@ use flate2::read::GzDecoder;
 use serde::Deserialize;
 use thiserror::Error;
 
-use crate::event::{HttpHeader, LogSource, WebEvent};
+use crate::event::{HttpHeader, LogSource, RawRetention, WebEvent};
 
 #[derive(Debug, Error)]
 pub enum WafParseError {
@@ -60,6 +60,13 @@ struct RawRuleMatch {
 }
 
 pub fn parse_line(raw: &str) -> Result<WebEvent, WafParseError> {
+    parse_line_with_raw_retention(raw, RawRetention::Keep)
+}
+
+pub fn parse_line_with_raw_retention(
+    raw: &str,
+    raw_retention: RawRetention,
+) -> Result<WebEvent, WafParseError> {
     let event: RawWafEvent = serde_json::from_str(raw)?;
     let request = event.http_request;
     let headers = request
@@ -142,7 +149,7 @@ pub fn parse_line(raw: &str) -> Result<WebEvent, WafParseError> {
             .map(|rule| rule.rule_id)
             .collect(),
         log_source: LogSource::AwsWaf,
-        raw: raw.to_owned(),
+        raw: raw_retention.capture(raw),
     })
 }
 
@@ -162,13 +169,19 @@ fn split_uri(uri: Option<&str>) -> (Option<String>, Option<String>) {
 pub struct WafLines<R: Read> {
     reader: BufReader<R>,
     line: String,
+    raw_retention: RawRetention,
 }
 
 impl<R: Read> WafLines<R> {
     pub fn new(reader: R) -> Self {
+        Self::with_raw_retention(reader, RawRetention::Keep)
+    }
+
+    pub fn with_raw_retention(reader: R, raw_retention: RawRetention) -> Self {
         Self {
             reader: BufReader::new(reader),
             line: String::new(),
+            raw_retention,
         }
     }
 }
@@ -182,7 +195,12 @@ impl<R: Read> Iterator for WafLines<R> {
             match self.reader.read_line(&mut self.line) {
                 Ok(0) => return None,
                 Ok(_) if self.line.trim().is_empty() => continue,
-                Ok(_) => return Some(parse_line(self.line.trim_end())),
+                Ok(_) => {
+                    return Some(parse_line_with_raw_retention(
+                        self.line.trim_end(),
+                        self.raw_retention,
+                    ));
+                }
                 Err(error) => return Some(Err(WafParseError::Json(serde_json::Error::io(error)))),
             }
         }
@@ -231,6 +249,23 @@ mod tests {
     #[test]
     fn malformed_json_is_an_error() {
         assert!(parse_line("not json").is_err());
+    }
+
+    #[test]
+    fn raw_retention_changes_only_the_raw_record() {
+        let raw = include_str!("../tests/fixtures/aws-waf/malicious.jsonl")
+            .lines()
+            .next()
+            .unwrap();
+        let mut retained = parse_line(raw).unwrap();
+        let dropped = parse_line_with_raw_retention(raw, RawRetention::Drop).unwrap();
+        assert_eq!(retained.raw, raw);
+        assert!(dropped.raw.is_empty());
+        retained.raw.clear();
+        assert_eq!(
+            serde_json::to_value(retained).unwrap(),
+            serde_json::to_value(dropped).unwrap()
+        );
     }
 
     #[test]

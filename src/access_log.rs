@@ -16,7 +16,7 @@ use chrono::DateTime;
 use regex::Regex;
 use thiserror::Error;
 
-use crate::event::{HttpHeader, LogSource, WebEvent};
+use crate::event::{HttpHeader, LogSource, RawRetention, WebEvent};
 
 /// Standard combined logs are line-oriented. Rejecting unusually long records
 /// keeps a corrupt or attacker-influenced access log from dominating a scan.
@@ -42,6 +42,14 @@ pub enum AccessLogParseError {
 pub fn parse_combined_line(
     raw: &str,
     format: AccessLogFormat,
+) -> Result<WebEvent, AccessLogParseError> {
+    parse_combined_line_with_raw_retention(raw, format, RawRetention::Keep)
+}
+
+pub fn parse_combined_line_with_raw_retention(
+    raw: &str,
+    format: AccessLogFormat,
+    raw_retention: RawRetention,
 ) -> Result<WebEvent, AccessLogParseError> {
     let (captures, log_source, has_vhost_prefix) = match format {
         AccessLogFormat::NginxCombined => (
@@ -148,7 +156,7 @@ pub fn parse_combined_line(
         waf_labels: Vec::new(),
         waf_non_terminating_rule_ids: Vec::new(),
         log_source,
-        raw: raw.to_owned(),
+        raw: raw_retention.capture(raw),
     })
 }
 
@@ -256,13 +264,23 @@ pub struct AccessLogLines<R: Read> {
     reader: BufReader<R>,
     line: String,
     format: AccessLogFormat,
+    raw_retention: RawRetention,
 }
 impl<R: Read> AccessLogLines<R> {
     pub fn new(reader: R, format: AccessLogFormat) -> Self {
+        Self::with_raw_retention(reader, format, RawRetention::Keep)
+    }
+
+    pub fn with_raw_retention(
+        reader: R,
+        format: AccessLogFormat,
+        raw_retention: RawRetention,
+    ) -> Self {
         Self {
             reader: BufReader::new(reader),
             line: String::new(),
             format,
+            raw_retention,
         }
     }
 }
@@ -277,7 +295,13 @@ impl<R: Read> Iterator for AccessLogLines<R> {
                 Ok(_) if self.line.len() > MAX_COMBINED_LINE_BYTES => {
                     return Some(Err(AccessLogParseError::Format));
                 }
-                Ok(_) => return Some(parse_combined_line(self.line.trim_end(), self.format)),
+                Ok(_) => {
+                    return Some(parse_combined_line_with_raw_retention(
+                        self.line.trim_end(),
+                        self.format,
+                        self.raw_retention,
+                    ));
+                }
                 Err(_) => return Some(Err(AccessLogParseError::Format)),
             }
         }
@@ -440,6 +464,25 @@ mod tests {
             .headers
             .iter()
             .any(|header| header.name == "User-Agent"));
+    }
+
+    #[test]
+    fn raw_retention_changes_only_the_raw_record() {
+        let raw = r#"203.0.113.4 - - [24/Aug/2026:11:20:30 +0000] "GET /foo?q=one HTTP/1.1" 200 1 "-" "example-agent""#;
+        let mut retained = parse_combined_line(raw, AccessLogFormat::ApacheCombined).unwrap();
+        let dropped = parse_combined_line_with_raw_retention(
+            raw,
+            AccessLogFormat::ApacheCombined,
+            RawRetention::Drop,
+        )
+        .unwrap();
+        assert_eq!(retained.raw, raw);
+        assert!(dropped.raw.is_empty());
+        retained.raw.clear();
+        assert_eq!(
+            serde_json::to_value(retained).unwrap(),
+            serde_json::to_value(dropped).unwrap()
+        );
     }
 
     #[test]

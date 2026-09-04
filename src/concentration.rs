@@ -397,7 +397,8 @@ pub struct RequestConcentration {
     total_requests: u64,
     paths: BTreeMap<String, PathAccumulator>,
     source_ips: BTreeMap<String, SourceAccumulator>,
-    source_path_pairs: BTreeMap<(String, String), u64>,
+    source_path_pairs: BTreeMap<String, BTreeMap<String, u64>>,
+    source_path_pair_count: usize,
     source_ips_with_incomplete_path_pairs: BTreeSet<String>,
     minute_buckets: BTreeMap<i64, u64>,
     status_minute_buckets: BTreeMap<i64, StatusClassCounts>,
@@ -473,6 +474,7 @@ impl RequestConcentration {
             paths: BTreeMap::new(),
             source_ips: BTreeMap::new(),
             source_path_pairs: BTreeMap::new(),
+            source_path_pair_count: 0,
             source_ips_with_incomplete_path_pairs: BTreeSet::new(),
             minute_buckets: BTreeMap::new(),
             status_minute_buckets: BTreeMap::new(),
@@ -772,51 +774,90 @@ impl RequestConcentration {
     }
 
     fn track_path(&mut self, path: &str, event: &WebEvent) -> bool {
-        if !self.paths.contains_key(path) && self.paths.len() >= self.limits.max_paths {
+        let source_ip_is_tracked = event.source_ip.as_deref().is_some_and(|source_ip| {
+            self.source_ips.contains_key(source_ip)
+                || self.source_ips.len() < self.limits.max_source_ips
+        });
+        if let Some(item) = self.paths.get_mut(path) {
+            item.requests += 1;
+            if source_ip_is_tracked {
+                let source_ip = event
+                    .source_ip
+                    .as_deref()
+                    .expect("tracked source IP came from this event");
+                if !item.source_ips.contains(source_ip) {
+                    item.source_ips.insert(source_ip.to_owned());
+                }
+            }
+            record_status_class(&mut item.status_classes, event.status);
+            if self.response_bytes_available {
+                item.response_bytes += event.response_bytes.unwrap_or(0);
+            }
+            return true;
+        }
+        if self.paths.len() >= self.limits.max_paths {
             self.paths_beyond_tracking_cap += 1;
             return false;
         }
-        let item = self.paths.entry(path.to_owned()).or_default();
+        let mut item = PathAccumulator::default();
         item.requests += 1;
-        if let Some(source_ip) = &event.source_ip {
-            if self.source_ips.contains_key(source_ip)
-                || self.source_ips.len() < self.limits.max_source_ips
-            {
-                item.source_ips.insert(source_ip.clone());
-            }
+        if source_ip_is_tracked {
+            item.source_ips.insert(
+                event
+                    .source_ip
+                    .as_deref()
+                    .expect("tracked source IP came from this event")
+                    .to_owned(),
+            );
         }
         record_status_class(&mut item.status_classes, event.status);
         if self.response_bytes_available {
             item.response_bytes += event.response_bytes.unwrap_or(0);
         }
+        self.paths.insert(path.to_owned(), item);
         true
     }
 
     fn track_source_ip(&mut self, source_ip: &str) -> bool {
-        if !self.source_ips.contains_key(source_ip)
-            && self.source_ips.len() >= self.limits.max_source_ips
-        {
+        if let Some(item) = self.source_ips.get_mut(source_ip) {
+            item.requests += 1;
+            return true;
+        }
+        if self.source_ips.len() >= self.limits.max_source_ips {
             self.source_ips_beyond_tracking_cap += 1;
             return false;
         }
         self.source_ips
-            .entry(source_ip.to_owned())
-            .or_default()
-            .requests += 1;
+            .insert(source_ip.to_owned(), SourceAccumulator { requests: 1 });
         true
     }
 
     fn track_source_path_pair(&mut self, source_ip: &str, path: &str) {
-        let key = (source_ip.to_owned(), path.to_owned());
-        if !self.source_path_pairs.contains_key(&key)
-            && self.source_path_pairs.len() >= self.limits.max_source_path_pairs
-        {
-            self.source_path_pairs_beyond_tracking_cap += 1;
-            self.source_ips_with_incomplete_path_pairs
-                .insert(source_ip.to_owned());
+        if let Some(paths) = self.source_path_pairs.get_mut(source_ip) {
+            if let Some(count) = paths.get_mut(path) {
+                *count += 1;
+                return;
+            }
+            if self.source_path_pair_count < self.limits.max_source_path_pairs {
+                paths.insert(path.to_owned(), 1);
+                self.source_path_pair_count += 1;
+                return;
+            }
+        } else if self.source_path_pair_count < self.limits.max_source_path_pairs {
+            self.source_path_pairs
+                .insert(source_ip.to_owned(), BTreeMap::from([(path.to_owned(), 1)]));
+            self.source_path_pair_count += 1;
             return;
         }
-        *self.source_path_pairs.entry(key).or_default() += 1;
+
+        self.source_path_pairs_beyond_tracking_cap += 1;
+        if !self
+            .source_ips_with_incomplete_path_pairs
+            .contains(source_ip)
+        {
+            self.source_ips_with_incomplete_path_pairs
+                .insert(source_ip.to_owned());
+        }
     }
 
     fn path_summary(&self, item: &PathAccumulator) -> PathConcentrationSummary {
@@ -858,14 +899,13 @@ impl RequestConcentration {
         {
             return None;
         }
-        let start = (source_ip.to_owned(), String::new());
         self.source_path_pairs
-            .range(start..)
-            .take_while(|((candidate, _), _)| candidate == source_ip)
-            .max_by(|((_, left_path), left), ((_, right_path), right)| {
+            .get(source_ip)?
+            .iter()
+            .max_by(|(left_path, left), (right_path, right)| {
                 left.cmp(right).then_with(|| right_path.cmp(left_path))
             })
-            .map(|((_, path), _)| path.clone())
+            .map(|(path, _)| path.clone())
     }
 
     fn request_rate(&self) -> (Option<u64>, Option<f64>, Option<f64>) {
@@ -1442,6 +1482,7 @@ mod tests {
         concentration.observe(&event(Some("/first"), Some("198.51.100.1"), Some(0)));
         concentration.observe(&event(Some("/second"), Some("198.51.100.1"), Some(0)));
         assert_eq!(concentration.most_requested_path("198.51.100.1"), None);
+        assert_eq!(concentration.source_path_pair_count, 1);
         assert_eq!(
             concentration
                 .summary()
@@ -1462,7 +1503,12 @@ mod tests {
             let previous_full_scan = concentration
                 .source_path_pairs
                 .iter()
-                .filter(|((candidate, _), _)| candidate == source)
+                .flat_map(|(candidate, paths)| {
+                    paths
+                        .iter()
+                        .map(move |(path, count)| ((candidate, path), count))
+                })
+                .filter(|((candidate, _), _)| candidate.as_str() == source)
                 .max_by(|((_, left_path), left), ((_, right_path), right)| {
                     left.cmp(right).then_with(|| right_path.cmp(left_path))
                 })
