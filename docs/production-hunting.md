@@ -134,6 +134,17 @@ network-prefix groups without replacing the individual peer-IP list. IPv4 uses
 and `--ipv6-group-prefix` can change it. A shared prefix is not evidence of a
 shared operator, owner, or actor.
 
+Add `--asn-dataset <PATH>` to derive a second, private focus aggregation from a
+local GeoLite2-ASN-compatible CSV or Shenron ASN range TSV. Under the same
+`--show-source-ips` privacy gate it lists ASN, organization label, requests,
+focused-request share, and distinct retained peers; unresolved peer and request
+counts are disclosed. Prefix groups remain present. Without a dataset the run
+succeeds and states that ASN grouping was omitted. An ASN is a routing-level
+grouping: it does not establish that one operator controls the traffic and is
+not attribution or a determination of a denial-of-service attempt, attack, or
+abuse. ASN and organization values remain private and are not added to the
+sanitized report.
+
 ## Private offline HTML report
 
 Analyze raw logs and render the private report in the same hunt by adding

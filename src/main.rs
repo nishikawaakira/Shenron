@@ -33,7 +33,7 @@ use shenron::{
     },
     production::{
         ablation_with_optional_kev as production_ablation,
-        concentration as production_concentration,
+        concentration_with_asn as production_concentration,
         count_hypotheses_with_optional_kev as production_count_hypotheses,
         explain_private_findings,
         historical_replay_with_optional_kev as production_historical_replay,
@@ -284,6 +284,10 @@ enum ProductionCommand {
         /// IPv6 prefix length for private focus-path address-block aggregation (default: 48).
         #[arg(long, value_parser = parse_ipv6_prefix_length)]
         ipv6_group_prefix: Option<u8>,
+        /// Local GeoLite2-ASN-compatible CSV or Shenron ASN range TSV used only
+        /// for private focus grouping. No network lookup is performed.
+        #[arg(long)]
+        asn_dataset: Option<PathBuf>,
         /// Inclusive UTC start time in RFC 3339 format.
         #[arg(long, value_parser = parse_rfc3339_utc)]
         from: Option<DateTime<Utc>>,
@@ -765,6 +769,7 @@ fn main() -> Result<()> {
                 source_ip,
                 ipv4_group_prefix,
                 ipv6_group_prefix,
+                asn_dataset,
                 from,
                 to,
                 show_paths,
@@ -807,6 +812,7 @@ fn main() -> Result<()> {
                     ipv4: ipv4_group_prefix.unwrap_or(default_prefixes.ipv4),
                     ipv6: ipv6_group_prefix.unwrap_or(default_prefixes.ipv6),
                 };
+                let asn_database = asn_dataset.as_deref().map(load_asn_database).transpose()?;
                 let report = production_concentration(
                     &input,
                     &output,
@@ -814,9 +820,10 @@ fn main() -> Result<()> {
                     HuntTimeRange { from, to },
                     focus.clone(),
                     focus_prefix_lengths,
+                    asn_database.as_ref(),
                 )?;
                 let private_path = output.join("request-concentration.json");
-                let private = (show_paths || show_source_ips)
+                let private = (show_paths || show_source_ips || focus.is_some())
                     .then(|| load_private_concentration(&private_path))
                     .transpose()?;
                 print_concentration(
@@ -1751,6 +1758,13 @@ fn print_concentration(
             "\n{header} (aggregate requests only; not a DoS/attack/abuse/compromise/attribution determination):\n{}\n  Observed peers may be CDN/LB/NAT/proxy addresses and are not attacker attribution.",
             lines.join("\n"),
         );
+        let asn_available = private
+            .and_then(|report| report.focus.as_ref())
+            .and_then(|focus| focus.asn.as_ref())
+            .is_some();
+        if !asn_available {
+            println!("  ASN grouping omitted because --asn-dataset was not specified.");
+        }
     }
     if let Some(private) = private {
         if show_paths {
@@ -1881,6 +1895,34 @@ fn print_concentration(
                     }
                     println!(
                         "  Shared prefixes can span tenants, and one operator can span many prefixes; this is observed request-volume aggregation only, not attribution or a DoS/attack/abuse determination."
+                    );
+                }
+                if let Some(asn) = &focus.asn {
+                    println!(
+                        "\nPrivate ASN aggregation for the focus (routing-level groups only; not evidence that one operator controls the traffic):"
+                    );
+                    for group in asn.groups.iter().take(display_limit(limit)) {
+                        println!(
+                            "  AS{} {}\n    Requests: {} ({:.1}%)\n    Distinct observed peer IPs: {}",
+                            group.asn,
+                            terminal_safe(&group.organization),
+                            group.requests,
+                            group.request_share * 100.0,
+                            group.distinct_source_ips,
+                        );
+                    }
+                    if asn.groups.len() > display_limit(limit) {
+                        println!(
+                            "  {} ASN groups omitted. Pass --limit 0 to display all.",
+                            asn.groups.len() - display_limit(limit)
+                        );
+                    }
+                    println!(
+                        "  Unresolved observed peer IPs: {} ({} requests)",
+                        asn.unresolved_source_ips, asn.unresolved_requests,
+                    );
+                    println!(
+                        "  An ASN is a routing-level grouping. It does not establish that one operator controls the traffic, and it is not attribution or a determination of a denial-of-service attempt, attack, or abuse."
                     );
                 }
             }

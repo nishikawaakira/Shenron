@@ -243,6 +243,87 @@ fn concentration_path_focus_keeps_sources_private_until_explicitly_requested() {
 }
 
 #[test]
+fn concentration_focus_optionally_groups_private_peers_by_local_asn() {
+    let directory = tempdir().unwrap();
+    let input = directory.path().join("access.log");
+    fs::write(
+        &input,
+        concat!(
+            "198.51.100.1 - - [01/Jan/2026:00:00:00 +0000] \"GET /focus HTTP/1.1\" 403 10 \"-\" \"fixture-agent\"\n",
+            "198.51.100.1 - - [01/Jan/2026:00:00:01 +0000] \"GET /focus HTTP/1.1\" 403 10 \"-\" \"fixture-agent\"\n",
+            "198.51.101.2 - - [01/Jan/2026:00:00:02 +0000] \"GET /focus HTTP/1.1\" 403 10 \"-\" \"fixture-agent\"\n",
+            "203.0.113.9 - - [01/Jan/2026:00:00:03 +0000] \"GET /focus HTTP/1.1\" 404 10 \"-\" \"fixture-agent\"\n",
+        ),
+    )
+    .unwrap();
+    let asn = directory.path().join("asn.csv");
+    fs::write(
+        &asn,
+        concat!(
+            "network,autonomous_system_number,autonomous_system_organization\n",
+            "198.51.100.0/23,64500,Example Transit\n",
+        ),
+    )
+    .unwrap();
+
+    let output = directory.path().join("with-asn");
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "concentration",
+            "--input",
+            input.to_str().unwrap(),
+            "--format",
+            "apache",
+            "--output",
+            output.to_str().unwrap(),
+            "--path",
+            "/focus",
+            "--show-source-ips",
+            "--asn-dataset",
+            asn.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(contains("Private address-block aggregation"))
+        .stdout(contains("198.51.100.0/24"))
+        .stdout(contains("198.51.101.0/24"))
+        .stdout(contains("Private ASN aggregation"))
+        .stdout(contains("AS64500 Example Transit"))
+        .stdout(contains("Distinct observed peer IPs: 2"))
+        .stdout(contains("Unresolved observed peer IPs: 1 (1 requests)"));
+
+    let private = fs::read_to_string(output.join("request-concentration.json")).unwrap();
+    assert!(private.contains("Example Transit"));
+    assert!(private.contains("64500"));
+    let sanitized = fs::read_to_string(output.join("sanitized-research.json")).unwrap();
+    for private_value in ["Example Transit", "64500", "198.51.100.1", "/focus"] {
+        assert!(!sanitized.contains(private_value));
+    }
+
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "concentration",
+            "--input",
+            input.to_str().unwrap(),
+            "--format",
+            "apache",
+            "--output",
+            directory.path().join("without-asn").to_str().unwrap(),
+            "--path",
+            "/focus",
+            "--show-source-ips",
+        ])
+        .assert()
+        .success()
+        .stdout(contains(
+            "ASN grouping omitted because --asn-dataset was not specified.",
+        ))
+        .stdout(contains("Private ASN aggregation").not());
+}
+
+#[test]
 fn concentration_path_prefix_and_source_ip_focuses_keep_raw_values_private() {
     let directory = tempdir().unwrap();
 

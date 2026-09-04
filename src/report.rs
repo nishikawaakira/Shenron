@@ -1990,6 +1990,7 @@ mod tests {
                     request_share: 1.0,
                     distinct_source_ips: 1,
                 }],
+                asn: None,
                 requests_per_minute_series: vec![
                     MinuteRequestCount {
                         minute_epoch: 0,

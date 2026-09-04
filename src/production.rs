@@ -19,7 +19,7 @@ use walkdir::WalkDir;
 use crate::{
     access_log::{AccessLogFormat, AccessLogLines},
     concentration::{
-        add_focus_prefix_groups, FocusPrefixLengths, FocusSelector,
+        add_focus_asn_groups, add_focus_prefix_groups, FocusPrefixLengths, FocusSelector,
         PrivateRequestConcentrationReport, RequestConcentration, RequestConcentrationSummary,
     },
     event::{HttpHeader, LogSource, TelemetryProfile, TrustedProxySet, WebEvent},
@@ -27,6 +27,7 @@ use crate::{
         frozen_nuclei_selection, path_distinctiveness, validated_detections, Detectability,
         PathDistinctiveness, RequestSpecificity, ValidatedNucleiDetection,
     },
+    reputation::AsnDatabase,
     waf::{maybe_gzip_reader, WafLines},
 };
 
@@ -994,6 +995,29 @@ pub fn concentration(
     focus: Option<FocusSelector>,
     focus_prefix_lengths: FocusPrefixLengths,
 ) -> anyhow::Result<SanitizedConcentrationReport> {
+    concentration_with_asn(
+        input,
+        output,
+        telemetry_profile,
+        time_range,
+        focus,
+        focus_prefix_lengths,
+        None,
+    )
+}
+
+/// Measure request-volume distribution and optionally enrich retained focus
+/// peers through one analyst-supplied local ASN database. ASN values remain in
+/// the private artifact; no lookup performs network access.
+pub fn concentration_with_asn(
+    input: &Path,
+    output: &Path,
+    telemetry_profile: TelemetryProfile,
+    time_range: HuntTimeRange,
+    focus: Option<FocusSelector>,
+    focus_prefix_lengths: FocusPrefixLengths,
+    asn_database: Option<&AsnDatabase>,
+) -> anyhow::Result<SanitizedConcentrationReport> {
     time_range.validate()?;
     ensure_separate_output(input, output)?;
     let files = input_files(input, telemetry_profile)?;
@@ -1048,6 +1072,9 @@ pub fn concentration(
     let mut private_report = accumulator.private_report();
     if let Some(focus) = private_report.focus.as_mut() {
         add_focus_prefix_groups(focus, focus_prefix_lengths);
+        if let Some(asn_database) = asn_database {
+            add_focus_asn_groups(focus, asn_database);
+        }
     }
     write_private_concentration(output, &private_report)?;
     let sanitized_path = output.join("sanitized-research.json");

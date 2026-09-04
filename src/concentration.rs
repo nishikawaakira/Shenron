@@ -14,7 +14,7 @@ use chrono::{DateTime, Utc};
 use ipnet::IpNet;
 use serde::{Deserialize, Serialize};
 
-use crate::event::WebEvent;
+use crate::{event::WebEvent, triage::AsnResolver};
 
 pub const DEFAULT_MAX_TRACKED_PATHS: usize = 100_000;
 pub const DEFAULT_MAX_TRACKED_SOURCE_IPS: usize = 1_000_000;
@@ -248,6 +248,26 @@ pub struct PrivateFocusPrefixGroup {
     pub distinct_source_ips: usize,
 }
 
+/// A private routing-level aggregation of retained focus peers. An ASN is not
+/// evidence that one operator controls the traffic and is not attribution.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct PrivateFocusAsnGroup {
+    pub asn: u32,
+    pub organization: String,
+    pub requests: u64,
+    pub request_share: f64,
+    pub distinct_source_ips: usize,
+}
+
+/// Private ASN enrichment derived from retained focus peers. Unresolved peers
+/// and their requests are disclosed rather than inferred or discarded.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct PrivateFocusAsnSummary {
+    pub groups: Vec<PrivateFocusAsnGroup>,
+    pub unresolved_source_ips: usize,
+    pub unresolved_requests: u64,
+}
+
 /// One retained private time-series point. Epoch minutes avoid locale and
 /// timezone ambiguity; report renderers label them as UTC.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
@@ -297,6 +317,10 @@ pub struct PrivateFocusSummary {
     /// before prefix grouping support.
     #[serde(default)]
     pub network_prefix_groups: Vec<PrivateFocusPrefixGroup>,
+    /// Present only when an analyst supplied a local ASN dataset. ASN and
+    /// organization values remain confined to this private artifact.
+    #[serde(default)]
+    pub asn: Option<PrivateFocusAsnSummary>,
     /// Private minute-resolution series, ordered by epoch minute.
     #[serde(default)]
     pub requests_per_minute_series: Vec<MinuteRequestCount>,
@@ -624,6 +648,7 @@ impl RequestConcentration {
                 response_status_classes: self.focus_status_classes.clone(),
                 sources,
                 network_prefix_groups: Vec::new(),
+                asn: None,
                 requests_per_minute_series: Self::minute_series(&self.focus_minute_buckets),
                 minute_buckets_beyond_cap: self.focus_minute_buckets_beyond_cap,
             }
@@ -865,6 +890,67 @@ pub fn add_focus_prefix_groups(focus: &mut PrivateFocusSummary, prefixes: FocusP
     focus.network_prefix_groups = prefix_groups;
 }
 
+/// Add deterministic ASN aggregations to an already-built private focus
+/// summary. Resolution is local and uses only retained source counts. An ASN
+/// is a routing-level grouping, not an operator, actor, or intent judgment.
+pub fn add_focus_asn_groups(focus: &mut PrivateFocusSummary, resolver: &impl AsnResolver) {
+    let mut groups = BTreeMap::<u32, (String, u64, BTreeSet<String>)>::new();
+    let mut unresolved_source_ips = 0usize;
+    let mut unresolved_requests = 0u64;
+
+    for source in &focus.sources {
+        let resolved = source
+            .source_ip
+            .parse::<IpAddr>()
+            .ok()
+            .and_then(|address| resolver.resolve(address));
+        let Some(resolved) = resolved else {
+            unresolved_source_ips += 1;
+            unresolved_requests += source.requests;
+            continue;
+        };
+        let entry = groups
+            .entry(resolved.asn)
+            .or_insert_with(|| (resolved.org.clone(), 0, BTreeSet::new()));
+        // A malformed or mixed local dataset can name the same ASN more than
+        // once. Pick the lexicographically first label for deterministic output.
+        if resolved.org < entry.0 {
+            entry.0 = resolved.org;
+        }
+        entry.1 += source.requests;
+        entry.2.insert(source.source_ip.clone());
+    }
+
+    let mut groups = groups
+        .into_iter()
+        .map(
+            |(asn, (organization, requests, source_ips))| PrivateFocusAsnGroup {
+                asn,
+                organization,
+                requests,
+                request_share: if focus.total_requests == 0 {
+                    0.0
+                } else {
+                    requests as f64 / focus.total_requests as f64
+                },
+                distinct_source_ips: source_ips.len(),
+            },
+        )
+        .collect::<Vec<_>>();
+    groups.sort_by(|left, right| {
+        right
+            .requests
+            .cmp(&left.requests)
+            .then_with(|| left.asn.cmp(&right.asn))
+            .then_with(|| left.organization.cmp(&right.organization))
+    });
+    focus.asn = Some(PrivateFocusAsnSummary {
+        groups,
+        unresolved_source_ips,
+        unresolved_requests,
+    });
+}
+
 fn record_status_class(counts: &mut StatusClassCounts, status: Option<u16>) {
     match status {
         Some(100..=199) => counts.informational += 1,
@@ -879,10 +965,21 @@ fn record_status_class(counts: &mut StatusClassCounts, status: Option<u16>) {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use chrono::TimeZone;
 
     use super::*;
     use crate::event::{LogSource, WebEvent};
+    use crate::triage::ResolvedAsn;
+
+    struct TestAsnResolver(BTreeMap<IpAddr, ResolvedAsn>);
+
+    impl AsnResolver for TestAsnResolver {
+        fn resolve(&self, ip: IpAddr) -> Option<ResolvedAsn> {
+            self.0.get(&ip).cloned()
+        }
+    }
 
     fn event(path: Option<&str>, source_ip: Option<&str>, minute: Option<i64>) -> WebEvent {
         WebEvent {
@@ -943,6 +1040,46 @@ mod tests {
             Some(2.0)
         );
         assert_eq!(summary.requests_per_minute.peak_to_median_ratio, Some(1.0));
+    }
+
+    #[test]
+    fn groups_retained_focus_sources_by_asn_and_discloses_unresolved_counts() {
+        let mut concentration = RequestConcentration::new(true);
+        concentration.focus_on(FocusSelector::ExactPath("/focus".to_owned()));
+        for (ip, count) in [("198.51.100.1", 3), ("198.51.101.2", 2), ("203.0.113.9", 1)] {
+            for _ in 0..count {
+                concentration.observe(&event(Some("/focus"), Some(ip), Some(0)));
+            }
+        }
+        let mut focus = concentration.private_report().focus.unwrap();
+        add_focus_prefix_groups(&mut focus, FocusPrefixLengths::default());
+        let resolver = TestAsnResolver(BTreeMap::from([
+            (
+                "198.51.100.1".parse().unwrap(),
+                ResolvedAsn {
+                    asn: 64_500,
+                    org: "Example Transit".to_owned(),
+                },
+            ),
+            (
+                "198.51.101.2".parse().unwrap(),
+                ResolvedAsn {
+                    asn: 64_500,
+                    org: "Example Transit".to_owned(),
+                },
+            ),
+        ]));
+        add_focus_asn_groups(&mut focus, &resolver);
+
+        assert_eq!(focus.network_prefix_groups.len(), 3);
+        let asn = focus.asn.unwrap();
+        assert_eq!(asn.groups.len(), 1);
+        assert_eq!(asn.groups[0].asn, 64_500);
+        assert_eq!(asn.groups[0].requests, 5);
+        assert_eq!(asn.groups[0].distinct_source_ips, 2);
+        assert_eq!(asn.groups[0].request_share, 5.0 / 6.0);
+        assert_eq!(asn.unresolved_source_ips, 1);
+        assert_eq!(asn.unresolved_requests, 1);
     }
 
     #[test]

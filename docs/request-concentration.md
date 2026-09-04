@@ -132,16 +132,25 @@ source-IP focus because its peer set is explicitly selected. A private HTML
 report generated from this run shows the per-IP chart when multiple IPs were
 selected, while preserving the existing path breakdown.
 
-### Relationship to ASN enrichment
+### Optional ASN enrichment
 
-ASN is the semantically appropriate unit when the question concerns a possible
-shared network operator. Shenron already supports this separately through
-`AsnDatabase` and `explain --show-asn --asn-dataset`. Prefix
-aggregation is a local-dataset-free alternative for `concentration`:
-it keeps the command usable without CTI inputs or an ownership lookup. When a
-local ASN dataset is available, ASN grouping is the more accurate choice for
-operator-oriented analysis; prefix groups remain only address-block volume
-aggregation.
+Pass `--asn-dataset <PATH>` with a focus selector and `--show-source-ips` to
+display a private ASN aggregation beside the existing address-prefix groups.
+The dataset may be a GeoLite2-ASN-compatible CSV or Shenron's prepared
+`asn-ranges.tsv`. Each group reports the ASN, organization label, request count,
+share of focused requests, and distinct retained peer IP count. Peers that are
+invalid or unresolved are not inferred: their peer and request counts are
+disclosed separately. Without `--asn-dataset`, concentration still succeeds
+and states that ASN grouping was omitted.
+
+ASN is the semantically appropriate routing unit when the question concerns a
+possible shared network operator. Prefix aggregation remains a
+local-dataset-free alternative, preserving concentration's ability to run
+without CTI inputs. An ASN is nevertheless only a routing-level grouping. It
+does not establish that one operator controls the traffic, and it is not
+attribution or a determination of a denial-of-service attempt, attack, or
+abuse. ASN numbers, organization labels, peers, prefixes, and paths stay in the
+private artifact; sanitized output receives none of those values.
 
 A focused peer is only the observed direct connection address. It may be a CDN,
 load balancer, NAT, proxy, or other intermediary, and concentration on a path
