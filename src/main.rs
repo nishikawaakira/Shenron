@@ -53,7 +53,10 @@ use shenron::{
     },
     reputation::{load_asn_database, load_reputation_database, AsnDatabase, ReputationDatabase},
     sigma::load_rules,
-    triage::{asn_entity_groups, entity_groups, EntityDimension, TriagePolicy},
+    triage::{
+        asn_entity_groups, entity_groups, EntityDimension, TriagePolicy,
+        DEFAULT_MAX_SEQUENCE_OBSERVATIONS, DEFAULT_SEQUENCE_WINDOW_SECONDS,
+    },
     triage_view::{build_triage_view, PrivateTriageView, SanitizedTriageSummary},
     waf::{maybe_gzip_reader, WafLines},
 };
@@ -458,6 +461,9 @@ enum ProductionCommand {
         #[arg(long, value_parser = parse_triage_duration)]
         #[arg(value_delimiter = ',')]
         triage_window: Vec<Duration>,
+        /// Window for ordered request-sequence context (default: 10s).
+        #[arg(long, value_parser = parse_triage_duration)]
+        sequence_window: Option<Duration>,
         /// Maximum individual findings to display. Use 0 to display all findings.
         #[arg(long, default_value_t = 20)]
         limit: usize,
@@ -1000,6 +1006,7 @@ fn main() -> Result<()> {
                 triage_breadth_templates,
                 triage_depth_observations,
                 triage_window,
+                sequence_window,
                 limit,
                 output,
                 output_format,
@@ -1071,6 +1078,12 @@ fn main() -> Result<()> {
                         triage_breadth_templates,
                         triage_depth_observations,
                         triage_window,
+                    )
+                    .with_sequence_settings(
+                        sequence_window.unwrap_or_else(|| {
+                            Duration::from_secs(DEFAULT_SEQUENCE_WINDOW_SECONDS)
+                        }),
+                        DEFAULT_MAX_SEQUENCE_OBSERVATIONS,
                     ),
                     capabilities,
                 };
@@ -1532,7 +1545,7 @@ fn write_hunt_triage_view(
 /// `--show-triage` to opt in to the private ranking.
 fn print_hunt_triage_summary(summary: &SanitizedTriageSummary, view_path: &Path) {
     println!(
-        "Consolidated triage summary (priority order for human review; NOT threat severity or a probability of malice):\n  Entities: {}\n  Requiring investigation: {}\n  Behavior-priority tiers: info={} low={} medium={} high={}\n  First-seen entities (new = review, not malicious): {}\nTriage view written: {}",
+        "Consolidated triage summary (priority order for human review; NOT threat severity or a probability of malice):\n  Entities: {}\n  Requiring investigation: {}\n  Behavior-priority tiers: info={} low={} medium={} high={}\n  First-seen entities (new = review, not malicious): {}\n  Ordered sequence window: {}\n  Sequence observations retained / undated / beyond cap: {} / {} / {}\nTriage view written: {}",
         summary.total_entities,
         summary.entities_requiring_investigation,
         summary.tier_histogram.info,
@@ -1540,6 +1553,10 @@ fn print_hunt_triage_summary(summary: &SanitizedTriageSummary, view_path: &Path)
         summary.tier_histogram.medium,
         summary.tier_histogram.high,
         summary.first_seen_entities,
+        format_triage_duration(Duration::from_secs(summary.sequence.window_seconds)),
+        summary.sequence.retained_observations,
+        summary.sequence.observations_without_timestamp,
+        summary.sequence.observations_beyond_cap,
         view_path.display(),
     );
 }
@@ -1558,7 +1575,7 @@ fn print_hunt_triage_entries(view: &PrivateTriageView, limit: usize) {
     }
     for (index, entity) in displayed.iter().enumerate() {
         println!(
-            "[{}] {}\n  Identity: {}\n  Behavior priority score: {}/100 ({}, reachable maximum {}/100)\n  Triage basis: {}\n  Requires investigation: {}\n  Distinct observations/templates/CVEs: {}/{}/{}\n  Matching records: {}\n  Request-specific / response-unverified observations: {}/{}\n  First seen: {}",
+            "[{}] {}\n  Identity: {}\n  Behavior priority score: {}/100 ({}, reachable maximum {}/100)\n  Triage basis: {}\n  Requires investigation: {}\n  Distinct observations/templates/CVEs: {}/{}/{}\n  Matching records: {}\n  Request-specific / response-unverified observations: {}/{}\n  Sequence max patterns / distinctive patterns: {}/{} within {}\n  Sequence interval min / median: {} / {} seconds\n  Sequence undated / beyond cap: {}/{}\n  First seen: {}",
             index + 1,
             terminal_safe(&entity.key),
             terminal_safe(entity.identity),
@@ -1573,6 +1590,21 @@ fn print_hunt_triage_entries(view: &PrivateTriageView, limit: usize) {
             entity.matching_records,
             entity.request_specific_observations,
             entity.response_unverified_observations,
+            entity.sequence.maximum_distinct_patterns_in_window,
+            entity.sequence.maximum_distinctive_patterns_in_window,
+            format_triage_duration(Duration::from_secs(entity.sequence.window_seconds)),
+            entity
+                .sequence
+                .minimum_interval_seconds
+                .map(|value| format!("{value:.3}"))
+                .unwrap_or_else(|| "unavailable".to_owned()),
+            entity
+                .sequence
+                .median_interval_seconds
+                .map(|value| format!("{value:.3}"))
+                .unwrap_or_else(|| "unavailable".to_owned()),
+            entity.sequence.observations_without_timestamp,
+            entity.sequence.observations_beyond_cap,
             entity.first_seen,
         );
         match &entity.resolved_asn {
@@ -2463,6 +2495,7 @@ struct GroupJson {
     request_specific_observations: usize,
     response_unverified_observations: usize,
     windowed_burst_windows: Vec<shenron::triage::WindowedTriageMatch>,
+    sequence: shenron::triage::RequestSequenceSummary,
     score: shenron::triage::BehaviorScore,
     #[serde(skip_serializing_if = "Option::is_none")]
     reputation: Option<ReputationJson>,
@@ -2570,6 +2603,7 @@ fn base_group_json(group: &shenron::triage::EntityGroup) -> GroupJson {
         request_specific_observations: group.request_specific_observations,
         response_unverified_observations: group.response_unverified_observations,
         windowed_burst_windows: group.windowed_burst_windows.clone(),
+        sequence: group.sequence.clone(),
         score: group.score.clone(),
         reputation: None,
     }
@@ -3109,6 +3143,11 @@ fn print_source_ip_summary(
     println!(
         "Behavior priority score (0-100) ranks a group for triage from observed request behavior only. It is not a probability of malice, a precision or true-positive estimate, an exploitation or compromise determination, or attacker attribution."
     );
+    println!(
+        "Ordered request sequence window: {} (cap {} observations per entity). A short span or regular interval is labeled for review only; it can result from a crawler, page subresources, automation, or a person clicking quickly and does not determine attack, abuse, automation, or identity.",
+        format_triage_duration(policy.sequence_window),
+        policy.max_sequence_observations,
+    );
     let triaged = groups
         .iter()
         .filter(|group| group.requires_investigation())
@@ -3191,6 +3230,7 @@ fn print_ip_group(
         print_windowed_burst_windows(group);
     }
     println!("  Behavior priority score: {}", score_display(&group.score));
+    print_sequence_summary(&group.sequence);
     println!(
         "  Request-specific observations: {}\n  Response-unverified observations: {}",
         group.request_specific_observations, group.response_unverified_observations
@@ -3317,6 +3357,11 @@ fn print_asn_summary(
     println!(
         "Behavior priority score (0-100) ranks an ASN group for triage from observed request behavior only. It is not a probability of malice, a precision or true-positive estimate, an exploitation or compromise determination, or attacker attribution."
     );
+    println!(
+        "Ordered request sequence window: {} (cap {} observations per entity). Sequence timing is an observation for review, not a determination of automation, attack, abuse, or identity.",
+        format_triage_duration(policy.sequence_window),
+        policy.max_sequence_observations,
+    );
     let displayed = if limit == 0 {
         result.groups.as_slice()
     } else {
@@ -3374,6 +3419,7 @@ fn print_asn_group(
         print_windowed_burst_windows(group);
     }
     println!("  Behavior priority score: {}", score_display(&group.score));
+    print_sequence_summary(&group.sequence);
     println!(
         "  Request-specific observations: {}\n  Response-unverified observations: {}",
         group.request_specific_observations, group.response_unverified_observations
@@ -3416,6 +3462,11 @@ fn print_ja4_summary(
     println!(
         "A JA4 client fingerprint groups requests that share TLS client characteristics. Validated-client and observed-peer identities are intentionally reported separately because they must not be merged. One fingerprint observed across several identities can indicate shared tooling or automation; it is not attacker attribution and does not establish an attack, exploitation, or compromise. Behavior priority score (0-100) ranks a fingerprint for triage from observed request behavior only."
     );
+    println!(
+        "Ordered request sequence window: {} (cap {} observations per entity). Sequence timing is an observation for review, not a determination of automation, attack, abuse, or identity.",
+        format_triage_duration(triage.policy.sequence_window),
+        triage.policy.max_sequence_observations,
+    );
     let displayed = if limit == 0 {
         groups.as_slice()
     } else {
@@ -3448,6 +3499,7 @@ fn print_ja4_summary(
             );
             print_windowed_burst_windows(group);
         }
+        print_sequence_summary(&group.sequence);
     }
     if displayed.len() < groups.len() {
         println!(
@@ -3474,6 +3526,27 @@ fn print_windowed_burst_windows(group: &shenron::triage::EntityGroup) {
             ))
             .collect::<Vec<_>>()
             .join(", ")
+    );
+}
+
+fn print_sequence_summary(sequence: &shenron::triage::RequestSequenceSummary) {
+    let minimum = sequence
+        .minimum_interval_seconds
+        .map(|value| format!("{value:.3}s"))
+        .unwrap_or_else(|| "unavailable".to_owned());
+    let median = sequence
+        .median_interval_seconds
+        .map(|value| format!("{value:.3}s"))
+        .unwrap_or_else(|| "unavailable".to_owned());
+    println!(
+        "  Ordered sequence observation ({} window): distinct patterns max {}, distinctive-path patterns max {}, interval min {}, median {}; undated {}, beyond cap {}",
+        format_triage_duration(Duration::from_secs(sequence.window_seconds)),
+        sequence.maximum_distinct_patterns_in_window,
+        sequence.maximum_distinctive_patterns_in_window,
+        minimum,
+        median,
+        sequence.observations_without_timestamp,
+        sequence.observations_beyond_cap,
     );
 }
 

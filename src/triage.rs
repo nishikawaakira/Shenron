@@ -35,6 +35,11 @@ pub const DEFAULT_BREADTH_TEMPLATES: usize = 2;
 /// Default depth threshold: matching request observations, even for one
 /// template.
 pub const DEFAULT_DEPTH_OBSERVATIONS: usize = 10;
+/// Default span for ordered request-sequence observations. This is reporting
+/// context only and does not alter triage thresholds or behavior score.
+pub const DEFAULT_SEQUENCE_WINDOW_SECONDS: u64 = 10;
+/// Exact per-entity cap for private ordered request observations.
+pub const DEFAULT_MAX_SEQUENCE_OBSERVATIONS: usize = 100_000;
 
 /// The dimension an entity is grouped by.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -92,6 +97,8 @@ pub struct TriagePolicy {
     /// Sliding windows evaluated independently. They are sorted and
     /// deduplicated so reports are stable for equivalent CLI input.
     pub windows: Vec<Duration>,
+    pub sequence_window: Duration,
+    pub max_sequence_observations: usize,
 }
 
 impl Default for TriagePolicy {
@@ -101,6 +108,8 @@ impl Default for TriagePolicy {
             breadth_templates: DEFAULT_BREADTH_TEMPLATES,
             depth_observations: DEFAULT_DEPTH_OBSERVATIONS,
             windows: Vec::new(),
+            sequence_window: Duration::from_secs(DEFAULT_SEQUENCE_WINDOW_SECONDS),
+            max_sequence_observations: DEFAULT_MAX_SEQUENCE_OBSERVATIONS,
         }
     }
 }
@@ -134,7 +143,21 @@ impl TriagePolicy {
             breadth_templates: breadth_templates.unwrap_or(DEFAULT_BREADTH_TEMPLATES),
             depth_observations: depth_observations.unwrap_or(DEFAULT_DEPTH_OBSERVATIONS),
             windows,
+            sequence_window: Duration::from_secs(DEFAULT_SEQUENCE_WINDOW_SECONDS),
+            max_sequence_observations: DEFAULT_MAX_SEQUENCE_OBSERVATIONS,
         }
+    }
+
+    pub fn with_sequence_settings(
+        mut self,
+        sequence_window: Duration,
+        max_sequence_observations: usize,
+    ) -> Self {
+        if !sequence_window.is_zero() {
+            self.sequence_window = sequence_window;
+        }
+        self.max_sequence_observations = max_sequence_observations;
+        self
     }
 
     pub fn is_default(&self) -> bool {
@@ -142,6 +165,8 @@ impl TriagePolicy {
             && self.breadth_templates == DEFAULT_BREADTH_TEMPLATES
             && self.depth_observations == DEFAULT_DEPTH_OBSERVATIONS
             && self.windows.is_empty()
+            && self.sequence_window.as_secs() == DEFAULT_SEQUENCE_WINDOW_SECONDS
+            && self.max_sequence_observations == DEFAULT_MAX_SEQUENCE_OBSERVATIONS
     }
 }
 
@@ -482,6 +507,7 @@ pub struct EntityGroup {
     /// Exact windows and per-window basis that met the configured test. This
     /// increases reporting detail only; the score receives one fixed component.
     pub windowed_burst_windows: Vec<WindowedTriageMatch>,
+    pub sequence: RequestSequenceSummary,
     pub triage_basis: Option<&'static str>,
     pub score: BehaviorScore,
 }
@@ -490,6 +516,31 @@ pub struct EntityGroup {
 pub struct WindowedTriageMatch {
     pub window_seconds: u64,
     pub basis: &'static str,
+}
+
+/// One timestamped private request-pattern observation. Pattern strings can
+/// contain request paths and therefore must never enter sanitized artifacts.
+#[derive(Debug, Clone, Serialize)]
+pub struct OrderedRequestObservation {
+    pub timestamp: String,
+    pub request_pattern: String,
+    pub distinctive_path: bool,
+}
+
+/// Deterministic sequence context for one private entity group. A short or
+/// regular sequence can have many benign or automated causes and is not a
+/// determination of automation, attack, abuse, or identity.
+#[derive(Debug, Clone, Serialize)]
+pub struct RequestSequenceSummary {
+    pub window_seconds: u64,
+    pub retained_observations: usize,
+    pub observations_beyond_cap: usize,
+    pub observations_without_timestamp: usize,
+    pub maximum_distinct_patterns_in_window: usize,
+    pub maximum_distinctive_patterns_in_window: usize,
+    pub minimum_interval_seconds: Option<f64>,
+    pub median_interval_seconds: Option<f64>,
+    pub ordered_observations: Vec<OrderedRequestObservation>,
 }
 
 impl EntityGroup {
@@ -503,6 +554,13 @@ struct Observation {
     timestamp: Option<DateTime<Utc>>,
     request_pattern: String,
     template_id: String,
+}
+
+#[derive(Clone)]
+struct SequenceObservation {
+    timestamp: Option<DateTime<Utc>>,
+    request_pattern: String,
+    distinctive_path: bool,
 }
 
 #[derive(Default)]
@@ -521,6 +579,9 @@ struct EntitySummary {
     not_blocked_observations: BTreeSet<String>,
     unknown_outcome_observations: BTreeSet<String>,
     observations: Vec<Observation>,
+    sequence_observation_keys: BTreeSet<String>,
+    sequence_observations: Vec<SequenceObservation>,
+    sequence_observations_beyond_cap: usize,
 }
 
 impl EntitySummary {
@@ -684,6 +745,57 @@ impl EntitySummary {
         (blocked + not_blocked, not_blocked)
     }
 
+    fn sequence_summary(&self, policy: &TriagePolicy) -> RequestSequenceSummary {
+        let mut observations = self
+            .sequence_observations
+            .iter()
+            .filter_map(|observation| {
+                observation
+                    .timestamp
+                    .map(|timestamp| (timestamp, observation))
+            })
+            .collect::<Vec<_>>();
+        observations.sort_by(|left, right| {
+            left.0
+                .cmp(&right.0)
+                .then_with(|| left.1.request_pattern.cmp(&right.1.request_pattern))
+        });
+        let (maximum_distinct_patterns_in_window, maximum_distinctive_patterns_in_window) =
+            sequence_window_maxima(&observations, policy.sequence_window);
+        let intervals = observations
+            .windows(2)
+            .map(|pair| {
+                pair[1]
+                    .0
+                    .signed_duration_since(pair[0].0)
+                    .num_milliseconds()
+            })
+            .collect::<Vec<_>>();
+        let (minimum_interval_seconds, median_interval_seconds) = interval_statistics(&intervals);
+        RequestSequenceSummary {
+            window_seconds: policy.sequence_window.as_secs(),
+            retained_observations: self.sequence_observations.len(),
+            observations_beyond_cap: self.sequence_observations_beyond_cap,
+            observations_without_timestamp: self
+                .sequence_observations
+                .iter()
+                .filter(|observation| observation.timestamp.is_none())
+                .count(),
+            maximum_distinct_patterns_in_window,
+            maximum_distinctive_patterns_in_window,
+            minimum_interval_seconds,
+            median_interval_seconds,
+            ordered_observations: observations
+                .into_iter()
+                .map(|(timestamp, observation)| OrderedRequestObservation {
+                    timestamp: timestamp.to_rfc3339(),
+                    request_pattern: observation.request_pattern.clone(),
+                    distinctive_path: observation.distinctive_path,
+                })
+                .collect(),
+        }
+    }
+
     fn record_waf_outcome(&mut self, observation: &str, action: Option<&str>) {
         match action.map(str::to_ascii_uppercase).as_deref() {
             Some("BLOCK") => {
@@ -761,7 +873,7 @@ pub fn entity_groups(
             EntityDimension::Asn => continue,
         };
         let entry = summaries.entry((identity, key)).or_default();
-        add_finding_to_summary(entry, finding);
+        add_finding_to_summary(entry, finding, policy.max_sequence_observations);
     }
     finalize_entity_groups(summaries, dimension, BTreeMap::new(), policy, capabilities)
 }
@@ -804,7 +916,11 @@ pub fn asn_entity_groups(
             .entry(summary_key.clone())
             .or_default()
             .insert(resolved.org);
-        add_finding_to_summary(summaries.entry(summary_key).or_default(), finding);
+        add_finding_to_summary(
+            summaries.entry(summary_key).or_default(),
+            finding,
+            policy.max_sequence_observations,
+        );
     }
     AsnEntityGroups {
         groups: finalize_entity_groups(
@@ -829,7 +945,11 @@ fn finding_identity_and_address(finding: &FindingExplanation) -> Option<(Groupin
     }
 }
 
-fn add_finding_to_summary(summary: &mut EntitySummary, finding: &FindingExplanation) {
+fn add_finding_to_summary(
+    summary: &mut EntitySummary,
+    finding: &FindingExplanation,
+    max_sequence_observations: usize,
+) {
     summary.matching_records += 1;
     summary.cves.extend(finding.cves.iter().cloned());
     summary.templates.insert(finding.template_id.clone());
@@ -868,6 +988,32 @@ fn add_finding_to_summary(summary: &mut EntitySummary, finding: &FindingExplanat
             .insert(request_pattern.clone());
     }
     summary.record_waf_outcome(&request_pattern, finding.waf_action.as_deref());
+    if summary
+        .sequence_observation_keys
+        .insert(request_pattern.clone())
+    {
+        if summary.sequence_observations.len() < max_sequence_observations {
+            let visible_pattern = format!(
+                "{} {}{}",
+                finding.method.as_deref().unwrap_or("<method unavailable>"),
+                finding.uri_path.as_deref().unwrap_or("<path unavailable>"),
+                finding
+                    .uri_query
+                    .as_deref()
+                    .map(|query| format!("?{query}"))
+                    .unwrap_or_default()
+            );
+            summary.sequence_observations.push(SequenceObservation {
+                timestamp: parse_finding_timestamp(finding.timestamp.as_deref()),
+                request_pattern: visible_pattern,
+                distinctive_path: path_distinctiveness(
+                    finding.uri_path.as_deref().unwrap_or_default(),
+                ) == PathDistinctiveness::Distinctive,
+            });
+        } else {
+            summary.sequence_observations_beyond_cap += 1;
+        }
+    }
     summary.observations.push(Observation {
         timestamp: parse_finding_timestamp(finding.timestamp.as_deref()),
         request_pattern,
@@ -922,6 +1068,7 @@ fn finalize_entity_groups(
                 distinct_observed_peers: summary.observed_peers.len(),
                 undated_observations: summary.undated_observations(),
                 windowed_burst_windows,
+                sequence: summary.sequence_summary(&policy),
                 triage_basis,
                 score,
             }
@@ -951,9 +1098,67 @@ fn format_duration_seconds(seconds: u64) -> String {
     }
 }
 
+fn sequence_window_maxima(
+    observations: &[(DateTime<Utc>, &SequenceObservation)],
+    window: Duration,
+) -> (usize, usize) {
+    let Ok(window) = chrono::Duration::from_std(window) else {
+        return (0, 0);
+    };
+    let mut start = 0usize;
+    let mut patterns = BTreeMap::<&str, usize>::new();
+    let mut distinctive_patterns = BTreeMap::<&str, usize>::new();
+    let mut maximum_patterns = 0usize;
+    let mut maximum_distinctive = 0usize;
+    for end in 0..observations.len() {
+        let observation = observations[end].1;
+        *patterns
+            .entry(observation.request_pattern.as_str())
+            .or_default() += 1;
+        if observation.distinctive_path {
+            *distinctive_patterns
+                .entry(observation.request_pattern.as_str())
+                .or_default() += 1;
+        }
+        while observations[end]
+            .0
+            .signed_duration_since(observations[start].0)
+            > window
+        {
+            let removed = observations[start].1;
+            decrement(&mut patterns, removed.request_pattern.as_str());
+            if removed.distinctive_path {
+                decrement(&mut distinctive_patterns, removed.request_pattern.as_str());
+            }
+            start += 1;
+        }
+        maximum_patterns = maximum_patterns.max(patterns.len());
+        maximum_distinctive = maximum_distinctive.max(distinctive_patterns.len());
+    }
+    (maximum_patterns, maximum_distinctive)
+}
+
+fn interval_statistics(intervals_millis: &[i64]) -> (Option<f64>, Option<f64>) {
+    if intervals_millis.is_empty() {
+        return (None, None);
+    }
+    let mut sorted = intervals_millis.to_vec();
+    sorted.sort_unstable();
+    let minimum = sorted[0] as f64 / 1_000.0;
+    let middle = sorted.len() / 2;
+    let median_millis = if sorted.len().is_multiple_of(2) {
+        (sorted[middle - 1] as f64 + sorted[middle] as f64) / 2.0
+    } else {
+        sorted[middle] as f64
+    };
+    (Some(minimum), Some(median_millis / 1_000.0))
+}
+
 #[cfg(test)]
 mod tests {
     use std::net::IpAddr;
+
+    use chrono::TimeZone;
 
     use super::*;
     use crate::event::TelemetryProfile;
@@ -1532,5 +1737,129 @@ mod tests {
             WINDOWED_BURST_POINTS
         );
         assert_eq!(single.windowed_burst_windows.len(), 1);
+    }
+
+    #[test]
+    fn ordered_sequence_reports_short_span_distinct_patterns_and_long_span_absence() {
+        let make_findings = |timestamps: [&str; 3]| {
+            ["one", "two", "three"]
+                .into_iter()
+                .zip(timestamps)
+                .map(|(request_id, timestamp)| {
+                    let mut item = finding(
+                        request_id,
+                        "template-a",
+                        None,
+                        RequestSpecificity::RequestSpecific,
+                        None,
+                        Some("203.0.113.50"),
+                        None,
+                    );
+                    item.timestamp = Some(timestamp.to_owned());
+                    item
+                })
+                .collect::<Vec<_>>()
+        };
+        let policy = TriagePolicy::default().with_sequence_settings(Duration::from_secs(10), 10);
+        let short = entity_groups(
+            &make_findings([
+                "2026-01-01T00:00:00Z",
+                "2026-01-01T00:00:05Z",
+                "2026-01-01T00:00:10Z",
+            ]),
+            EntityDimension::ConnectionIp,
+            policy.clone(),
+            TelemetryProfile::AwsWaf.capabilities(),
+        )
+        .pop()
+        .unwrap();
+        assert_eq!(short.sequence.maximum_distinct_patterns_in_window, 3);
+        assert_eq!(short.sequence.maximum_distinctive_patterns_in_window, 3);
+        assert_eq!(short.sequence.ordered_observations.len(), 3);
+
+        let spread = entity_groups(
+            &make_findings([
+                "2026-01-01T00:00:00Z",
+                "2026-01-02T00:00:00Z",
+                "2026-01-03T00:00:00Z",
+            ]),
+            EntityDimension::ConnectionIp,
+            policy,
+            TelemetryProfile::AwsWaf.capabilities(),
+        )
+        .pop()
+        .unwrap();
+        assert_eq!(spread.sequence.maximum_distinct_patterns_in_window, 1);
+    }
+
+    #[test]
+    fn ordered_sequence_distinguishes_regular_and_irregular_intervals() {
+        let group_for_offsets = |offsets: [i64; 3]| {
+            let findings = offsets
+                .into_iter()
+                .enumerate()
+                .map(|(index, offset)| {
+                    let mut item = finding(
+                        &format!("request-{index}"),
+                        "template-a",
+                        None,
+                        RequestSpecificity::RequestSpecific,
+                        None,
+                        Some("203.0.113.60"),
+                        None,
+                    );
+                    item.timestamp = Some(
+                        Utc.timestamp_opt(1_767_225_600 + offset, 0)
+                            .unwrap()
+                            .to_rfc3339(),
+                    );
+                    item
+                })
+                .collect::<Vec<_>>();
+            entity_groups(
+                &findings,
+                EntityDimension::ConnectionIp,
+                TriagePolicy::default().with_sequence_settings(Duration::from_secs(30), 10),
+                TelemetryProfile::AwsWaf.capabilities(),
+            )
+            .pop()
+            .unwrap()
+        };
+        let regular = group_for_offsets([0, 5, 10]);
+        assert_eq!(regular.sequence.minimum_interval_seconds, Some(5.0));
+        assert_eq!(regular.sequence.median_interval_seconds, Some(5.0));
+        let irregular = group_for_offsets([0, 1, 21]);
+        assert_eq!(irregular.sequence.minimum_interval_seconds, Some(1.0));
+        assert_eq!(irregular.sequence.median_interval_seconds, Some(10.5));
+    }
+
+    #[test]
+    fn ordered_sequence_discloses_undated_and_capped_observations() {
+        let mut findings = (0..4)
+            .map(|index| {
+                finding(
+                    &format!("request-{index}"),
+                    "template-a",
+                    None,
+                    RequestSpecificity::RequestSpecific,
+                    None,
+                    Some("203.0.113.70"),
+                    None,
+                )
+            })
+            .collect::<Vec<_>>();
+        findings[0].timestamp = None;
+        let group = entity_groups(
+            &findings,
+            EntityDimension::ConnectionIp,
+            TriagePolicy::default().with_sequence_settings(Duration::from_secs(10), 2),
+            TelemetryProfile::AwsWaf.capabilities(),
+        )
+        .pop()
+        .unwrap();
+        assert_eq!(group.sequence.retained_observations, 2);
+        assert_eq!(group.sequence.observations_without_timestamp, 1);
+        assert_eq!(group.sequence.observations_beyond_cap, 2);
+        assert_eq!(group.sequence.ordered_observations.len(), 1);
     }
 }

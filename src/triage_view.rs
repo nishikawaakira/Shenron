@@ -13,10 +13,10 @@ use crate::{
     event::TelemetryCapabilities,
     production::FindingExplanation,
     reputation::{AsnDatabase, ReputationDatabase},
-    triage::{entity_groups, EntityDimension, TriagePolicy},
+    triage::{entity_groups, EntityDimension, RequestSequenceSummary, TriagePolicy},
 };
 
-const SAFETY_NOTE: &str = "This is a triage priority order (which entity to review first), not a threat severity or a probability of malice. A first-seen mark means new and worth review, never malicious. It does not determine an attack, exploitation, compromise, abuse, or attacker identity.";
+const SAFETY_NOTE: &str = "This is a triage priority order (which entity to review first), not a threat severity or a probability of malice. A first-seen mark means new and worth review, never malicious. An ordered request sequence is an observation of what was requested and when; regular intervals or a short span can also result from automation, a crawler, page subresources, or a person clicking quickly. It does not determine automation, attack, exploitation, compromise, abuse, or attacker identity.";
 
 /// Aggregate-only output for a completed hunt. It intentionally contains no
 /// entity keys or other raw telemetry values.
@@ -28,6 +28,18 @@ pub struct SanitizedTriageSummary {
     pub entities_requiring_investigation: usize,
     pub tier_histogram: TriageTierHistogram,
     pub first_seen_entities: usize,
+    pub sequence: SanitizedSequenceSummary,
+}
+
+/// Numeric-only aggregate of private per-entity sequence observations.
+#[derive(Debug, Default, Serialize)]
+pub struct SanitizedSequenceSummary {
+    pub window_seconds: u64,
+    pub retained_observations: usize,
+    pub observations_beyond_cap: usize,
+    pub observations_without_timestamp: usize,
+    pub maximum_distinct_patterns_in_window: usize,
+    pub maximum_distinctive_patterns_in_window: usize,
 }
 
 /// Cardinalities of behavior-priority tiers, not a threat-severity histogram.
@@ -90,6 +102,7 @@ pub struct TriageEntity {
     pub resolved_asn: Option<TriageAsn>,
     pub reputation: Option<TriageReputation>,
     pub first_seen: bool,
+    pub sequence: RequestSequenceSummary,
 }
 
 /// Build a deterministic, private connection/client-IP triage view and its
@@ -106,7 +119,7 @@ pub fn build_triage_view(
     let mut entities = entity_groups(
         findings,
         EntityDimension::ConnectionIp,
-        policy,
+        policy.clone(),
         capabilities,
     )
     .into_iter()
@@ -149,6 +162,7 @@ pub fn build_triage_view(
             matching_records: group.matching_records,
             request_specific_observations: group.request_specific_observations,
             response_unverified_observations: group.response_unverified_observations,
+            sequence: group.sequence,
             resolved_asn,
             reputation,
         }
@@ -186,6 +200,31 @@ pub fn build_triage_view(
         }
     }
     let first_seen_entities = entities.iter().filter(|entity| entity.first_seen).count();
+    let sequence = SanitizedSequenceSummary {
+        window_seconds: policy.sequence_window.as_secs(),
+        retained_observations: entities
+            .iter()
+            .map(|entity| entity.sequence.retained_observations)
+            .sum(),
+        observations_beyond_cap: entities
+            .iter()
+            .map(|entity| entity.sequence.observations_beyond_cap)
+            .sum(),
+        observations_without_timestamp: entities
+            .iter()
+            .map(|entity| entity.sequence.observations_without_timestamp)
+            .sum(),
+        maximum_distinct_patterns_in_window: entities
+            .iter()
+            .map(|entity| entity.sequence.maximum_distinct_patterns_in_window)
+            .max()
+            .unwrap_or(0),
+        maximum_distinctive_patterns_in_window: entities
+            .iter()
+            .map(|entity| entity.sequence.maximum_distinctive_patterns_in_window)
+            .max()
+            .unwrap_or(0),
+    };
     let safety_note = SAFETY_NOTE.to_owned();
     (
         SanitizedTriageSummary {
@@ -198,6 +237,7 @@ pub fn build_triage_view(
                 .count(),
             tier_histogram: tiers,
             first_seen_entities,
+            sequence,
         },
         PrivateTriageView {
             report_kind: "HUNT_TRIAGE_VIEW_PRIVATE".to_owned(),
@@ -319,5 +359,9 @@ mod tests {
         );
         let serialized = serde_json::to_string(&summary).unwrap();
         assert!(!serialized.contains("198.51.100.1"));
+        assert!(!serialized.contains("/distinctive-one"));
+        assert_eq!(summary.sequence.retained_observations, findings.len());
+        let private = serde_json::to_string(&view).unwrap();
+        assert!(private.contains("/distinctive-one"));
     }
 }

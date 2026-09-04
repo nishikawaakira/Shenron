@@ -278,6 +278,14 @@ cargo run --bin shenron -- explain \
 
 The default triage policy is the fixed research baseline: breadth is three distinct request observations across two templates, and depth is ten distinct request observations. `explain` can explicitly override these with `--triage-breadth-observations`, `--triage-breadth-templates`, and `--triage-depth-observations`; any non-default value is labelled `CUSTOM` and is not comparable to the fixed baseline. Repeat `--triage-window` or comma-separate values (for example `--triage-window 10m,1h`) to evaluate the breadth/depth condition independently within several sliding windows. One supplied window retains the previous single-window behavior. Without a window, all observations remain eligible as before. Timestamp-less observations are excluded only from windowed evaluation and their count is shown for each group. Matching windows and their breadth/depth basis are listed deterministically.
 
+[Ordered request sequences](request-sequences.md) add bounded timing and
+ordering context to private entity triage. The default sequence window is ten
+seconds and `--sequence-window` changes it. Sequence metrics do not change
+matches, triage thresholds, or score points. `triage-view.json` keeps the raw
+ordered patterns private, while `triage-summary.json` contains numeric counts
+and seconds only. A short or regular sequence is an observation for review,
+not a determination of automation, attack, abuse, compromise, or identity.
+
 `explain` writes the human-readable text report to stdout by default. Pass `--output-format json` to emit the same content — the path summary, the entity groupings with their behavior scores and score-component breakdowns, the triage basis, and (with `--show-*`) the requested private detail — as a machine-readable report carrying `report_kind: EXPLAIN_PRIVATE_TRIAGE`, and `--output <PATH>` to write it to a file. The JSON honors the identical privacy gates as the text: fields behind `--show-request`, `--show-evidence`, `--show-source-ips`, `--show-asn`, and `--show-fingerprints` stay gated, so no request value, IP, host, header, JA3/JA4, or request ID appears unless it was explicitly requested. Like the text report, the JSON is private analyst output and is never added to the sanitized report or run manifest.
 
 ## Behavior priority score

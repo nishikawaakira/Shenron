@@ -58,6 +58,8 @@ Read-only local AWS WAF production inspection and validated Nuclei hunting are a
 
 It reports deterministic request-rate profiles for `1m`, `10m`, `1h`, and `1d` buckets simultaneously; `--rate-window` selects another set. `explain` likewise accepts repeated or comma-separated `--triage-window` values while keeping the windowed-burst score contribution fixed at five points.
 
+Private entity triage also reports bounded [ordered request-sequence](docs/request-sequences.md) timing with `--sequence-window`; this is review context and not a determination of automation, attack, abuse, or identity.
+
 `shenron-lab generate --profile volumetric-concentration` produces a
 deterministic 40,000-request synthetic corpus for reproducing distributed
 volume-shape measurements without sharing real logs. It is synthetic research
