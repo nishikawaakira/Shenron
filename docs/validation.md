@@ -19,3 +19,9 @@ cargo run --bin shenron-lab -- validate --findings /tmp/findings.jsonl --truth /
 ```
 
 True/false positive and negative, recall, precision, and false-positive rate are valid only here because the synthetic truth labels are explicit. Production analysis must continue to use neutral terms such as known threat matches and other historical matches.
+
+For CTI research that needs shareable request-volume shape rather than labeled
+detections, use `--profile volumetric-concentration`. Its truth records are
+explicitly `unknown`, and its documented concentration ratios do not represent
+a real attack, attacker, campaign, vulnerability, or denial-of-service event.
+See [Synthetic corpus](synthetic-corpus.md).

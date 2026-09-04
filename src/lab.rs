@@ -21,6 +21,10 @@ use crate::{
 pub const JA4_EXACT: &str = "t13d1516h2_8daaf6152771_02713d6af862";
 pub const JA4_SHARED: &str = "t13d1516h2_111111111111_222222222222";
 pub const JA4_COMMON: &str = "t13d1516h2_333333333333_444444444444";
+pub const VOLUMETRIC_CONCENTRATION_EVENTS: usize = 40_000;
+pub const VOLUMETRIC_CONCENTRATION_SOURCE_IPS: usize = 24_000;
+pub const VOLUMETRIC_CONCENTRATION_PATH: &str = "/synthetic/volume-target";
+pub const VOLUMETRIC_CONCENTRATION_DURATION_MS: i64 = 3_600_000;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -29,6 +33,7 @@ pub enum Profile {
     Mutations,
     Large,
     Demo,
+    VolumetricConcentration,
 }
 
 /// Telemetry rendering is deliberately downstream of the logical synthetic
@@ -132,6 +137,7 @@ struct SyntheticEvent {
     labels: Vec<String>,
     source_ip: String,
     timestamp: i64,
+    response_status: Option<u16>,
 }
 
 impl SyntheticEvent {
@@ -184,6 +190,9 @@ impl SyntheticEvent {
         if let Some(ja4) = &self.ja4 {
             record["ja4Fingerprint"] = serde_json::Value::String(ja4.clone());
         }
+        if let Some(status) = self.response_status {
+            record["responseCodeSent"] = serde_json::Value::from(status);
+        }
         serde_json::to_writer(&mut *writer, &record)?;
         writer.write_all(b"\n")?;
         Ok(())
@@ -209,11 +218,12 @@ impl SyntheticEvent {
         let escape = |value: &str| value.replace('\\', "\\\\").replace('"', "\\\"");
         writeln!(
             writer,
-            "{} - - [{}] \"{} {} HTTP/1.1\" 200 0 \"{}\" \"{}\"",
+            "{} - - [{}] \"{} {} HTTP/1.1\" {} 0 \"{}\" \"{}\"",
             self.source_ip,
             timestamp,
             self.method,
             escape(&target),
+            self.response_status.unwrap_or(200),
             escape(header("Referer")),
             escape(header("User-Agent")),
         )?;
@@ -258,11 +268,26 @@ pub fn generate_for_format(
     if config.hosts == 0 || config.source_ips == 0 {
         anyhow::bail!("hosts and source IPs must be positive");
     }
+    if matches!(config.profile, Profile::VolumetricConcentration)
+        && config.events != VOLUMETRIC_CONCENTRATION_EVENTS
+    {
+        anyhow::bail!(
+            "volumetric-concentration requires exactly {VOLUMETRIC_CONCENTRATION_EVENTS} events to preserve its documented shape"
+        );
+    }
+    if matches!(config.profile, Profile::VolumetricConcentration)
+        && config.duration_ms != VOLUMETRIC_CONCENTRATION_DURATION_MS
+    {
+        anyhow::bail!(
+            "volumetric-concentration requires duration-ms={VOLUMETRIC_CONCENTRATION_DURATION_MS} to preserve its documented minute-rate shape"
+        );
+    }
     let (events, malformed) = match config.profile {
         Profile::Deterministic => (deterministic_events(config), true),
         Profile::Mutations => (mutation_events(config), true),
         Profile::Large => (large_events(config), false),
         Profile::Demo => (demo_events(config), false),
+        Profile::VolumetricConcentration => (volumetric_concentration_events(config), false),
     };
     let mut output = output_writer(output)?;
     let mut truth_writer = BufWriter::new(
@@ -287,12 +312,24 @@ pub fn generate_for_format(
         generator_version: env!("CARGO_PKG_VERSION").to_owned(),
         profile: config.profile,
         seed: config.seed,
-        events_requested: config.events,
+        events_requested: if matches!(config.profile, Profile::VolumetricConcentration) {
+            events.len()
+        } else {
+            config.events
+        },
         valid_events: events.len(),
         expected_parser_errors: usize::from(malformed),
-        attack_rate: config.attack_rate,
+        attack_rate: if matches!(config.profile, Profile::VolumetricConcentration) {
+            0.0
+        } else {
+            config.attack_rate
+        },
         hosts: config.hosts,
-        source_ips: config.source_ips,
+        source_ips: if matches!(config.profile, Profile::VolumetricConcentration) {
+            VOLUMETRIC_CONCENTRATION_SOURCE_IPS
+        } else {
+            config.source_ips
+        },
         start_timestamp_ms: config.start_timestamp_ms,
         duration_ms: config.duration_ms,
         ja4_distribution: BTreeMap::from([
@@ -389,6 +426,7 @@ fn event(
         labels: Vec::new(),
         source_ip: format!("198.51.100.{}", id % 200 + 1),
         timestamp: config.start_timestamp_ms + (id as i64 * 1_000),
+        response_status: None,
     }
 }
 
@@ -783,6 +821,141 @@ fn large_events(config: &GeneratorConfig) -> Vec<SyntheticEvent> {
             event
         })
         .collect()
+}
+
+/// Reproduce a documented request-volume distribution without representing a
+/// real incident, operator, campaign, or vulnerability. Every record is
+/// ground-truth `unknown`; the profile exists only to exercise concentration
+/// measurements with many individually modest observed peers.
+fn volumetric_concentration_events(config: &GeneratorConfig) -> Vec<SyntheticEvent> {
+    const FOCUS_REQUESTS: usize = 12_000;
+    const FOCUS_SOURCES: usize = 350;
+    const BACKGROUND_SOURCES: usize = VOLUMETRIC_CONCENTRATION_SOURCE_IPS - FOCUS_SOURCES;
+
+    let focus_sources = volumetric_focus_sources();
+    debug_assert_eq!(focus_sources.len(), FOCUS_SOURCES);
+    let mut events = Vec::with_capacity(VOLUMETRIC_CONCENTRATION_EVENTS);
+    let mut focus_record = 0;
+    for (source_index, source_ip) in focus_sources.iter().enumerate() {
+        let requests = match source_index {
+            0..10 => 400,
+            10..20 => 36,
+            20..84 => 35,
+            84..164 => 21,
+            _ => 20,
+        };
+        for _ in 0..requests {
+            let id = events.len() + 1;
+            let mut item = event(
+                config,
+                id,
+                TruthClass::Unknown,
+                &[],
+                VOLUMETRIC_CONCENTRATION_PATH,
+                None,
+            );
+            item.source_ip.clone_from(source_ip);
+            item.response_status = Some(if focus_record % 100 == 0 { 200 } else { 404 });
+            configure_volumetric_event(&mut item, config, id);
+            events.push(item);
+            focus_record += 1;
+        }
+    }
+    debug_assert_eq!(events.len(), FOCUS_REQUESTS);
+
+    let seed_offset = config.seed as usize % BACKGROUND_SOURCES;
+    while events.len() < VOLUMETRIC_CONCENTRATION_EVENTS {
+        let background_index = events.len() - FOCUS_REQUESTS;
+        let source_index = (background_index + seed_offset) % BACKGROUND_SOURCES;
+        let source_ip = benchmark_source_ip(100, source_index);
+        let path_index = (background_index + config.seed as usize) % 32;
+        let path = format!("/synthetic/background/{path_index:02}");
+        let id = events.len() + 1;
+        let mut item = event(config, id, TruthClass::Unknown, &[], &path, None);
+        item.source_ip = source_ip;
+        item.response_status = Some(200);
+        configure_volumetric_event(&mut item, config, id);
+        events.push(item);
+    }
+    events
+}
+
+fn volumetric_focus_sources() -> Vec<String> {
+    let mut sources = Vec::with_capacity(350);
+    let mut selected = BTreeSet::new();
+
+    // Spread the ten busiest peers across all seven leading /24 blocks. This
+    // keeps per-peer volume modest while those seven address blocks account
+    // for 55% of the focus-path request volume.
+    for third_octet in 0..7 {
+        push_focus_source(&mut sources, &mut selected, third_octet, 1);
+    }
+    for third_octet in 0..3 {
+        push_focus_source(&mut sources, &mut selected, third_octet, 2);
+    }
+    for third_octet in 0..7 {
+        for last_octet in 1..=12 {
+            push_focus_source(&mut sources, &mut selected, third_octet, last_octet);
+        }
+    }
+    for third_octet in 7..20 {
+        for last_octet in 1..=12 {
+            push_focus_source(&mut sources, &mut selected, third_octet, last_octet);
+        }
+    }
+    for third_octet in 20..30 {
+        for last_octet in 1..=11 {
+            push_focus_source(&mut sources, &mut selected, third_octet, last_octet);
+        }
+    }
+    sources
+}
+
+fn push_focus_source(
+    sources: &mut Vec<String>,
+    selected: &mut BTreeSet<String>,
+    third_octet: usize,
+    last_octet: usize,
+) {
+    let source = format!("198.18.{third_octet}.{last_octet}");
+    if selected.insert(source.clone()) {
+        sources.push(source);
+    }
+}
+
+fn benchmark_source_ip(first_third_octet: usize, index: usize) -> String {
+    let third_octet = first_third_octet + index / 254;
+    let last_octet = index % 254 + 1;
+    format!("198.18.{third_octet}.{last_octet}")
+}
+
+fn configure_volumetric_event(event: &mut SyntheticEvent, config: &GeneratorConfig, id: usize) {
+    const MINUTES: usize = 60;
+    const BURST_MINUTE: usize = 30;
+    const BURST_RECORDS: usize = 5_000;
+
+    let zero_based = id - 1;
+    let minute = if zero_based < BURST_RECORDS {
+        BURST_MINUTE
+    } else {
+        let non_burst = (zero_based - BURST_RECORDS) % (MINUTES - 1);
+        if non_burst >= BURST_MINUTE {
+            non_burst + 1
+        } else {
+            non_burst
+        }
+    };
+    event.timestamp = config.start_timestamp_ms
+        + minute as i64 * 60_000
+        + ((zero_based + config.seed as usize) % 60) as i64 * 1_000;
+    event.host = format!("volume{}.synthetic.test", zero_based % config.hosts + 1);
+    event.headers = vec![
+        ("Host", event.host.clone()),
+        ("User-Agent", "Shenron-Synthetic-Volume/1.0".to_owned()),
+    ];
+    event.ja3 = None;
+    event.ja4 = None;
+    event.action = "ALLOW".to_owned();
 }
 
 struct Lcg {

@@ -54,8 +54,9 @@ enum Command {
         ground_truth: PathBuf,
         #[arg(long)]
         manifest: Option<PathBuf>,
-        #[arg(long, default_value_t = 15)]
-        events: usize,
+        /// Event count. Defaults to 40,000 for volumetric-concentration and 15 otherwise.
+        #[arg(long)]
+        events: Option<usize>,
         #[arg(long, default_value_t = 0.01)]
         attack_rate: f64,
         #[arg(long, default_value_t = 3)]
@@ -298,6 +299,7 @@ enum ProfileArg {
     Mutations,
     Large,
     Demo,
+    VolumetricConcentration,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -343,6 +345,7 @@ impl From<ProfileArg> for Profile {
             ProfileArg::Mutations => Self::Mutations,
             ProfileArg::Large => Self::Large,
             ProfileArg::Demo => Self::Demo,
+            ProfileArg::VolumetricConcentration => Self::VolumetricConcentration,
         }
     }
 }
@@ -363,8 +366,16 @@ fn main() -> Result<()> {
             duration_ms,
             format,
         } => {
+            let profile: Profile = profile.into();
+            let events = events.unwrap_or({
+                if matches!(profile, Profile::VolumetricConcentration) {
+                    shenron::lab::VOLUMETRIC_CONCENTRATION_EVENTS
+                } else {
+                    15
+                }
+            });
             let config = GeneratorConfig {
-                profile: profile.into(),
+                profile,
                 events,
                 attack_rate,
                 hosts,
