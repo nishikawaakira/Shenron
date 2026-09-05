@@ -2,12 +2,6 @@
 
 Production hunting is read-only and local. Shenron never modifies source logs, calls AWS, creates a WAF rule, replays traffic, scans a target, or executes a Nuclei template. Use a local JSON, JSONL, gzip, or directory-tree export.
 
-Inspect structure before a hunt. This command reports only counts, timestamps, and field availability; it never prints raw requests.
-
-```bash
-cargo run --bin shenron -- inspect --input ./production-waf-logs --sample 10000
-```
-
 Prepare public Nuclei templates, CISA KEV, reputation, ASN, and published crawler-range
 inputs once. This
 downloads public intelligence only and never sends customer data:
@@ -38,6 +32,20 @@ files and writes only private findings to stdout as JSONL (or flattened CSV with
 stdout records can contain raw IPs, paths, hosts, headers, and request evidence,
 so redirect or share them only as private data. `--report`, `--baseline`,
 `--baseline-latest`, and `--observation-store` require `--output`.
+
+Every hunt also reports `Input field availability & quality` across all
+parseable events included in its selected time range. It shows populated counts
+for verified client IP, JA4/JA3, TLS protocol/cipher, URI/query, headers, host,
+method, WAF action/labels, and terminating/non-terminating rule IDs, together
+with parseable events, parse errors, and earliest/latest timestamps. These are
+aggregate counts only and are also written under `metrics.fields_available` in
+`sanitized-research.json`; no IP, path, header, host, or other field value is
+included. A verified client IP remains unavailable unless `--trusted-proxy` is
+configured. Nonzero parse errors can indicate a wrong `--format`, mixed input
+formats, or malformed records and should prompt input review; they do not by
+themselves establish any security event. Artifact mode writes this summary to
+stdout. Stdout-only finding mode keeps stdout machine-readable and writes the
+same summary to stderr.
 
 Use `--no-nuclei --rules <DIR>` for a setup-free Sigma-only hunt. This skips
 Nuclei input resolution entirely. `--no-sigma` runs the inverse, and both

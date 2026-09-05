@@ -87,21 +87,8 @@ Sigma cannot both be disabled.
 
 ## First run on a new log source
 
-Before wiring a source into the daily pipeline, do two quick things.
-
-**Confirm what the logs actually contain** — no setup needed:
-
-```bash
-shenron inspect --input /var/log/nginx --format nginx
-```
-
-**Why:** it reports which fields are present (status, response bytes, client IP,
-JA4, WAF outcome, timestamps) without emitting request values. You interpret
-findings against the evidence you actually have, and you never assume a field the
-log lacks. It also confirms the right `--format` (auto recognizes AWS WAF and
-vhost-prefixed Apache; standard nginx/Apache need an explicit `--format`).
-
-**Take a fast, setup-free look** — Sigma-only findings straight to stdout:
+Before wiring a source into the daily pipeline, take a fast, setup-free look
+with Sigma-only findings on stdout:
 
 ```bash
 shenron hunt --input /var/log/nginx --format nginx --rules ./rules --no-nuclei \
@@ -111,7 +98,13 @@ shenron hunt --input /var/log/nginx --format nginx --rules ./rules --no-nuclei \
 **Why:** `--no-nuclei` skips the prepared Nuclei inputs, so you get findings
 without `setup`; with no `--output` they stream to stdout for immediate `jq`/grep
 (for example, secret-file requests that returned 200). The stream is private raw
-content — redirect it only to a protected local destination.
+content — redirect it only to a protected local destination. The hunt summary on
+stderr reports populated-field counts, parseable records, parse errors, and
+earliest/latest timestamps across the full selected input rather than a sample.
+Review that summary on the first run and whenever a format changes: it shows
+what evidence the logs actually expose and can reveal a mistaken `--format` or
+mixed/malformed input without printing raw values. Auto recognizes AWS WAF and
+vhost-prefixed Apache; standard nginx/Apache still need an explicit format.
 
 ## The daily loop
 

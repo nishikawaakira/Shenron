@@ -1,4 +1,4 @@
-//! Read-only local production AWS WAF inspection and validated Nuclei hunts.
+//! Read-only local production AWS WAF validation and Nuclei/Sigma hunts.
 //!
 //! Raw inputs are streamed without modification. Artifact mode separates
 //! private findings from a sanitized aggregate report; stdout mode writes only
@@ -63,20 +63,6 @@ pub struct FieldAvailability {
     pub non_terminating_rules: usize,
 }
 
-#[derive(Debug, Default, Serialize)]
-pub struct InspectionReport {
-    pub telemetry_profile: TelemetryProfile,
-    pub telemetry_capabilities: crate::event::TelemetryCapabilities,
-    pub files_found: usize,
-    pub compressed_files: usize,
-    pub approximate_input_bytes: u64,
-    pub sampled_events: usize,
-    pub malformed_events: usize,
-    pub earliest_timestamp: Option<String>,
-    pub latest_timestamp: Option<String>,
-    pub fields_available: FieldAvailability,
-}
-
 #[derive(Debug, Deserialize)]
 struct KevReportInput {
     entries: Vec<KevRecord>,
@@ -124,6 +110,9 @@ pub struct HuntMetrics {
     pub parse_errors: usize,
     pub earliest_timestamp: Option<String>,
     pub latest_timestamp: Option<String>,
+    /// Populated-field counts across every parseable event included in the
+    /// hunt time range. These aggregates contain no field values.
+    pub fields_available: FieldAvailability,
     pub cve_related_request_matches: usize,
     pub request_specific_matches: usize,
     pub response_unverified_matches: usize,
@@ -853,69 +842,6 @@ struct CveAccumulator {
     outcomes: OutcomeCounts,
 }
 
-pub fn inspect(
-    input: &Path,
-    telemetry_profile: TelemetryProfile,
-    sample_limit: usize,
-) -> anyhow::Result<InspectionReport> {
-    inspect_with_trusted_proxies(
-        input,
-        telemetry_profile,
-        sample_limit,
-        &TrustedProxySet::default(),
-    )
-}
-
-pub fn inspect_with_trusted_proxies(
-    input: &Path,
-    telemetry_profile: TelemetryProfile,
-    sample_limit: usize,
-    trusted_proxies: &TrustedProxySet,
-) -> anyhow::Result<InspectionReport> {
-    let files = input_files(input, telemetry_profile)?;
-    let mut report = InspectionReport {
-        telemetry_profile,
-        telemetry_capabilities: telemetry_profile.capabilities(),
-        files_found: files.len(),
-        compressed_files: files.iter().filter(|path| is_gzip(path)).count(),
-        approximate_input_bytes: files
-            .iter()
-            .filter_map(|path| fs::metadata(path).ok().map(|metadata| metadata.len()))
-            .sum(),
-        ..InspectionReport::default()
-    };
-    for path in files {
-        if report.sampled_events >= sample_limit {
-            break;
-        }
-        stream_events_with_trusted_proxies_and_raw_retention(
-            &path,
-            telemetry_profile,
-            trusted_proxies,
-            RawRetention::Drop,
-            |result| {
-                if report.sampled_events >= sample_limit {
-                    return Ok(());
-                }
-                match result {
-                    Ok(event) => {
-                        report.sampled_events += 1;
-                        record_availability(&mut report.fields_available, &event);
-                        update_time_range(
-                            &mut report.earliest_timestamp,
-                            &mut report.latest_timestamp,
-                            event.timestamp,
-                        );
-                    }
-                    Err(_) => report.malformed_events += 1,
-                }
-                Ok(())
-            },
-        )?;
-    }
-    Ok(report)
-}
-
 pub fn hunt(
     input: &Path,
     nuclei_templates: &Path,
@@ -1107,6 +1033,7 @@ fn hunt_with_destination(
                 return Ok(());
             }
             metrics.total_requests_analyzed += 1;
+            record_availability(&mut metrics.fields_available, &event);
             concentration.observe(&event);
             if let Some(database) = &bot_range_database {
                 database.observe_with_consistency(

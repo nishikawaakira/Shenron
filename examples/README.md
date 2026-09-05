@@ -12,12 +12,17 @@ Each has 11 requests: browser/API background traffic, four synthetic CVE-style r
 
 The companion templates use deliberately non-real `CVE-2099-*` identifiers and are local static input only; Shenron never executes them.
 
-## Inspect
+## Input field availability and quality
+
+Every hunt reports aggregate populated-field counts, parse quality, and the
+observed timestamp range on stderr in stdout-only mode. These quick Sigma-only
+runs create no artifacts; stdout is discarded because it may contain private
+finding values.
 
 ```bash
-cargo run --bin shenron -- inspect --input examples/demo/aws-waf.jsonl --format aws-waf
-cargo run --bin shenron -- inspect --input examples/demo/nginx-combined.log --format nginx
-cargo run --bin shenron -- inspect --input examples/demo/apache-combined.log --format apache
+cargo run --bin shenron -- hunt --input examples/demo/aws-waf.jsonl --format aws-waf --rules sigma-rules --no-nuclei > /dev/null
+cargo run --bin shenron -- hunt --input examples/demo/nginx-combined.log --format nginx --rules sigma-rules --no-nuclei > /dev/null
+cargo run --bin shenron -- hunt --input examples/demo/apache-combined.log --format apache --rules sigma-rules --no-nuclei > /dev/null
 ```
 
 ## Hunt

@@ -55,8 +55,7 @@ Shenron は、Web アクセスログを対象にした Rust 製の「受動的�
 
 - 小さく明示的な Sigma サブセットによるログ照合
 - Nuclei の CVE テンプレートの静的解析と、検知可能性（detectability）の評価
-- `inspect`：ログにどの情報が入っているか（可視性）を事前確認
-- `hunt`：検証済み Nuclei 検出条件を過去ログに照合（FIND）
+- `hunt`：検証済み Nuclei 検出条件を過去ログに照合し、全件のフィールド可用性・解析品質・時刻カバレッジも生値なしの集計として表示（FIND）
 - `ablation`：URI-only から Nuclei IR・request-specific IR まで、条件の広さ別に一致件数（ボリューム）を比較
 - `replay`：ローカルの履歴コーパス全体に対し、既知検出の再観測カバレッジとその他の一致を、機微情報を含まない集計として算出
 - `count-hypotheses`：CVE ごとに「広い→狭い」WAF 条件を、ローカルの COUNT シミュレーションとして比較（推奨する条件を自動で選んだり、デプロイしたりはしません）
@@ -86,8 +85,7 @@ Shenron は**単一バイナリ**です。準備系コマンドだけが公開�
 | --- | --- |
 | `setup` | 公開 CTI を一括でダウンロード・凍結（Nuclei テンプレ・CISA KEV・reputation・ASN・同梱 Sigma パック・bot レンジ） |
 | `nuclei update` / `kev` / `reputation update` / `bot-ranges update` | 特定の公開入力だけを個別更新 |
-| `inspect` | ログにどのフィールドが実在するかを確認（リクエスト値は出さない） |
-| `hunt` | 唯一の検知入口。Nuclei(CVE)＋Sigma を1パス。`--output <DIR>` で private/sanitized の全成果物、`--output` 無しなら findings を stdout のみ。`--no-nuclei` は setup 不要の Sigma のみ。`--since` / `--baseline-latest` / `--report` / `--observation-store` で運用を形作る |
+| `hunt` | 唯一の検知入口。Nuclei(CVE)＋Sigma を1パスで照合し、入力フィールド可用性・parse 品質・時刻カバレッジも集計表示。`--output <DIR>` で private/sanitized の全成果物、`--output` 無しなら findings を stdout のみ。`--no-nuclei` は setup 不要の Sigma のみ。`--since` / `--baseline-latest` / `--report` / `--observation-store` で運用を形作る |
 | `explain` | run の private findings を 接続元/クライアント IP・ASN・JA4 単位でトリアージ（挙動優先度スコア・リクエスト列・時間窓レート） |
 | `concentration` | CTI なしのリクエスト量分布。`--path` / `--path-prefix` / `--source-ip` でフォーカス |
 | `compare` | 2つの run ディレクトリを差分比較（first-seen・volume 上昇・新規 CVE） |

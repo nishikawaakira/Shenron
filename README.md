@@ -47,7 +47,7 @@ It also includes a reproducible synthetic validation loop: project-owned AWS WAF
 
 Static Nuclei CVE analysis is available through `shenron nuclei inventory` and `shenron nuclei coverage`. `shenron nuclei update` can prepare a local checkout by downloading public templates only; inventory and coverage remain passive local YAML analysis, and no template is executed or transmitted. See [detectability policy](docs/nuclei-detectability.md) and [Nuclei test generation](docs/nuclei-test-generation.md).
 
-Read-only local AWS WAF production inspection and validated Nuclei hunting are available through `shenron inspect` and `shenron hunt`. They separate private investigation evidence from sanitized aggregate output and make no AWS changes. See [production hunting](docs/production-hunting.md).
+Read-only local web-log hunting is available through `shenron hunt`. Its summary reports full-run populated-field counts, parse quality, and timestamp coverage without exposing field values; artifact mode keeps private investigation evidence separate from sanitized aggregate output and makes no AWS changes. See [production hunting](docs/production-hunting.md).
 
 Hunt can also label deterministic [declared-versus-observed consistency](docs/declared-observed-consistency.md) outcomes. Missing reference data, unsupported telemetry, and missing observed values remain distinct `unavailable` results rather than mismatches; raw declaration/observation values stay private, and no outcome determines impersonation, automation, attack, abuse, compromise, or identity.
 
@@ -103,8 +103,7 @@ post-hunt Slack notification).
 | --- | --- |
 | `setup` | Download and freeze all public CTI at once (Nuclei templates, CISA KEV, reputation, ASN, bundled Sigma pack, bot ranges) |
 | `nuclei update` / `kev` / `reputation update` / `bot-ranges update` | Refresh a single public input family |
-| `inspect` | Report which fields a log source actually contains, without emitting request values |
-| `hunt` | The single detection entry point — Nuclei CVE + Sigma in one pass. `--output <DIR>` writes the full private/sanitized artifacts; without `--output`, findings stream to stdout only. `--no-nuclei` runs Sigma-only with no setup; `--since`, `--baseline-latest`, `--report`, `--observation-store` shape a run |
+| `hunt` | The single detection entry point — Nuclei CVE + Sigma in one pass, with aggregate input-field availability, parse quality, and timestamp coverage. `--output <DIR>` writes the full private/sanitized artifacts; without `--output`, findings stream to stdout only. `--no-nuclei` runs Sigma-only with no setup; `--since`, `--baseline-latest`, `--report`, `--observation-store` shape a run |
 | `explain` | Triage a run's private findings by connection/client IP, ASN, or JA4 with behavior-priority scores, request sequences, and windowed rates |
 | `concentration` | Request-volume distribution without CTI; `--path` / `--path-prefix` / `--source-ip` focus |
 | `compare` | Diff two run directories (first-seen entities, elevated volume, newly observed CVEs) |

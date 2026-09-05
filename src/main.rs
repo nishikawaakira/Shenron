@@ -44,12 +44,10 @@ use shenron::{
         explain_private_findings,
         historical_replay_with_optional_kev as production_historical_replay,
         hunt_to_writer_with_options as production_hunt_to_writer,
-        hunt_with_optional_nuclei_options as production_hunt,
-        inspect_with_trusted_proxies as production_inspect, load_private_concentration,
+        hunt_with_optional_nuclei_options as production_hunt, load_private_concentration,
         terminal_safe, AblationReport, CountHypothesisReport, FindingSource,
         HistoricalReplayReport, HuntFindingFormat, HuntOptions, HuntTimeRange, HuntTriagePolicy,
-        InspectionReport, SanitizedConcentrationReport, SanitizedHuntReport,
-        SENSITIVE_CONFIG_PROBE_RULE_ID,
+        SanitizedConcentrationReport, SanitizedHuntReport, SENSITIVE_CONFIG_PROBE_RULE_ID,
     },
     report::{
         render_report, ReportArtifacts, ReportLanguage, ReportTriageView, SensitiveSuccessFinding,
@@ -84,7 +82,7 @@ struct Cli {
 // entire production command would add dispatch indirection solely for enum size.
 #[allow(clippy::large_enum_variant)]
 enum Command {
-    /// Prepare, inspect, generate, and validate public or synthetic inputs.
+    /// Prepare, inventory, generate, and validate public or synthetic inputs.
     /// Network access occurs only in explicitly invoked update/setup commands.
     #[command(flatten)]
     Lab(LabCommand),
@@ -93,7 +91,7 @@ enum Command {
         #[arg(long)]
         rules: PathBuf,
     },
-    /// Read-only local inspection and hunting against historical web logs.
+    /// Read-only local hunting and aggregate analysis of historical web logs.
     /// These subcommands are flattened to the top level (for example
     /// `shenron hunt`), so there is no `production` subcommand group.
     #[command(flatten)]
@@ -185,19 +183,6 @@ enum CandidateCommand {
 
 #[derive(Debug, Subcommand)]
 enum ProductionCommand {
-    /// Inspect local log structure without emitting request values.
-    Inspect {
-        #[arg(long)]
-        input: PathBuf,
-        #[arg(long, value_enum, default_value_t = InputFormat::Auto)]
-        format: InputFormat,
-        #[arg(long, default_value_t = 10_000)]
-        sample: usize,
-        /// Trusted direct proxy IP or CIDR. Repeat to trust multiple proxy networks.
-        /// Forwarded client IPs remain unavailable unless this is specified.
-        #[arg(long, value_name = "IP-or-CIDR")]
-        trusted_proxy: Vec<TrustedProxy>,
-    },
     /// Hunt web logs with Nuclei and/or Sigma. Without --output, private findings are written only to stdout.
     Hunt {
         /// Raw web telemetry to analyze. Mutually exclusive with --results-dir.
@@ -708,20 +693,6 @@ fn main() -> Result<()> {
         Command::Lab(command) => run_lab_command(command),
         Command::ValidateRules { rules } => validate(&rules),
         Command::Production(command) => match command {
-            ProductionCommand::Inspect {
-                input,
-                format,
-                sample,
-                trusted_proxy,
-            } => {
-                print_inspection(&production_inspect(
-                    &input,
-                    format.telemetry_profile_for_input(&input)?,
-                    sample,
-                    &TrustedProxySet::new(trusted_proxy),
-                )?);
-                Ok(())
-            }
             ProductionCommand::Hunt {
                 input,
                 results_dir,
@@ -1979,19 +1950,6 @@ fn triage_duration_error(value: &str) -> String {
     )
 }
 
-fn print_inspection(report: &InspectionReport) {
-    let fields = &report.fields_available;
-    let capabilities = report.telemetry_capabilities;
-    let supported = |available: bool, count: usize| {
-        if available {
-            count.to_string()
-        } else {
-            "not supported by telemetry profile".to_owned()
-        }
-    };
-    println!("Telemetry profile:          {:?}\nFiles found:                {}\nCompressed files:           {}\nApproximate input bytes:    {}\nParseable events sampled:   {}\nMalformed events sampled:   {}\nEarliest timestamp:         {}\nLatest timestamp:           {}\n\nField availability (sample counts):\nVerified forwarded client IP: {} (requires --trusted-proxy)\nJA4:                        {}\nJA3:                        {}\nTLS protocol:               {}\nTLS cipher:                 {}\nURI:                        {}\nQuery:                      {}\nHeaders:                    {}\nHost:                       {}\nMethod:                     {}\nWAF action:                 {}\nWAF labels:                 {}\nTerminating rule ID:        {}\nNon-terminating rules:      {}", report.telemetry_profile, report.files_found, report.compressed_files, report.approximate_input_bytes, report.sampled_events, report.malformed_events, report.earliest_timestamp.as_deref().unwrap_or("unknown"), report.latest_timestamp.as_deref().unwrap_or("unknown"), fields.client_ip, supported(capabilities.ja4, fields.ja4), supported(capabilities.ja3, fields.ja3), supported(capabilities.tls_protocol, fields.tls_protocol), supported(capabilities.tls_cipher, fields.tls_cipher), supported(capabilities.uri_path, fields.uri), supported(capabilities.uri_query, fields.query), fields.headers, supported(capabilities.host, fields.host), supported(capabilities.method, fields.method), supported(capabilities.waf_action, fields.waf_action), supported(capabilities.waf_labels, fields.waf_labels), supported(capabilities.waf_action, fields.terminating_rule_id), supported(capabilities.waf_action, fields.non_terminating_rules));
-}
-
 fn print_hunt(report: &SanitizedHuntReport, sanitized_path: &Path) {
     let metrics = &report.metrics;
     let time_range = match (&metrics.filter_from, &metrics.filter_to) {
@@ -2010,6 +1968,7 @@ fn print_hunt(report: &SanitizedHuntReport, sanitized_path: &Path) {
         "WAF outcome:                unavailable for this telemetry source".to_owned()
     };
     println!("Read-only production hunt complete.\nPrivate findings:            written under the supplied output directory\nSanitized report:            {}\n\n{}\n\nRequests analyzed:           {}\nFiles analyzed:              {}\nParse errors:                {}\nCVE-related request matches: {}\n  Request-specific:          {}\n  Response-unverified:       {}\nUnique CVEs observed:        {}\nUnique CISA KEVs observed:   {}\nSource clusters:             {}\nJA4 fingerprints:            {}\nDetection-match confidence (template detectability; NOT attack/compromise confidence):\n  HIGH:                      {}\n  MEDIUM:                    {}\n  LOW:                       {}\n\n{}", sanitized_path.display(), time_range, metrics.total_requests_analyzed, metrics.files_analyzed, metrics.parse_errors, metrics.cve_related_request_matches, metrics.request_specific_matches, metrics.response_unverified_matches, metrics.unique_cves_observed, metrics.unique_cisa_kevs_observed, metrics.unique_source_clusters, metrics.unique_ja4_fingerprints, metrics.high_confidence_findings, metrics.medium_confidence_findings, metrics.low_confidence_findings, outcomes);
+    println!("\n{}", input_quality_summary(metrics));
     println!(
         "\nSigma (generic request-pattern pass; separate from the CVE metrics above):\n  Rules evaluated:           {}\n  Matched requests:          {}\n  Rule matches:              {} (one request can match several rules, so this can exceed matched requests)\n  Distinct rules matched:    {}",
         metrics.sigma_rules_evaluated,
@@ -2098,9 +2057,45 @@ fn print_streaming_hunt_summary(report: &SanitizedHuntReport) {
         metrics.unique_cves_observed,
         metrics.sigma_matched_requests,
     );
+    eprintln!("\n{}", input_quality_summary(metrics));
     eprintln!(
         "Review signals are observed matches and aggregates, not determinations of attack, exploitation, compromise, or attacker identity."
     );
+}
+
+/// Aggregate-only input-quality display shared by artifact and stdout-only
+/// hunts. Counts cover every parseable event included in the selected hunt
+/// time range and never reveal field values.
+fn input_quality_summary(metrics: &shenron::production::HuntMetrics) -> String {
+    let fields = &metrics.fields_available;
+    let parse_note = if metrics.parse_errors == 0 {
+        String::new()
+    } else {
+        "\n  Note: parse errors can indicate a mismatched --format, mixed formats, or malformed records; review the input and selected format."
+            .to_owned()
+    };
+    format!(
+        "Input field availability & quality (populated event counts):\n  Parseable events:          {}\n  Parse errors:              {}\n  Earliest timestamp:        {}\n  Latest timestamp:          {}\n  Verified client IP:        {} (requires --trusted-proxy)\n  JA4:                       {}\n  JA3:                       {}\n  TLS protocol:              {}\n  TLS cipher:                {}\n  URI:                       {}\n  Query:                     {}\n  Headers:                   {}\n  Host:                      {}\n  Method:                    {}\n  WAF action:                {}\n  WAF labels:                {}\n  Terminating rule ID:       {}\n  Non-terminating rules:     {}{}",
+        metrics.total_requests_analyzed,
+        metrics.parse_errors,
+        metrics.earliest_timestamp.as_deref().unwrap_or("unknown"),
+        metrics.latest_timestamp.as_deref().unwrap_or("unknown"),
+        fields.client_ip,
+        fields.ja4,
+        fields.ja3,
+        fields.tls_protocol,
+        fields.tls_cipher,
+        fields.uri,
+        fields.query,
+        fields.headers,
+        fields.host,
+        fields.method,
+        fields.waf_action,
+        fields.waf_labels,
+        fields.terminating_rule_id,
+        fields.non_terminating_rules,
+        parse_note,
+    )
 }
 
 fn print_daily_review_summary(

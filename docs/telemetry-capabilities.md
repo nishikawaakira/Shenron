@@ -38,11 +38,18 @@ desired:
 shenron hunt --input ./logs --format nginx --rules ./rules --no-nuclei
 shenron hunt --input ./logs --format apache --rules ./rules --no-nuclei
 shenron hunt --input ./logs --format apache-vhost --rules ./rules --no-nuclei
-shenron inspect --input ./logs --format nginx
 shenron hunt --input ./logs --format apache ...
 shenron hunt --input ./other_vhosts_access.log --format apache ...
 shenron nuclei compare-telemetry --templates ./nuclei-templates --revision <sha>
 ```
+
+Every hunt summarizes populated-field counts and input quality over all
+parseable events in the selected time range, including parse errors and the
+earliest/latest timestamps. The same aggregate-only counts are stored in
+`sanitized-research.json`; no IP, path, host, header, or other observed value is
+included. This is useful for checking a new source or a suspected format
+mismatch. A verified forwarded client IP is counted only when an explicit
+`--trusted-proxy` configuration permits safe resolution.
 
 The combined parser does not guess arbitrary custom formats. `apache` first recognizes standard Apache Combined and then falls back to Apache's `other_vhosts_access.log` shape on a per-line basis. The vhost prefix accepts either `%v:%p` (with port) or `%v` (without port) and is normalized to `host`; events record the format that actually matched. `apache-vhost` remains the strict mode when every line must contain that prefix. The telemetry comparison also includes analysis-only counterfactuals: `nginx-combined+host` and `nginx-security`. The latter models a reviewed custom format with Host and explicitly selected, non-sensitive request headers; it is not a recommendation to log credentials, cookies, tokens, or request bodies, and it is not yet a custom-format parser. In particular, it does not currently carry TLS protocol or cipher values. Capability-aware consistency checks therefore label those facts `unavailable` rather than guessing them or treating absence as a mismatch. See [declared-versus-observed consistency](declared-observed-consistency.md).
 

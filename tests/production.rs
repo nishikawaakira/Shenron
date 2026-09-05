@@ -11,8 +11,7 @@ use shenron::event::{TelemetryProfile, TrustedProxy, TrustedProxySet};
 use shenron::nuclei::CatalogSeverity;
 use shenron::production::{
     ablation, concentration, count_hypotheses, explain_private_findings, historical_replay, hunt,
-    hunt_with_options, inspect, inspect_with_trusted_proxies, HuntOptions, HuntTimeRange,
-    SanitizedCveFinding,
+    hunt_with_options, HuntOptions, HuntTimeRange, SanitizedCveFinding,
 };
 use tempfile::tempdir;
 use walkdir::WalkDir;
@@ -1412,22 +1411,6 @@ fn count_hypotheses_reports_a_sanitized_monotonic_per_cve_ladder() {
 }
 
 #[test]
-fn inspection_reports_structure_without_request_values() {
-    let report = inspect(
-        Path::new("tests/fixtures/production/waf.jsonl"),
-        TelemetryProfile::AwsWaf,
-        10,
-    )
-    .unwrap();
-    assert_eq!(report.files_found, 1);
-    assert_eq!(report.sampled_events, 2);
-    assert_eq!(report.malformed_events, 0);
-    assert_eq!(report.fields_available.ja4, 2);
-    assert_eq!(report.fields_available.query, 2);
-    assert_eq!(report.fields_available.headers, 2);
-}
-
-#[test]
 fn hunt_uses_validated_matchers_and_separates_sensitive_output() {
     let output = tempdir().unwrap();
     let report = hunt(
@@ -1441,6 +1424,15 @@ fn hunt_uses_validated_matchers_and_separates_sensitive_output() {
     )
     .unwrap();
     assert_eq!(report.metrics.total_requests_analyzed, 2);
+    assert_eq!(report.metrics.fields_available.client_ip, 0);
+    assert_eq!(report.metrics.fields_available.ja4, 2);
+    assert_eq!(report.metrics.fields_available.query, 2);
+    assert_eq!(report.metrics.fields_available.headers, 2);
+    assert_eq!(report.metrics.fields_available.host, 2);
+    assert_eq!(report.metrics.fields_available.method, 2);
+    assert_eq!(report.metrics.fields_available.waf_action, 2);
+    assert_eq!(report.metrics.fields_available.waf_labels, 1);
+    assert_eq!(report.metrics.fields_available.terminating_rule_id, 2);
     assert_eq!(report.metrics.cve_related_request_matches, 2);
     assert_eq!(report.metrics.request_specific_matches, 2);
     assert_eq!(report.metrics.response_unverified_matches, 0);
@@ -1728,10 +1720,17 @@ fn hunt_uses_prepared_default_inputs_in_stdout_or_explicit_artifact_mode_without
 fn auto_format_detects_waf_and_apache_vhost_but_rejects_ambiguous_combined() {
     Command::cargo_bin("shenron")
         .unwrap()
-        .args(["inspect", "--input", "tests/fixtures/production/waf.jsonl"])
+        .args([
+            "hunt",
+            "--input",
+            "tests/fixtures/production/waf.jsonl",
+            "--rules",
+            "tests/fixtures/rules",
+            "--no-nuclei",
+        ])
         .assert()
         .success()
-        .stdout(contains("Telemetry profile:          AwsWaf"));
+        .stderr(contains("Input field availability & quality"));
 
     let directory = tempdir().unwrap();
     let vhost = directory.path().join("other_vhosts_access.log");
@@ -1742,10 +1741,16 @@ fn auto_format_detects_waf_and_apache_vhost_but_rejects_ambiguous_combined() {
     .unwrap();
     Command::cargo_bin("shenron")
         .unwrap()
-        .args(["inspect", "--input", vhost.to_str().unwrap()])
+        .args([
+            "hunt",
+            "--input",
+            vhost.to_str().unwrap(),
+            "--rules",
+            "tests/fixtures/rules",
+            "--no-nuclei",
+        ])
         .assert()
-        .success()
-        .stdout(contains("Telemetry profile:          ApacheCombined"));
+        .success();
 
     let combined = directory.path().join("access.log");
     fs::write(
@@ -1755,7 +1760,14 @@ fn auto_format_detects_waf_and_apache_vhost_but_rejects_ambiguous_combined() {
     .unwrap();
     Command::cargo_bin("shenron")
         .unwrap()
-        .args(["inspect", "--input", combined.to_str().unwrap()])
+        .args([
+            "hunt",
+            "--input",
+            combined.to_str().unwrap(),
+            "--rules",
+            "tests/fixtures/rules",
+            "--no-nuclei",
+        ])
         .assert()
         .failure()
         .stderr(contains("Could not determine the input format safely."))
@@ -1766,15 +1778,92 @@ fn auto_format_detects_waf_and_apache_vhost_but_rejects_ambiguous_combined() {
     Command::cargo_bin("shenron")
         .unwrap()
         .args([
-            "inspect",
+            "hunt",
             "--input",
             combined.to_str().unwrap(),
             "--format",
             "apache",
+            "--rules",
+            "tests/fixtures/rules",
+            "--no-nuclei",
+        ])
+        .assert()
+        .success();
+}
+
+#[test]
+fn hunt_reports_full_input_availability_and_quality_without_raw_values() {
+    let directory = tempdir().unwrap();
+    let input = directory.path().join("waf-with-malformed.jsonl");
+    let mut corpus = fs::read_to_string("tests/fixtures/production/waf.jsonl").unwrap();
+    corpus.push_str("{malformed-json}\n");
+    fs::write(&input, corpus).unwrap();
+    let output = directory.path().join("hunt-output");
+
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "hunt",
+            "--input",
+            input.to_str().unwrap(),
+            "--format",
+            "aws-waf",
+            "--rules",
+            "tests/fixtures/rules",
+            "--no-nuclei",
+            "--output",
+            output.to_str().unwrap(),
         ])
         .assert()
         .success()
-        .stdout(contains("Telemetry profile:          ApacheCombined"));
+        .stdout(contains("Input field availability & quality"))
+        .stdout(contains("Parseable events:          2"))
+        .stdout(contains("Parse errors:              1"))
+        .stdout(contains("JA4:                       2"))
+        .stdout(contains(
+            "Earliest timestamp:        2025-01-01T00:00:00+00:00",
+        ))
+        .stdout(contains(
+            "mismatched --format, mixed formats, or malformed records",
+        ));
+
+    let sanitized = fs::read_to_string(output.join("sanitized-research.json")).unwrap();
+    let report: serde_json::Value = serde_json::from_str(&sanitized).unwrap();
+    assert_eq!(report["metrics"]["parse_errors"], 1);
+    assert_eq!(report["metrics"]["total_requests_analyzed"], 2);
+    assert_eq!(report["metrics"]["fields_available"]["ja4"], 2);
+    assert_eq!(report["metrics"]["fields_available"]["query"], 2);
+    assert_eq!(report["metrics"]["fields_available"]["waf_action"], 2);
+    assert!(!sanitized.contains("198.51.100.1"));
+    assert!(!sanitized.contains("/vulnerable/execute"));
+    assert!(!sanitized.contains("secret-token"));
+
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "hunt",
+            "--input",
+            input.to_str().unwrap(),
+            "--format",
+            "aws-waf",
+            "--rules",
+            "tests/fixtures/rules",
+            "--no-nuclei",
+        ])
+        .assert()
+        .success()
+        .stderr(contains("Input field availability & quality"))
+        .stderr(contains("Parse errors:              1"));
+}
+
+#[test]
+fn inspect_is_no_longer_a_command() {
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .arg("inspect")
+        .assert()
+        .failure()
+        .stderr(contains("unrecognized subcommand 'inspect'"));
 }
 
 #[test]
@@ -2248,7 +2337,7 @@ fn explain_hides_only_response_unverified_generic_paths_by_default() {
 }
 
 #[test]
-fn inspection_resolves_a_forwarded_client_only_through_a_trusted_peer() {
+fn hunt_resolves_a_forwarded_client_only_through_a_trusted_peer() {
     let directory = tempdir().unwrap();
     let input = directory.path().join("waf.jsonl");
     let waf = fs::read_to_string("tests/fixtures/production/waf.jsonl")
@@ -2261,10 +2350,20 @@ fn inspection_resolves_a_forwarded_client_only_through_a_trusted_peer() {
     fs::write(&input, waf).unwrap();
     let trusted_proxies =
         TrustedProxySet::new(vec!["198.51.100.0/24".parse::<TrustedProxy>().unwrap()]);
-    let report =
-        inspect_with_trusted_proxies(&input, TelemetryProfile::AwsWaf, 10, &trusted_proxies)
-            .unwrap();
-    assert_eq!(report.fields_available.client_ip, 1);
+    let report = hunt_with_options(
+        &input,
+        Path::new("tests/fixtures/nuclei"),
+        Path::new("tests/fixtures/production/nuclei-report.json"),
+        Some(Path::new("tests/fixtures/production/kev-report.json")),
+        &directory.path().join("results"),
+        TelemetryProfile::AwsWaf,
+        HuntOptions {
+            trusted_proxies,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(report.metrics.fields_available.client_ip, 1);
 }
 
 #[test]
@@ -2729,8 +2828,6 @@ fn apache_vhost_hunt_preserves_vhost_without_claiming_a_waf_outcome() {
     .unwrap();
     let kev_report = directory.path().join("kev-report.json");
     fs::write(&kev_report, r#"{"entries":[]}"#).unwrap();
-    let inspection = inspect(&input, TelemetryProfile::ApacheVhostCombined, 10).unwrap();
-    assert_eq!(inspection.fields_available.host, 1);
     let report = hunt(
         &input,
         Path::new("tests/fixtures/nuclei"),
@@ -2742,6 +2839,7 @@ fn apache_vhost_hunt_preserves_vhost_without_claiming_a_waf_outcome() {
     )
     .unwrap();
     assert!(!report.metrics.waf_outcome_available);
+    assert_eq!(report.metrics.fields_available.host, 1);
     assert_eq!(report.cve_findings[0].unique_hosts, 1);
     assert_eq!(
         report.cve_findings[0].response_status_counts.get(&404),
