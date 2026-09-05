@@ -158,11 +158,27 @@ cargo run --bin shenron -- validate-rules --rules ./rules/
 
 ## Quick hunt
 
-Prepare public Nuclei, CISA KEV, reputation, ASN, and published crawler-range intelligence once, then hunt a
-safely recognizable local log input without a format option:
+Prepare public Nuclei, CISA KEV, reputation, ASN, and published crawler-range
+intelligence once, then hunt a safely recognizable local log input. The minimal
+form is two commands, with no format, rules, or output options:
 
 ```bash
 shenron setup
+shenron hunt --input ./waf-logs
+```
+
+`setup` populates the default data directory, and `hunt` reads its Nuclei, KEV,
+bundled Sigma pack, and bot-range inputs from there automatically. AWS WAF JSON
+is auto-detected, so `--format` is unnecessary. With no `--output`, private
+findings (including raw IPs, paths, hosts, and request evidence) stream to
+stdout as JSONL, while the summary — including input field availability, parse
+quality, and timestamp coverage — goes to stderr; redirect the stdout stream
+only to a suitably protected local destination.
+
+Add `--output` to write the full private and sanitized run artifacts (and to
+enable `--report`, `--baseline-latest`, and Slack notification):
+
+```bash
 shenron hunt --input ./waf-logs --output ./private-results/hunt-20260905T000000Z
 ```
 

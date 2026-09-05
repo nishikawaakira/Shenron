@@ -140,10 +140,18 @@ cargo run --bin shenron -- validate-rules --rules ./rules/
 
 ## Production hunt（本番ログのハンティング）
 
-公開 Nuclei テンプレート、CISA KEV、IP レピュテーション、ASN、公開クローラーレンジを一度準備すれば、安全に識別できるログは入力だけで hunt を実行できます。
+公開 Nuclei テンプレート、CISA KEV、IP レピュテーション、ASN、公開クローラーレンジを一度準備すれば、安全に識別できるログは入力だけで hunt を実行できます。**最小構成は次の2コマンドだけ**で、format・rules・output の指定は不要です。
 
 ```bash
 shenron setup
+shenron hunt --input ./waf-logs
+```
+
+`setup` が既定のデータディレクトリを用意し、`hunt` はそこから Nuclei・KEV・同梱 Sigma パック・bot-range を自動で参照します。AWS WAF JSON は自動判別されるため `--format` は不要です。`--output` を省略すると、生の IP・パス・ホスト・リクエスト証跡を含み得る private findings を JSONL で標準出力へ流し、要約（入力フィールド可用性・解析品質・時刻カバレッジを含む）は標準エラーへ出します。標準出力のストリームは保護された場所にだけリダイレクトしてください。
+
+`--output` を付けると full run artifacts（private + sanitized）を保存し、`--report`・`--baseline-latest`・Slack 通知も有効になります。
+
+```bash
 shenron hunt --input ./waf-logs --output ./private-results/hunt-20260905T000000Z
 ```
 
