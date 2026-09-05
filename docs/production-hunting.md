@@ -27,8 +27,22 @@ recognizable local input:
 
 ```bash
 cargo run --bin shenron -- hunt \
-  --input ./production-waf-logs
+  --input ./production-waf-logs \
+  --output ./private-results/hunt-20260905T000000Z
 ```
+
+`hunt` is the single detection entry point. With `--output <DIR>`, it writes the
+complete private and sanitized run artifacts. Without `--output`, it creates no
+files and writes only private findings to stdout as JSONL (or flattened CSV with
+`--output-format csv`); summaries, progress, and warnings stay on stderr. The
+stdout records can contain raw IPs, paths, hosts, headers, and request evidence,
+so redirect or share them only as private data. `--report`, `--baseline`,
+`--baseline-latest`, and `--observation-store` require `--output`.
+
+Use `--no-nuclei --rules <DIR>` for a setup-free Sigma-only hunt. This skips
+Nuclei input resolution entirely. `--no-sigma` runs the inverse, and both
+detection paths cannot be disabled together. `validate-rules` remains available
+to inspect Sigma compatibility without processing logs.
 
 Log-reading commands default to `--format auto`. Auto mode recognizes AWS WAF
 JSON and vhost-prefixed Apache Combined input. Standard nginx and Apache
@@ -224,6 +238,7 @@ Analyze raw logs and render the private report in the same hunt by adding
 shenron hunt \
   --input ./logs \
   --format apache \
+  --output ./private-results/hunt-20260905T000000Z \
   --report \
   --lang ja
 ```
@@ -314,6 +329,8 @@ status counts, concentration summaries, an optional sanitized baseline delta,
 and local artifact paths. It has no fields for IP addresses, request paths,
 hosts, headers, log values, or private findings, and it never reads
 `private-findings.jsonl` to build a message.
+In stdout-only mode, Slack is skipped with an explicit stderr note because no
+run directory exists; use `--output` to opt into artifact-backed notification.
 
 Set `SHENRON_SLACK_MIN_SEVERITY` to `info`, `low`, `medium`, `high`, or
 `critical` to notify only when at least one observed CVE or Sigma rule match has
@@ -338,7 +355,7 @@ compromise, abuse, or attacker identity.
 
 Long streaming commands (`hunt`, `ablation`, `replay`, `count-hypotheses`) emit a periodic progress heartbeat to stderr during a large scan. It reports only a running record count and a fixed command label — never a request value, IP address, or hostname — and stdout continues to carry findings and reports.
 
-`--output` must be outside the raw-input tree. When omitted, hunt writes to `./private-results/hunt-<UTC timestamp>/`. The command writes `private-findings.jsonl` locally with investigation evidence, including fields that may be sensitive. `sanitized-research.json` has aggregate CVE/KEV counts, time ranges, WAF outcomes, cardinalities, and the sorted matching Nuclei `template_ids` for each observed CVE. Template IDs are public CTI metadata rather than customer data; no raw request values, IPs, hostnames, JA3/JA4 values, queries, or headers are included. The default `private-results/` location is ignored by Git, but that is only an additional safeguard and not a data-security boundary.
+`--output` must be outside the raw-input tree. When supplied, the command writes `private-findings.jsonl` locally with investigation evidence, including fields that may be sensitive. `sanitized-research.json` has aggregate CVE/KEV counts, time ranges, WAF outcomes, cardinalities, and the sorted matching Nuclei `template_ids` for each observed CVE. Template IDs are public CTI metadata rather than customer data; no raw request values, IPs, hostnames, JA3/JA4 values, queries, or headers are included. Without `--output`, neither of these files nor a run directory is created; private findings are streamed to stdout only.
 
 Every hunt also writes `run-manifest.json` beside the sanitized report. It records the Shenron version, generated time, telemetry profile, Nuclei report revision and provenance, optional KEV/Nuclei report byte lengths, trusted-proxy configuration, fixed triage baseline, time filters, and aggregate exclusion counts. The Nuclei report and, when supplied, the KEV report receive streaming SHA-256 values so reviewers can verify that frozen research inputs are identical; the templates directory remains identified by its pinned Nuclei revision rather than a directory-wide hash. This makes a run reviewable and reproducible without placing raw telemetry in the artifact: the manifest never contains raw request values, client or peer IP addresses, hosts, URI/query values, headers, or JA3/JA4 values.
 

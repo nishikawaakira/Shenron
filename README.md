@@ -36,7 +36,7 @@ Four design pillars: (1) static conversion — templates are never executed; (2)
 
 ## Capabilities
 
-The scanner pipeline streams AWS WAF JSONL (including gzip) → normalized `WebEvent` → a deliberately small Sigma subset → JSONL or CSV findings. It supports AWS WAF action, labels, request metadata, and optional JA3/JA4 fingerprints. Analysis commands are offline by default, never upload raw customer data, execute exploits, change AWS, deploy candidates, or take automatic BLOCK actions. Explicit `shenron-lab` preparation commands such as `nuclei update`, `reputation update`, and `bot-ranges update` may download public threat-intelligence inputs. The sole opt-in analysis-side exception is the post-hunt Slack notification described below: it sends sanitized aggregate counters only when `SHENRON_SLACK_WEBHOOK` is set, never IPs, paths, hosts, headers, log values, or private findings.
+The hunt pipeline streams web logs (including gzip) → normalized `WebEvent` → validated Nuclei and/or a deliberately small Sigma subset → private findings. It supports AWS WAF action, labels, request metadata, and optional JA3/JA4 fingerprints. Analysis commands are offline by default, never upload raw customer data, execute exploits, change AWS, deploy candidates, or take automatic BLOCK actions. Explicit `shenron-lab` preparation commands such as `nuclei update`, `reputation update`, and `bot-ranges update` may download public threat-intelligence inputs. The sole opt-in analysis-side exception is the post-hunt Slack notification described below: it sends sanitized aggregate counters only when `SHENRON_SLACK_WEBHOOK` is set, never IPs, paths, hosts, headers, log values, or private findings.
 
 It also includes a reproducible synthetic validation loop: project-owned AWS WAF-shaped corpora, separate ground truth, mutation tests, regression fixtures, and machine-readable validation results. See [validation](docs/validation.md) and [synthetic corpus generation](docs/synthetic-corpus.md).
 
@@ -76,13 +76,13 @@ The same private focus view also aggregates retained peer addresses by network p
 
 When a local ASN dataset is available, add `--asn-dataset <PATH>` to show a private ASN aggregation beside the prefix and IP views. It reports unresolved peers explicitly; an ASN is only a routing-level grouping, not attribution or a determination of a DoS attempt, attack, or abuse. ASN and organization values never enter sanitized output.
 
-Add `--report` to `shenron hunt --input <logs>` to analyze the logs and write a private, self-contained offline HTML report in the same run. Use `shenron hunt --results-dir <run-dir> --lang ja` to rerender an existing hunt or concentration run without re-analyzing raw logs; `--report <path>` overrides the default `<run-dir>/report.html`. The report uses inline SVG path/IP bars, minute timelines including aggregate 1xx–5xx HTTP status-class lines, hunt triage, and an observed-CVE table that lists the matching Nuclei template IDs and their catalog-declared severity. The status-class minute series contains counts only, stays in the private concentration artifact, and is not copied to sanitized output. Those public CTI IDs are also recorded deterministically as `template_ids` in sanitized per-CVE findings; no customer request value is added. CVE severity comes from Nuclei `info.severity`, and Sigma severity counts come from Sigma `level`; these are source-catalog declarations, not Shenron judgments about impact, exploitation, compromise, malice, or attribution. Both minute timelines have CSS-only hover readouts, with the status view showing the UTC minute and every class count. Template IDs link to public GitHub code searches: opening the report makes no request, while clicking a link sends only that public ID and no private value. The HTML uses no JavaScript or automatically loaded external resource and remains visualization for human review rather than a DoS, attack, exploitation, compromise, malice, or attribution determination; see [private HTML reports](docs/html-report.md).
+Add `--output <run-dir> --report` to `shenron hunt --input <logs>` to analyze the logs and write a private, self-contained offline HTML report in the same run. Use `shenron hunt --results-dir <run-dir> --lang ja` to rerender an existing hunt or concentration run without re-analyzing raw logs; `--report <path>` overrides the default `<run-dir>/report.html`. The report uses inline SVG path/IP bars, minute timelines including aggregate 1xx–5xx HTTP status-class lines, hunt triage, and an observed-CVE table that lists the matching Nuclei template IDs and their catalog-declared severity. The status-class minute series contains counts only, stays in the private concentration artifact, and is not copied to sanitized output. Those public CTI IDs are also recorded deterministically as `template_ids` in sanitized per-CVE findings; no customer request value is added. CVE severity comes from Nuclei `info.severity`, and Sigma severity counts come from Sigma `level`; these are source-catalog declarations, not Shenron judgments about impact, exploitation, compromise, malice, or attribution. Both minute timelines have CSS-only hover readouts, with the status view showing the UTC minute and every class count. Template IDs link to public GitHub code searches: opening the report makes no request, while clicking a link sends only that public ID and no private value. The HTML uses no JavaScript or automatically loaded external resource and remains visualization for human review rather than a DoS, attack, exploitation, compromise, malice, or attribution determination; see [private HTML reports](docs/html-report.md).
 
 `shenron compare` diffs two local frozen run artifacts, while `hunt --baseline <prior-run>` writes the same temporal comparison after a new hunt. CVE changes and aggregate counts are sanitized; first-seen entities and path/IP detail remain private. Neither first-seen nor elevated-volume labels determine maliciousness, attack, compromise, or attribution; see [temporal comparison](docs/temporal-comparison.md).
 
-Every `hunt` also writes an aggregate-only `triage-summary.json` and a private ranked `triage-view.json`; pass `--show-triage` (and optionally `--limit`) to display private entries. This order is for human triage, not threat severity or probability of malice; first-seen means review, never malicious.
+Every artifact-producing `hunt --output <DIR>` also writes an aggregate-only `triage-summary.json` and a private ranked `triage-view.json`; pass `--show-triage` (and optionally `--limit`) to display private entries. This order is for human triage, not threat severity or probability of malice; first-seen means review, never malicious.
 
-Slack notification is opt-in and environment-only. Set `SHENRON_SLACK_WEBHOOK` to send one post-hunt message containing sanitized severity counts, CVE/KEV/Sigma totals, sensitive-file 2xx and concentration summaries, optional baseline deltas, and local artifact paths. Raw IPs, request paths, hosts, headers, log values, and `private-findings.jsonl` are never read into or sent by the notification path. Optionally set `SHENRON_SLACK_MIN_SEVERITY=info|low|medium|high|critical`; a configured threshold sends only when a CVE or Sigma catalog severity meets it, or when a KEV CVE or sensitive-file 2xx is observed. This requires system `curl`; delivery is best effort, and a transfer failure does not fail the completed hunt. Severity remains source-catalog metadata, not a Shenron determination of attack, exploitation, compromise, or identity.
+Slack notification is opt-in and environment-only. Set `SHENRON_SLACK_WEBHOOK` on an artifact-producing hunt to send one post-hunt message containing sanitized severity counts, CVE/KEV/Sigma totals, sensitive-file 2xx and concentration summaries, optional baseline deltas, and local artifact paths. Stdout-only mode explicitly skips Slack because it has no run directory. Raw IPs, request paths, hosts, headers, log values, and `private-findings.jsonl` are never read into or sent by the notification path. Optionally set `SHENRON_SLACK_MIN_SEVERITY=info|low|medium|high|critical`; a configured threshold sends only when a CVE or Sigma catalog severity meets it, or when a KEV CVE or sensitive-file 2xx is observed. This requires system `curl`; delivery is best effort, and a transfer failure does not fail the completed hunt. Severity remains source-catalog metadata, not a Shenron determination of attack, exploitation, compromise, or identity.
 
 Defensive candidates can be built from private hunt findings, replayed locally, reviewed for backend compatibility, and exported as COUNT-only AWS WAF JSON, Terraform rule fragments, or OSSEC detection XML. Export never deploys a control and refuses non-faithful translations. See the [candidate model](docs/waf-candidate-model.md).
 
@@ -108,12 +108,13 @@ Building from source needs a stable Rust toolchain; a release build is
 ## Quick start
 
 ```bash
-cargo run --bin shenron -- scan \
+cargo run --bin shenron -- hunt \
   --input ./tests/fixtures/aws-waf/ \
-  --rules ./tests/fixtures/rules/
+  --rules ./tests/fixtures/rules/ \
+  --no-nuclei
 ```
 
-Findings go to stdout as JSONL; the scan summary and malformed-record warnings go to stderr. Use `--output findings.csv --output-format csv` for CSV. Check rule compatibility before a scan:
+`hunt` is the single detection entry point. Without `--output`, private findings (including raw IPs, paths, hosts, and request evidence) go to stdout as JSONL; summaries and warnings go to stderr, and no files are created. Use `--output-format csv > findings.csv` for flattened CSV. `--no-nuclei` provides a setup-free Sigma-only run; `--no-sigma` provides the inverse, and both cannot be disabled together. Check Sigma rule compatibility independently with the retained command:
 
 ```bash
 cargo run --bin shenron -- validate-rules --rules ./rules/
@@ -126,11 +127,12 @@ safely recognizable local log input without a format option:
 
 ```bash
 shenron-lab setup
-shenron hunt --input ./waf-logs
+shenron hunt --input ./waf-logs --output ./private-results/hunt-20260905T000000Z
 ```
 
 For daily appended or rotated logs, point `--input` at the log directory and
-combine `--since 24h` with `--baseline-latest ./private-results`; Shenron reads
+combine an explicit sortable `--output` run directory with `--since 24h` and
+`--baseline-latest ./private-results`; Shenron reads
 directory trees and gzip rotations, records the resolved moving boundary, and
 selects the latest valid prior run by sortable directory name. Use explicit
 `--from/--to` instead when the window itself must be exactly reproducible.
@@ -149,10 +151,14 @@ alongside it as `nuclei-report.json`, plus the downloaded
 `known_exploited_vulnerabilities.json`, its frozen `kev-report.json` join,
 `kev-manifest.json`, and optional `reputation.jsonl`, `asn-ranges.tsv`, and
 `bot-ranges.json`. Hunt, ablation, replay, and
-count-hypotheses use those locations by default. A hunt without `--output`
-writes private artifacts to `./private-results/hunt-<UTC timestamp>/`.
-`--nuclei-templates`, `--nuclei-report`, `--kev-report`, and `--output` remain
-available for an explicit, reproducible workflow. If `--kev-report` is omitted,
+count-hypotheses use those locations by default. A hunt with `--output <DIR>`
+writes the complete private and sanitized run artifacts there. Without
+`--output`, it creates no run directory and writes only private findings to
+stdout (`--output-format jsonl|csv`); redirect that stream only to a suitably
+protected local destination. `--report`, `--baseline`, `--baseline-latest`, and
+`--observation-store` require `--output`. `--nuclei-templates`,
+`--nuclei-report`, and `--kev-report` remain available for an explicit,
+reproducible workflow. If `--kev-report` is omitted,
 the prepared default is used when present; otherwise Shenron uses an empty KEV
 set. `setup --skip-kev` omits KEV preparation.
 

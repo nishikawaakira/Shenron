@@ -1,7 +1,8 @@
 //! Read-only local production AWS WAF inspection and validated Nuclei hunts.
 //!
-//! Raw inputs are streamed without modification. Private findings are written
-//! separately from a sanitized aggregate report and are never uploaded.
+//! Raw inputs are streamed without modification. Artifact mode separates
+//! private findings from a sanitized aggregate report; stdout mode writes only
+//! private findings and creates no files. Nothing is uploaded.
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -519,8 +520,8 @@ struct RunManifest {
 
 #[derive(Serialize)]
 struct RunManifestInputs {
-    nuclei_templates: PathProvenance,
-    nuclei_report: PathProvenance,
+    nuclei_templates: Option<PathProvenance>,
+    nuclei_report: Option<PathProvenance>,
     kev_report: Option<PathProvenance>,
     bot_range_snapshot: Option<PathProvenance>,
     approved_validated_template_count: usize,
@@ -609,6 +610,134 @@ struct PrivateFinding {
     /// Missing values remain `None` and are never inferred.
     #[serde(default)]
     response_bytes: Option<u64>,
+}
+
+/// Private finding stream format used when `hunt` writes directly to stdout.
+/// JSONL is byte-compatible with `private-findings.jsonl`; CSV is a flattened
+/// analyst view and remains private because it contains observed request data.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HuntFindingFormat {
+    Jsonl,
+    Csv,
+}
+
+enum PrivateFindingWriter<W: Write> {
+    Jsonl(W),
+    Csv(Box<csv::Writer<W>>),
+}
+
+impl<W: Write> PrivateFindingWriter<W> {
+    fn new(writer: W, format: HuntFindingFormat) -> anyhow::Result<Self> {
+        match format {
+            HuntFindingFormat::Jsonl => Ok(Self::Jsonl(writer)),
+            HuntFindingFormat::Csv => {
+                let mut writer = csv::Writer::from_writer(writer);
+                writer.write_record([
+                    "Source",
+                    "TemplateID",
+                    "CVEs",
+                    "Detectability",
+                    "RequestSpecificity",
+                    "Timestamp",
+                    "SourceIP",
+                    "ClientIP",
+                    "Host",
+                    "Method",
+                    "URIPath",
+                    "URIQuery",
+                    "Headers",
+                    "JA3",
+                    "JA4",
+                    "WAFAction",
+                    "WAFRuleID",
+                    "WAFRuleType",
+                    "WAFLabels",
+                    "WAFNonTerminatingRuleIDs",
+                    "RequestID",
+                    "LogSource",
+                    "RuleTitle",
+                    "SigmaLevel",
+                    "ResponseStatus",
+                    "ResponseBytes",
+                ])?;
+                Ok(Self::Csv(Box::new(writer)))
+            }
+        }
+    }
+
+    fn write(&mut self, finding: &PrivateFinding) -> anyhow::Result<()> {
+        match self {
+            Self::Jsonl(writer) => {
+                serde_json::to_writer(&mut *writer, finding)?;
+                writer.write_all(b"\n")?;
+            }
+            Self::Csv(writer) => {
+                writer.write_record([
+                    match finding.source {
+                        FindingSource::Nuclei => "nuclei".to_owned(),
+                        FindingSource::Sigma => "sigma".to_owned(),
+                    },
+                    finding.template_id.clone(),
+                    finding.cves.join(";"),
+                    format!("{:?}", finding.detectability).to_ascii_lowercase(),
+                    match finding.request_specificity {
+                        RequestSpecificity::RequestSpecific => "request-specific".to_owned(),
+                        RequestSpecificity::ResponseUnverified => "response-unverified".to_owned(),
+                    },
+                    finding.timestamp.clone().unwrap_or_default(),
+                    finding.source_ip.clone().unwrap_or_default(),
+                    finding.client_ip.clone().unwrap_or_default(),
+                    finding.host.clone().unwrap_or_default(),
+                    finding.method.clone().unwrap_or_default(),
+                    finding.uri_path.clone().unwrap_or_default(),
+                    finding.uri_query.clone().unwrap_or_default(),
+                    finding
+                        .headers
+                        .iter()
+                        .map(|header| format!("{}:{}", header.name, header.value))
+                        .collect::<Vec<_>>()
+                        .join(";"),
+                    finding.ja3.clone().unwrap_or_default(),
+                    finding.ja4.clone().unwrap_or_default(),
+                    finding.waf_action.clone().unwrap_or_default(),
+                    finding.waf_rule_id.clone().unwrap_or_default(),
+                    finding.waf_rule_type.clone().unwrap_or_default(),
+                    finding.waf_labels.join(";"),
+                    finding.waf_non_terminating_rule_ids.join(";"),
+                    finding.request_id.clone().unwrap_or_default(),
+                    finding
+                        .log_source
+                        .map(|value| match value {
+                            LogSource::AwsWaf => "aws_waf",
+                            LogSource::NginxCombined => "nginx_combined",
+                            LogSource::ApacheCombined => "apache_combined",
+                            LogSource::ApacheVhostCombined => "apache_vhost_combined",
+                        })
+                        .map(str::to_owned)
+                        .unwrap_or_default(),
+                    finding.rule_title.clone().unwrap_or_default(),
+                    finding.sigma_level.clone().unwrap_or_default(),
+                    finding
+                        .response_status
+                        .map(|value| value.to_string())
+                        .unwrap_or_default(),
+                    finding
+                        .response_bytes
+                        .map(|value| value.to_string())
+                        .unwrap_or_default(),
+                ])?;
+            }
+        }
+        Ok(())
+    }
+
+    fn flush(&mut self) -> anyhow::Result<()> {
+        match self {
+            Self::Jsonl(writer) => writer.flush()?,
+            Self::Csv(writer) => writer.flush()?,
+        }
+        Ok(())
+    }
 }
 
 /// A terminal-safe view of private hunt evidence. The CLI keeps private
@@ -823,6 +952,74 @@ pub fn hunt_with_options(
     telemetry_profile: TelemetryProfile,
     options: HuntOptions,
 ) -> anyhow::Result<SanitizedHuntReport> {
+    hunt_with_optional_nuclei_options(
+        input,
+        Some((nuclei_templates, nuclei_report)),
+        kev_report,
+        output,
+        telemetry_profile,
+        options,
+    )
+}
+
+/// Run a full artifact-producing hunt while optionally disabling the Nuclei
+/// layer. `None` is used by `--no-nuclei`; Sigma and concentration processing
+/// remain in the same single streaming pass.
+pub fn hunt_with_optional_nuclei_options(
+    input: &Path,
+    nuclei_inputs: Option<(&Path, &Path)>,
+    kev_report: Option<&Path>,
+    output: &Path,
+    telemetry_profile: TelemetryProfile,
+    options: HuntOptions,
+) -> anyhow::Result<SanitizedHuntReport> {
+    hunt_with_destination(
+        input,
+        nuclei_inputs,
+        kev_report,
+        Some(output),
+        None,
+        HuntFindingFormat::Jsonl,
+        telemetry_profile,
+        options,
+    )
+}
+
+/// Run the same hunt pipeline without creating a run directory or artifacts.
+/// Only private findings are written to `writer`; callers must keep summaries
+/// and warnings on stderr so stdout remains machine-readable.
+pub fn hunt_to_writer_with_options(
+    input: &Path,
+    nuclei_inputs: Option<(&Path, &Path)>,
+    kev_report: Option<&Path>,
+    writer: &mut dyn Write,
+    finding_format: HuntFindingFormat,
+    telemetry_profile: TelemetryProfile,
+    options: HuntOptions,
+) -> anyhow::Result<SanitizedHuntReport> {
+    hunt_with_destination(
+        input,
+        nuclei_inputs,
+        kev_report,
+        None,
+        Some(writer),
+        finding_format,
+        telemetry_profile,
+        options,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn hunt_with_destination(
+    input: &Path,
+    nuclei_inputs: Option<(&Path, &Path)>,
+    kev_report: Option<&Path>,
+    output: Option<&Path>,
+    stdout_writer: Option<&mut dyn Write>,
+    finding_format: HuntFindingFormat,
+    telemetry_profile: TelemetryProfile,
+    options: HuntOptions,
+) -> anyhow::Result<SanitizedHuntReport> {
     let HuntOptions {
         time_range,
         trusted_proxies,
@@ -832,22 +1029,37 @@ pub fn hunt_with_options(
         bot_range_snapshot_path,
     } = options;
     time_range.validate()?;
-    ensure_separate_output(input, output)?;
-    let (approved_templates, nuclei_revision) = approved_template_ids(nuclei_report)?;
-    let detections = validated_detections(nuclei_templates, &approved_templates);
-    if detections.is_empty() {
-        bail!("no validated Nuclei detections could be rebuilt from the supplied report and template checkout");
+    if let Some(output) = output {
+        ensure_separate_output(input, output)?;
     }
+    let (approved_templates, nuclei_revision, detections) = match nuclei_inputs {
+        Some((templates, report)) => {
+            let (approved_templates, nuclei_revision) = approved_template_ids(report)?;
+            let detections = validated_detections(templates, &approved_templates);
+            if detections.is_empty() {
+                bail!("no validated Nuclei detections could be rebuilt from the supplied report and template checkout");
+            }
+            (approved_templates, nuclei_revision, detections)
+        }
+        None => (BTreeSet::new(), None, Vec::new()),
+    };
     let detection_index = DetectionPathIndex::new(&detections);
     let kev_cves = kev_cves(kev_report)?;
     let files = input_files(input, telemetry_profile)?;
-    fs::create_dir_all(output)
-        .with_context(|| format!("creating private output directory {}", output.display()))?;
-    let private_path = output.join("private-findings.jsonl");
-    let mut private = BufWriter::new(
-        File::create(&private_path)
-            .with_context(|| format!("creating {}", private_path.display()))?,
-    );
+    let private_destination: Box<dyn Write + '_> = match (output, stdout_writer) {
+        (Some(output), None) => {
+            fs::create_dir_all(output).with_context(|| {
+                format!("creating private output directory {}", output.display())
+            })?;
+            let private_path = output.join("private-findings.jsonl");
+            Box::new(BufWriter::new(File::create(&private_path).with_context(
+                || format!("creating {}", private_path.display()),
+            )?))
+        }
+        (None, Some(writer)) => Box::new(writer),
+        _ => bail!("internal hunt destination must select exactly one finding sink"),
+    };
+    let mut private = PrivateFindingWriter::new(private_destination, finding_format)?;
     let mut metrics = HuntMetrics {
         files_analyzed: files.len(),
         waf_outcome_available: telemetry_profile == TelemetryProfile::AwsWaf,
@@ -944,8 +1156,7 @@ pub fn hunt_with_options(
                 return Ok(());
             }
             for detection in &matches {
-                serde_json::to_writer(&mut private, &private_finding(detection, &event))?;
-                private.write_all(b"\n")?;
+                private.write(&private_finding(detection, &event))?;
             }
             if !sigma_matches.is_empty() {
                 metrics.sigma_matched_requests += 1;
@@ -962,8 +1173,7 @@ pub fn hunt_with_options(
                 }
             }
             for rule in &sigma_matches {
-                serde_json::to_writer(&mut private, &sigma_finding(rule, &event))?;
-                private.write_all(b"\n")?;
+                private.write(&sigma_finding(rule, &event))?;
                 metrics.sigma_rule_matches += 1;
                 metrics.sigma_matches_by_severity.record(rule.severity);
                 matched_sigma_rules.insert(rule.id.clone());
@@ -1055,15 +1265,22 @@ pub fn hunt_with_options(
         })?;
     }
     private.flush()?;
-    write_private_concentration(output, &concentration.private_report())?;
+    let private_concentration = concentration.private_report();
+    if let Some(output) = output {
+        write_private_concentration(output, &private_concentration)?;
+    }
+    let (bot_observations, private_bot_report) = bot_ranges.reports();
     if bot_range_database.is_some() {
-        let (observations, private_report) = bot_ranges.reports();
-        metrics.bot_range_observations = observations;
-        write_private_bot_ranges(output, &private_report)?;
+        metrics.bot_range_observations = bot_observations;
+        if let Some(output) = output {
+            write_private_bot_ranges(output, &private_bot_report)?;
+        }
     }
     let (consistency_summary, private_consistency) = consistency.reports();
     metrics.declared_observed_consistency = consistency_summary;
-    write_private_consistency(output, &private_consistency)?;
+    if let Some(output) = output {
+        write_private_consistency(output, &private_consistency)?;
+    }
     metrics.distinct_sigma_rules = matched_sigma_rules.len();
     metrics.unique_cves_observed = cves.len();
     metrics.unique_cisa_kevs_observed = cves.values().filter(|item| item.kev).count();
@@ -1109,20 +1326,22 @@ pub fn hunt_with_options(
         metrics,
         cve_findings,
     };
-    write_run_manifest(
-        output,
-        telemetry_profile,
-        nuclei_templates,
-        nuclei_report,
-        kev_report,
-        bot_range_snapshot_path.as_deref(),
-        nuclei_revision,
-        approved_templates.len(),
-        &time_range,
-        &trusted_proxies,
-        triage_policy,
-        &report.metrics,
-    )?;
+    if let Some(output) = output {
+        write_run_manifest(
+            output,
+            telemetry_profile,
+            nuclei_inputs.map(|(templates, _)| templates),
+            nuclei_inputs.map(|(_, report)| report),
+            kev_report,
+            bot_range_snapshot_path.as_deref(),
+            nuclei_revision,
+            approved_templates.len(),
+            &time_range,
+            &trusted_proxies,
+            triage_policy,
+            &report.metrics,
+        )?;
+    }
     Ok(report)
 }
 
@@ -1910,8 +2129,8 @@ fn approved_template_ids(path: &Path) -> anyhow::Result<(BTreeSet<String>, Optio
 fn write_run_manifest(
     output: &Path,
     telemetry_profile: TelemetryProfile,
-    nuclei_templates: &Path,
-    nuclei_report: &Path,
+    nuclei_templates: Option<&Path>,
+    nuclei_report: Option<&Path>,
     kev_report: Option<&Path>,
     bot_range_snapshot: Option<&Path>,
     nuclei_revision: Option<String>,
@@ -1929,8 +2148,8 @@ fn write_run_manifest(
         telemetry_profile,
         nuclei_revision,
         inputs: RunManifestInputs {
-            nuclei_templates: path_provenance(nuclei_templates),
-            nuclei_report: path_provenance(nuclei_report),
+            nuclei_templates: nuclei_templates.map(path_provenance),
+            nuclei_report: nuclei_report.map(path_provenance),
             kev_report: kev_report.map(path_provenance),
             bot_range_snapshot: bot_range_snapshot.map(path_provenance),
             approved_validated_template_count,

@@ -1670,7 +1670,7 @@ fn hunt_sorts_and_deduplicates_template_ids_per_sanitized_cve() {
 }
 
 #[test]
-fn hunt_uses_prepared_default_inputs_and_output_without_kev() {
+fn hunt_uses_prepared_default_inputs_in_stdout_or_explicit_artifact_mode_without_kev() {
     let directory = tempdir().unwrap();
     let project = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let data_dir = directory.path().join("shenron-data");
@@ -1686,28 +1686,15 @@ fn hunt_uses_prepared_default_inputs_and_output_without_kev() {
     let input = project.join("tests/fixtures/production/waf.jsonl");
 
     let mut command = Command::cargo_bin("shenron").unwrap();
-    command
+    let assertion = command
         .current_dir(directory.path())
         .env("SHENRON_DATA_DIR", &data_dir)
         .args(["hunt", "--input", input.to_str().unwrap()])
         .assert()
         .success();
-
-    let default_outputs = fs::read_dir(directory.path().join("private-results"))
-        .unwrap()
-        .map(|entry| entry.unwrap().path())
-        .filter(|path| path.is_dir())
-        .collect::<Vec<_>>();
-    assert_eq!(default_outputs.len(), 1);
-    let default_output = &default_outputs[0];
-    assert!(default_output.join("private-findings.jsonl").is_file());
-    assert!(default_output.join("sanitized-research.json").is_file());
-    let default_report: serde_json::Value = serde_json::from_str(
-        &fs::read_to_string(default_output.join("sanitized-research.json")).unwrap(),
-    )
-    .unwrap();
-    assert_eq!(default_report["metrics"]["unique_cisa_kevs_observed"], 0);
-    assert_eq!(default_report["cve_findings"][0]["cisa_kev"], false);
+    let stdout = String::from_utf8(assertion.get_output().stdout.clone()).unwrap();
+    assert!(stdout.contains("synthetic-cve-2024-10001"));
+    assert!(!directory.path().join("private-results").exists());
 
     let explicit_output = directory.path().join("explicit-output");
     let mut explicit = Command::cargo_bin("shenron").unwrap();
@@ -1733,7 +1720,8 @@ fn hunt_uses_prepared_default_inputs_and_output_without_kev() {
         &fs::read_to_string(explicit_output.join("sanitized-research.json")).unwrap(),
     )
     .unwrap();
-    assert_eq!(default_report, explicit_report);
+    assert_eq!(explicit_report["metrics"]["unique_cisa_kevs_observed"], 0);
+    assert_eq!(explicit_report["cve_findings"][0]["cisa_kev"], false);
 }
 
 #[test]

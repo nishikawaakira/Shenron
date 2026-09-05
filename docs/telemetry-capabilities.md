@@ -28,16 +28,16 @@ Pass --format aws-waf, nginx, apache, or apache-vhost.
 Auto mode samples input files with a recognized extension (`.json`, `.jsonl`,
 `.log`, `.txt`, `.gz`); a directory of only differently named rotations (for
 example `access.log.1`) yields no sample and reports the message above. The
-scan itself still reads every file once the format is known, so passing an
+analysis still reads every file once the format is known, so passing an
 explicit `--format` resolves that case.
 
 Select the source explicitly for standard Combined or when strict parsing is
 desired:
 
 ```bash
-shenron scan --input ./logs --format nginx --rules ./rules
-shenron scan --input ./logs --format apache --rules ./rules
-shenron scan --input ./logs --format apache-vhost --rules ./rules
+shenron hunt --input ./logs --format nginx --rules ./rules --no-nuclei
+shenron hunt --input ./logs --format apache --rules ./rules --no-nuclei
+shenron hunt --input ./logs --format apache-vhost --rules ./rules --no-nuclei
 shenron inspect --input ./logs --format nginx
 shenron hunt --input ./logs --format apache ...
 shenron hunt --input ./other_vhosts_access.log --format apache ...

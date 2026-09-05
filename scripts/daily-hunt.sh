@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Optional thin wrapper for one read-only, offline Shenron daily hunt.
-# Shenron selects the prior valid run and prints aggregate review signals.
+# Artifact-dependent comparison/reporting requires the explicit run directory
+# created below; Shenron selects the prior valid run and prints review signals.
 # See docs/daily-hunting-runbook.md for interpretation and retention guidance.
 set -euo pipefail
 

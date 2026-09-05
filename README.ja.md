@@ -68,10 +68,10 @@ Shenron の解析本体 `shenron` は既定ではネットワーク接続せず�
 - `concentration --path /example/path --show-source-ips`：特定の正規化済みパスに対する観測接続ピアごとのリクエスト件数を private 側で確認できます。`--path-prefix /example` はそのパス以下（サブツリー）をまとめて分析し、配下の個別パス（`--show-paths`）とアクセス元ピアを一覧表示します。`--source-ip <IP>` は逆向きで、カンマ区切りまたはフラグの繰り返しによって 1 件以上の IP を指定でき、それらの観測ピアが送った URI パスの union を表示します。複数 IP の場合、`--show-source-ips` は IP ごとの private なリクエスト件数内訳も表示します。選択したパス、IP、内訳は private artifact のみに保存し、sanitized 側は集計だけを残します。これは集中状況の文脈であり、観測 peer は攻撃者特定ではありません。
 - 同じ private フォーカス表示では、IP 単位の行を残したままネットワークプレフィックス単位にも集約します（IPv4 は既定 `/24`、IPv6 は既定 `/48`、`--ipv4-group-prefix` / `--ipv6-group-prefix` で変更可能）。プレフィックスの共有は所有者・運用主体・行為者の共有を意味しません。
 - ローカル ASN データセットがある場合は `--asn-dataset <PATH>` を追加すると、IP／プレフィックス表示と並べて private な ASN 集約を表示し、未解決 peer も件数で開示します。ASN は経路上のグループにすぎず、単一運用者・帰属・DoS・攻撃・悪用を示すものではありません。ASN 番号と組織名は sanitized 出力に入りません。
-- `hunt --input <logs> --report`：ログ解析と同じ run 内の private HTML レポート生成を一度に行います。既存の hunt / concentration run は `hunt --results-dir <run-dir> --lang ja` で生ログを再解析せず再レンダリングでき、`--report <path>` で既定の `<run-dir>/report.html` を上書きできます。パス・IP の棒グラフ、分刻み時系列（集計された HTTP ステータスクラス 1xx〜5xx の5本の折れ線を含む）、hunt triage に加え、観測 CVE ごとに一致した Nuclei テンプレート ID とカタログ宣言 severity を一覧表示します。ステータスクラスの分系列は集計件数だけを含み、private な concentration artifact のみに保存して sanitized 出力へはコピーしません。この公開 CTI の ID は sanitized の CVE 集計にも決定論的な `template_ids` として保存され、顧客のリクエスト値は追加しません。CVE severity は Nuclei `info.severity`、Sigma severity 集計は Sigma `level` に由来し、Shenron による影響・悪用・侵害・悪性・帰属の判定ではありません。両方の時系列を CSS だけでホバーでき、ステータス表示では UTC の分と全クラスの件数を確認できます。テンプレート ID は公開 GitHub コード検索へのリンクですが、レポートを開くだけでは通信せず、クリック時にも公開 ID だけを送信して private 値は送りません。生のパスと IP を含む private 成果物であり、JavaScript や自動取得される外部リソースは使いません。DoS・攻撃・悪用・侵害・悪性確率・攻撃者特定の判定ではありません。詳細は [Private offline HTML report](docs/html-report.md) を参照してください。
+- `hunt --input <logs> --output <run-dir> --report`：ログ解析と同じ run 内の private HTML レポート生成を一度に行います。既存の hunt / concentration run は `hunt --results-dir <run-dir> --lang ja` で生ログを再解析せず再レンダリングでき、`--report <path>` で既定の `<run-dir>/report.html` を上書きできます。パス・IP の棒グラフ、分刻み時系列（集計された HTTP ステータスクラス 1xx〜5xx の5本の折れ線を含む）、hunt triage に加え、観測 CVE ごとに一致した Nuclei テンプレート ID とカタログ宣言 severity を一覧表示します。ステータスクラスの分系列は集計件数だけを含み、private な concentration artifact のみに保存して sanitized 出力へはコピーしません。この公開 CTI の ID は sanitized の CVE 集計にも決定論的な `template_ids` として保存され、顧客のリクエスト値は追加しません。CVE severity は Nuclei `info.severity`、Sigma severity 集計は Sigma `level` に由来し、Shenron による影響・悪用・侵害・悪性・帰属の判定ではありません。両方の時系列を CSS だけでホバーでき、ステータス表示では UTC の分と全クラスの件数を確認できます。テンプレート ID は公開 GitHub コード検索へのリンクですが、レポートを開くだけでは通信せず、クリック時にも公開 ID だけを送信して private 値は送りません。生のパスと IP を含む private 成果物であり、JavaScript や自動取得される外部リソースは使いません。DoS・攻撃・悪用・侵害・悪性確率・攻撃者特定の判定ではありません。詳細は [Private offline HTML report](docs/html-report.md) を参照してください。
 - `compare`：2つのローカル凍結 run artifact を差分比較します。`hunt --baseline <prior-run>` では新しい hunt 後に同じ比較を出力します。CVE の差分と集計は sanitized 側、first-seen entity とパス/IP 詳細は private 側に分離されます。first-seen や elevated-volume は悪性・攻撃・侵害・攻撃者特定の判定ではありません。詳細は [Temporal comparison](docs/temporal-comparison.md) を参照してください。
-- `hunt`：毎回、集計のみの `triage-summary.json` と、優先順付き private `triage-view.json` も出力します。IP 等の private 値を標準出力に表示するには `--show-triage`（必要なら `--limit`）を指定します。この順序は人間が先に確認するためのトリアージであり、脅威の重大度・悪性確率ではありません。first-seen は「新規なので要確認」であって悪性の断定ではありません。
-- Slack 通知は環境変数だけで opt-in できます。`SHENRON_SLACK_WEBHOOK` を設定すると、hunt 完了後に severity 別件数、CVE・KEV・Sigma、秘密ファイル 2xx、集中度、任意の baseline 差分、ローカル成果物パスからなる sanitized 集計を1件送ります。通知経路は生 IP・パス・ホスト・ヘッダー・ログ値・`private-findings.jsonl` を読み込まず送信しません。`SHENRON_SLACK_MIN_SEVERITY=info|low|medium|high|critical` を指定すると、そのカタログ severity 以上、または KEV／秘密ファイル 2xx がある run だけに絞れます。システムの `curl` が必要ですが、送信はベストエフォートであり失敗しても完了済み hunt は失敗しません。Severity は元カタログの宣言値で、攻撃・悪用・侵害・主体の判定ではありません。
+- `hunt --output <DIR>`：集計のみの `triage-summary.json` と、優先順付き private `triage-view.json` も出力します。IP 等の private 値を標準出力に表示するには `--show-triage`（必要なら `--limit`）を指定します。この順序は人間が先に確認するためのトリアージであり、脅威の重大度・悪性確率ではありません。first-seen は「新規なので要確認」であって悪性の断定ではありません。
+- Slack 通知は環境変数だけで opt-in できます。`SHENRON_SLACK_WEBHOOK` を成果物保存モードで設定すると、hunt 完了後に severity 別件数、CVE・KEV・Sigma、秘密ファイル 2xx、集中度、任意の baseline 差分、ローカル成果物パスからなる sanitized 集計を1件送ります。`--output` なしの stdout-only モードでは run ディレクトリが無いため Slack を明示的にスキップします。通知経路は生 IP・パス・ホスト・ヘッダー・ログ値・`private-findings.jsonl` を読み込まず送信しません。`SHENRON_SLACK_MIN_SEVERITY=info|low|medium|high|critical` を指定すると、そのカタログ severity 以上、または KEV／秘密ファイル 2xx がある run だけに絞れます。システムの `curl` が必要ですが、送信はベストエフォートであり失敗しても完了済み hunt は失敗しません。Severity は元カタログの宣言値で、攻撃・悪用・侵害・主体の判定ではありません。
 - `explain`：CVE / テンプレート / リクエスト証拠の表示。既定では `response-unverified` かつ generic path の低確度ノイズを隠し、`--include-generic` で保存済みの全 finding を表示します。これは**表示フィルタのみ**で、一覧表示を変えるだけであり、トリアージのグルーピングやスコアリングには影響しません（グルーピング/スコアは常に全 finding を対象にします）。そのため、distinctive な探索1件と generic 複数件を混ぜた送信元も breadth 判定に達します。接続元・クライアント IP（`--show-source-ips`）、ローカル ASN データで解決した ASN（`--show-asn`）、JA4 フィンガープリント（`--show-fingerprints`）ごとの breadth/depth/時間窓トリアージと、観測挙動のみから算出する挙動優先度スコアを表示します。スコアは generic path の反復による深さを意図的に抑え、distinctive path の一致へ小さな寄与を与え、合計はその finding のテレメトリ・プロファイルが到達可能な最大値で正規化します（WAF 判定のない combined ログが構造的に低く出るのを防ぎます）。ただし悪性確率・攻撃成立・攻撃者特定の判定ではありません。`shenron-lab reputation update` で準備されたローカル IP/ASN データは既定で自動参照し、明示指定のデータセットは引き続き優先します。レピュテーションは外部照会をせず、第三者の意見として示します。`--output-format json`（任意で `--output <PATH>`）を付けると、スコア・スコア内訳・トリアージ根拠・グルーピングを機械可読の `EXPLAIN_PRIVATE_TRIAGE` レポートとして出力します（テキストと同一の `--show-*` プライバシーゲートを尊重）
 - 防御候補（candidate）の作成、履歴での replay、バックエンド互換性の確認
 - COUNT 固定の AWS WAF JSON / Terraform ルール断片、または OSSEC 検知 XML の出力
@@ -96,12 +96,13 @@ git push origin v0.1.0
 ## クイックスタート
 
 ```bash
-cargo run --bin shenron -- scan \
+cargo run --bin shenron -- hunt \
   --input ./tests/fixtures/aws-waf/ \
-  --rules ./tests/fixtures/rules/
+  --rules ./tests/fixtures/rules/ \
+  --no-nuclei
 ```
 
-検出結果は JSONL として標準出力に出ます。CSV が必要なら `--output findings.csv --output-format csv` を指定してください。ルールが対応形式かどうかは事前に確認できます。
+`hunt` が検出の唯一の入口です。`--output` を省略すると、生の IP・パス・ホスト・リクエスト証跡を含み得る private findings だけを JSONL で標準出力へ出し、要約と警告は標準エラーへ出します。このモードではファイルを作りません。CSV は `--output-format csv > findings.csv` で保存できます。`--no-nuclei` なら setup 不要の Sigma-only、`--no-sigma` なら Nuclei-only で動作し、両方を同時に無効化することはできません。Sigma ルールの対応状況を確認する `validate-rules` は引き続き利用できます。
 
 ```bash
 cargo run --bin shenron -- validate-rules --rules ./rules/
@@ -113,18 +114,19 @@ cargo run --bin shenron -- validate-rules --rules ./rules/
 
 ```bash
 shenron-lab setup
-shenron hunt --input ./waf-logs
+shenron hunt --input ./waf-logs --output ./private-results/hunt-20260905T000000Z
 ```
 
 追記・ローテーションされるログの日次運用では、`--input` にログディレクトリを指定し、
-`--since 24h` と `--baseline-latest ./private-results` を組み合わせられます。
+ソート可能な明示的 `--output` run ディレクトリ、`--since 24h`、
+`--baseline-latest ./private-results` を組み合わせられます。
 Shenron はディレクトリツリーと gzip ローテーションを読み、解決した移動窓の境界を記録し、
 ソート可能なディレクトリ名から直近の有効 run を選びます。窓自体の厳密な再現が必要な場合は
 `--from/--to` を明示してください。
 
 ログ入力コマンドの既定は `--format auto` です。AWS WAF JSON と vhost 前置き Apache Combined は自動識別します。標準 nginx Combined と標準 Apache Combined は構造が同一で安全に区別できないため、その場合だけ `--format nginx` または `--format apache` を指定してください。`--format apache` は標準行と vhost 前置き行の両方を受け付け、`--format apache-vhost` は vhost 前置きを厳格に要求します。
 
-`setup` は `SHENRON_DATA_DIR` があればその配下、なければ `$XDG_DATA_HOME/shenron`、さらに無ければ `~/.local/share/shenron` に `nuclei-templates/`、凍結済みの `nuclei-report.json`、CISA KEV の `known_exploited_vulnerabilities.json`、凍結結合結果の `kev-report.json`、provenance を持つ `kev-manifest.json`、任意の `reputation.jsonl`、`asn-ranges.tsv`、`bot-ranges.json` を保存します。`hunt`、`ablation`、`replay`、`count-hypotheses` は既定でこの場所を参照します。`hunt` の `--output` を省略した場合、`./private-results/hunt-<UTC日時>/` に private artifacts を出力します。従来どおり `--nuclei-templates`、`--nuclei-report`、`--kev-report`、`--output` で明示指定もできます。`--kev-report` 省略時は準備済みの既定レポートがあれば参照し、無ければ空集合として扱います。`setup --skip-kev` で KEV 準備だけを省略できます。
+`setup` は `SHENRON_DATA_DIR` があればその配下、なければ `$XDG_DATA_HOME/shenron`、さらに無ければ `~/.local/share/shenron` に `nuclei-templates/`、凍結済みの `nuclei-report.json`、CISA KEV の `known_exploited_vulnerabilities.json`、凍結結合結果の `kev-report.json`、provenance を持つ `kev-manifest.json`、任意の `reputation.jsonl`、`asn-ranges.tsv`、`bot-ranges.json` を保存します。`hunt`、`ablation`、`replay`、`count-hypotheses` は既定でこの場所を参照します。`hunt --output <DIR>` は従来どおり full run artifacts をそのディレクトリへ保存します。`--output` を省略すると run ディレクトリやファイルは作らず、private findings だけを標準出力へ出します（`--output-format jsonl|csv`）。`--report`、`--baseline`、`--baseline-latest`、`--observation-store` は `--output` が必須です。従来どおり `--nuclei-templates`、`--nuclei-report`、`--kev-report` で明示指定もできます。`--kev-report` 省略時は準備済みの既定レポートがあれば参照し、無ければ空集合として扱います。`setup --skip-kev` で KEV 準備だけを省略できます。
 
 個別の公開入力だけを更新したい場合は、従来どおり `shenron-lab nuclei update`、`shenron-lab reputation update`、`shenron-lab bot-ranges update` も使えます。`setup` が取得するのは公開インテリジェンスだけで、顧客データを送信しません。
 

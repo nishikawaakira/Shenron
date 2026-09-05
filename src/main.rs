@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::{self, File},
-    io::{self, BufRead, BufReader, Write},
+    io::{self, BufRead, BufReader},
     net::IpAddr,
     path::{Path, PathBuf},
     time::Duration,
@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use walkdir::WalkDir;
 
 use shenron::{
-    access_log::{parse_combined_line, AccessLogFormat, AccessLogLines},
+    access_log::{parse_combined_line, AccessLogFormat},
     bot_ranges::load_bot_range_database,
     candidate::{
         build_batch_from_findings, compatibility as candidate_compatibility,
@@ -32,7 +32,6 @@ use shenron::{
     event::{TelemetryCapabilities, TelemetryProfile, TrustedProxy, TrustedProxySet},
     nuclei::{path_distinctiveness, PathDistinctiveness},
     observation_store::{update_observation_store, ObservationStoreLimits},
-    output::{Finding, FindingWriter},
     paths::{
         default_asn_dataset, default_bot_range_snapshot, default_kev_report, default_nuclei_report,
         default_reputation_dataset, default_sigma_rules_dir, default_templates_dir,
@@ -43,9 +42,11 @@ use shenron::{
         count_hypotheses_with_optional_kev as production_count_hypotheses,
         explain_private_findings,
         historical_replay_with_optional_kev as production_historical_replay,
-        hunt_with_options as production_hunt, inspect_with_trusted_proxies as production_inspect,
-        load_private_concentration, terminal_safe, AblationReport, CountHypothesisReport,
-        FindingSource, HistoricalReplayReport, HuntOptions, HuntTimeRange, HuntTriagePolicy,
+        hunt_to_writer_with_options as production_hunt_to_writer,
+        hunt_with_optional_nuclei_options as production_hunt,
+        inspect_with_trusted_proxies as production_inspect, load_private_concentration,
+        terminal_safe, AblationReport, CountHypothesisReport, FindingSource,
+        HistoricalReplayReport, HuntFindingFormat, HuntOptions, HuntTimeRange, HuntTriagePolicy,
         InspectionReport, SanitizedConcentrationReport, SanitizedHuntReport,
         SENSITIVE_CONFIG_PROBE_RULE_ID,
     },
@@ -63,7 +64,7 @@ use shenron::{
         DEFAULT_MAX_SEQUENCE_OBSERVATIONS, DEFAULT_SEQUENCE_WINDOW_SECONDS,
     },
     triage_view::{build_triage_view, PrivateTriageView, SanitizedTriageSummary},
-    waf::{maybe_gzip_reader, WafLines},
+    waf::maybe_gzip_reader,
 };
 
 #[derive(Debug, Parser)]
@@ -82,20 +83,6 @@ struct Cli {
 // entire production command would add dispatch indirection solely for enum size.
 #[allow(clippy::large_enum_variant)]
 enum Command {
-    /// Match supported Sigma rules against historical web logs.
-    Scan {
-        #[arg(long)]
-        input: PathBuf,
-        #[arg(long, value_enum, default_value_t = InputFormat::Auto)]
-        format: InputFormat,
-        #[arg(long)]
-        rules: PathBuf,
-        /// Findings destination. Defaults to stdout.
-        #[arg(long)]
-        output: Option<PathBuf>,
-        #[arg(long, value_enum, default_value_t = OutputFormat::Jsonl)]
-        output_format: OutputFormat,
-    },
     /// Report which user-provided rules are in the intentionally small MVP subset.
     ValidateRules {
         #[arg(long)]
@@ -206,7 +193,7 @@ enum ProductionCommand {
         #[arg(long, value_name = "IP-or-CIDR")]
         trusted_proxy: Vec<TrustedProxy>,
     },
-    /// Hunt with the same validated Nuclei request matchers; writes separate private and sanitized artifacts.
+    /// Hunt web logs with Nuclei and/or Sigma. Without --output, private findings are written only to stdout.
     Hunt {
         /// Raw web telemetry to analyze. Mutually exclusive with --results-dir.
         #[arg(
@@ -231,8 +218,19 @@ enum ProductionCommand {
         nuclei_report: Option<PathBuf>,
         #[arg(long, conflicts_with = "results_dir")]
         kev_report: Option<PathBuf>,
+        /// Write the full private/sanitized run artifacts under this directory.
+        /// Without this option, stdout contains private findings only.
         #[arg(long, conflicts_with = "results_dir")]
         output: Option<PathBuf>,
+        /// Private finding format for stdout mode. Stdout can contain raw IPs,
+        /// paths, hosts, headers, and other request evidence; do not share it.
+        #[arg(
+            long,
+            value_enum,
+            default_value_t = OutputFormat::Jsonl,
+            conflicts_with_all = ["results_dir", "output"]
+        )]
+        output_format: OutputFormat,
         /// Inclusive UTC start time in RFC 3339 format, for example 2026-04-01T00:00:00Z.
         #[arg(
             long,
@@ -268,6 +266,10 @@ enum ProductionCommand {
         /// Disable the Sigma pass entirely (Nuclei CVE hunting is unaffected).
         #[arg(long, conflicts_with = "results_dir")]
         no_sigma: bool,
+        /// Disable Nuclei/CVE matching and its prepared inputs. This enables a
+        /// setup-free Sigma-only hunt when --rules is supplied.
+        #[arg(long, conflicts_with = "results_dir")]
+        no_nuclei: bool,
         /// Frozen operator-published crawler ranges. Defaults to the prepared
         /// data-directory snapshot when present; all matching remains offline.
         #[arg(long, conflicts_with = "results_dir")]
@@ -686,25 +688,19 @@ enum OutputFormat {
     Csv,
 }
 
-#[derive(Debug, Default)]
-struct ScanStats {
-    files: usize,
-    events: usize,
-    malformed: usize,
-    findings: usize,
+impl OutputFormat {
+    fn hunt_format(self) -> HuntFindingFormat {
+        match self {
+            Self::Jsonl => HuntFindingFormat::Jsonl,
+            Self::Csv => HuntFindingFormat::Csv,
+        }
+    }
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Command::ValidateRules { rules } => validate(&rules),
-        Command::Scan {
-            input,
-            format,
-            rules,
-            output,
-            output_format,
-        } => scan(&input, &rules, output.as_deref(), output_format, format),
         Command::Production(command) => match command {
             ProductionCommand::Inspect {
                 input,
@@ -728,12 +724,14 @@ fn main() -> Result<()> {
                 nuclei_report,
                 kev_report,
                 output,
+                output_format,
                 from,
                 to,
                 since,
                 trusted_proxy,
                 rules,
                 no_sigma,
+                no_nuclei,
                 bot_ranges,
                 observation_store,
                 ipv4_group_prefix,
@@ -768,6 +766,25 @@ fn main() -> Result<()> {
                 // clap requires one of --input or --results-dir. This branch is
                 // therefore the raw-log hunt path.
                 let input = input.expect("clap requires --input unless --results-dir is present");
+                if no_nuclei && no_sigma {
+                    anyhow::bail!(
+                        "--no-nuclei and --no-sigma cannot be combined; at least one detection path must remain enabled"
+                    );
+                }
+                if output.is_none() {
+                    if html_report.is_some() {
+                        anyhow::bail!("--report requires --output <DIR>");
+                    }
+                    if baseline.is_some() {
+                        anyhow::bail!("--baseline requires --output <DIR>");
+                    }
+                    if baseline_latest.is_some() {
+                        anyhow::bail!("--baseline-latest requires --output <DIR>");
+                    }
+                    if observation_store.is_some() {
+                        anyhow::bail!("--observation-store requires --output <DIR>");
+                    }
+                }
                 if observation_store.is_none()
                     && (ipv4_group_prefix.is_some()
                         || ipv6_group_prefix.is_some()
@@ -777,10 +794,13 @@ fn main() -> Result<()> {
                         "--ipv4-group-prefix, --ipv6-group-prefix, and --asn-dataset require --observation-store on hunt"
                     );
                 }
-                let (nuclei_templates, nuclei_report) =
-                    resolve_nuclei_inputs(nuclei_templates, nuclei_report)?;
+                let nuclei_inputs = if no_nuclei {
+                    eprintln!("Nuclei pass: disabled with --no-nuclei; prepared Nuclei inputs are not required.");
+                    None
+                } else {
+                    Some(resolve_nuclei_inputs(nuclei_templates, nuclei_report)?)
+                };
                 let kev_report = resolve_optional_local_dataset(kev_report, default_kev_report);
-                let output = output.unwrap_or_else(default_hunt_output);
                 let sigma_ruleset = resolve_sigma_ruleset(rules, no_sigma);
                 let bot_range_path = bot_ranges.or_else(|| {
                     let path = default_bot_range_snapshot();
@@ -805,21 +825,47 @@ fn main() -> Result<()> {
                 } else {
                     HuntTimeRange { from, to }
                 };
+                let options = HuntOptions {
+                    time_range,
+                    trusted_proxies: TrustedProxySet::new(trusted_proxy),
+                    triage_policy: HuntTriagePolicy::default(),
+                    sigma_ruleset,
+                    bot_range_database,
+                    bot_range_snapshot_path: bot_range_path,
+                };
+                let resolved_nuclei = nuclei_inputs
+                    .as_ref()
+                    .map(|(templates, report)| (templates.as_path(), report.as_path()));
+                let Some(output) = output else {
+                    eprintln!(
+                        "PRIVATE stdout mode: findings can contain raw IP addresses, request paths, hosts, headers, and other log values. Do not share without review."
+                    );
+                    let report = {
+                        let stdout = io::stdout();
+                        let mut stdout = stdout.lock();
+                        production_hunt_to_writer(
+                            &input,
+                            resolved_nuclei,
+                            kev_report.as_deref(),
+                            &mut stdout,
+                            output_format.hunt_format(),
+                            telemetry_profile,
+                            options,
+                        )?
+                    };
+                    print_streaming_hunt_summary(&report);
+                    if slack_config.is_enabled() {
+                        eprintln!("Slack notification skipped (requires --output)");
+                    }
+                    return Ok(());
+                };
                 let report = production_hunt(
                     &input,
-                    &nuclei_templates,
-                    &nuclei_report,
+                    resolved_nuclei,
                     kev_report.as_deref(),
                     &output,
                     telemetry_profile,
-                    HuntOptions {
-                        time_range,
-                        trusted_proxies: TrustedProxySet::new(trusted_proxy),
-                        triage_policy: HuntTriagePolicy::default(),
-                        sigma_ruleset,
-                        bot_range_database,
-                        bot_range_snapshot_path: bot_range_path,
-                    },
+                    options,
                 )?;
                 let sanitized_path = output.join("sanitized-research.json");
                 serde_json::to_writer_pretty(File::create(&sanitized_path)?, &report)?;
@@ -1797,10 +1843,6 @@ fn print_hunt_triage_entries(view: &PrivateTriageView, limit: usize) {
     }
 }
 
-fn default_hunt_output() -> PathBuf {
-    PathBuf::from("private-results").join(format!("hunt-{}", Utc::now().format("%Y%m%dT%H%M%SZ")))
-}
-
 /// Select the lexicographically greatest valid immediate child run while
 /// explicitly excluding the current output directory. Filesystem mtimes are
 /// deliberately ignored so sortable run names remain deterministic.
@@ -1843,7 +1885,7 @@ fn resolve_sigma_ruleset(
     no_sigma: bool,
 ) -> Option<shenron::sigma::RuleSet> {
     if no_sigma {
-        eprintln!("Sigma pass: disabled with --no-sigma; running Nuclei CVE detection only.");
+        eprintln!("Sigma pass: disabled with --no-sigma.");
         return None;
     }
     let rules_dir = rules.or_else(|| {
@@ -1863,7 +1905,7 @@ fn resolve_sigma_ruleset(
         }
         None => {
             eprintln!(
-                "Sigma pass: no rules directory found (looked for {}). Pass --rules <dir> to enable it, or --no-sigma to silence this note. Continuing with Nuclei CVE detection only.",
+                "Sigma pass: no rules directory found (looked for {}). Pass --rules <dir> to enable it, or --no-sigma to silence this note. Continuing without Sigma matching.",
                 default_sigma_rules_dir().display()
             );
             None
@@ -2034,6 +2076,25 @@ fn print_hunt(report: &SanitizedHuntReport, sanitized_path: &Path) {
     if let Some(concentration) = &metrics.request_concentration {
         print_request_concentration_summary(concentration, "request-concentration.json");
     }
+}
+
+/// Keep stdout machine-readable in no-artifact mode. This intentionally
+/// summarizes only aggregate observations and never repeats private finding
+/// values; the private JSONL/CSV stream itself is written to stdout.
+fn print_streaming_hunt_summary(report: &SanitizedHuntReport) {
+    let metrics = &report.metrics;
+    eprintln!(
+        "Read-only production hunt complete (stdout-only private findings).\nRequests analyzed: {}\nFiles analyzed: {}\nParse errors: {}\nCVE-related request matches: {}\nUnique CVEs observed: {}\nSigma-matched requests: {}\nNo run directory or artifact files were created.",
+        metrics.total_requests_analyzed,
+        metrics.files_analyzed,
+        metrics.parse_errors,
+        metrics.cve_related_request_matches,
+        metrics.unique_cves_observed,
+        metrics.sigma_matched_requests,
+    );
+    eprintln!(
+        "Review signals are observed matches and aggregates, not determinations of attack, exploitation, compromise, or attacker identity."
+    );
 }
 
 fn print_daily_review_summary(
@@ -3893,107 +3954,6 @@ fn validate(rules: &Path) -> Result<()> {
         ruleset.supported.len(),
         ruleset.unsupported.len()
     );
-    Ok(())
-}
-
-fn scan(
-    input: &Path,
-    rules_path: &Path,
-    output: Option<&Path>,
-    output_format: OutputFormat,
-    input_format: InputFormat,
-) -> Result<()> {
-    let input_format = resolve_input_format(input, input_format)?;
-    let ruleset = load_rules(rules_path);
-    let destination: Box<dyn Write> = match output {
-        Some(path) => {
-            Box::new(File::create(path).with_context(|| format!("creating {}", path.display()))?)
-        }
-        None => Box::new(io::stdout()),
-    };
-    let mut writer = match output_format {
-        OutputFormat::Jsonl => FindingWriter::jsonl(destination),
-        OutputFormat::Csv => FindingWriter::csv(destination),
-    };
-    writer.write_header()?;
-    let mut stats = ScanStats::default();
-    for path in input_files(input)? {
-        stats.files += 1;
-        let compressed = path
-            .extension()
-            .and_then(|ext| ext.to_str())
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("gz"));
-        let reader = maybe_gzip_reader(
-            File::open(&path).with_context(|| format!("opening {}", path.display()))?,
-            compressed,
-        );
-        match input_format {
-            InputFormat::Auto => unreachable!("auto input format is resolved before scanning"),
-            InputFormat::AwsWaf => scan_events(
-                WafLines::new(reader),
-                &path,
-                &ruleset.supported,
-                &mut writer,
-                &mut stats,
-            )?,
-            InputFormat::Nginx => scan_events(
-                AccessLogLines::new(reader, AccessLogFormat::NginxCombined),
-                &path,
-                &ruleset.supported,
-                &mut writer,
-                &mut stats,
-            )?,
-            InputFormat::Apache => scan_events(
-                AccessLogLines::new(reader, AccessLogFormat::ApacheCombined),
-                &path,
-                &ruleset.supported,
-                &mut writer,
-                &mut stats,
-            )?,
-            InputFormat::ApacheVhost => scan_events(
-                AccessLogLines::new(reader, AccessLogFormat::ApacheVhostCombined),
-                &path,
-                &ruleset.supported,
-                &mut writer,
-                &mut stats,
-            )?,
-        }
-    }
-    writer.finish()?;
-    eprintln!("Files processed:     {}\nEvents processed:    {}\nMalformed events:    {}\nRules loaded:        {}\nSupported rules:     {}\nUnsupported rules:   {}\nFindings:            {}",
-        stats.files, stats.events, stats.malformed, ruleset.supported.len() + ruleset.unsupported.len(), ruleset.supported.len(), ruleset.unsupported.len(), stats.findings);
-    Ok(())
-}
-
-fn scan_events<I, E>(
-    events: I,
-    path: &Path,
-    rules: &[shenron::sigma::CompiledRule],
-    writer: &mut FindingWriter<Box<dyn Write>>,
-    stats: &mut ScanStats,
-) -> Result<()>
-where
-    I: Iterator<Item = Result<shenron::event::WebEvent, E>>,
-    E: std::fmt::Display,
-{
-    for result in events {
-        match result {
-            Ok(event) => {
-                stats.events += 1;
-                let matcher = shenron::sigma::EventMatcher::new(&event);
-                for rule in rules {
-                    if matcher.matches(rule) {
-                        writer.write(&Finding::from_rule_and_event(rule, &event))?;
-                        stats.findings += 1;
-                    }
-                }
-            }
-            Err(error) => {
-                stats.malformed += 1;
-                eprintln!("warning: {}: {error}", path.display());
-            }
-        }
-    }
     Ok(())
 }
 

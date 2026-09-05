@@ -47,7 +47,7 @@ don't undermine it by moving the ground under an active investigation.
 ### Hunt (daily)
 
 ```bash
-nice -n 10 shenron hunt --input /var/log/nginx --format nginx --since 24h --baseline-latest ./private-results --report --lang ja
+nice -n 10 shenron hunt --input /var/log/nginx --format nginx --since 24h --output "./private-results/hunt-$(date -u +%Y%m%dT%H%M%SZ)" --baseline-latest ./private-results --report --lang ja
 ```
 
 This single command is suitable for cron. The optional
@@ -63,6 +63,7 @@ command line:
 SHENRON_SLACK_WEBHOOK='https://hooks.slack.com/services/REDACTED' \
 SHENRON_SLACK_MIN_SEVERITY=high \
 nice -n 10 shenron hunt --input /var/log/nginx --format nginx --since 24h \
+  --output "./private-results/hunt-$(date -u +%Y%m%dT%H%M%SZ)" \
   --baseline-latest ./private-results --report --lang ja
 ```
 
@@ -75,6 +76,14 @@ a missing executable, timeout, or non-2xx response is disclosed without the
 webhook URL and does not fail the completed hunt. Catalog severity and these
 aggregates remain review context, not determinations of attack, exploitation,
 compromise, or attacker identity.
+
+Slack, baseline comparison, HTML reports, and the observation store require a
+run directory, so daily operation always supplies `--output`. An ad hoc hunt
+without `--output` instead creates no files and streams private findings only
+to stdout; any configured Slack notification is explicitly skipped.
+For a setup-free Sigma-only check, add `--no-nuclei --rules <DIR>`; use the
+retained `validate-rules` command to inspect rule compatibility. Nuclei and
+Sigma cannot both be disabled.
 
 ## The daily loop
 
@@ -219,6 +228,7 @@ Shenron never deploys, never emits BLOCK, and cannot infer WebACL priority — s
 
   ```bash
   shenron hunt --input ./logs/today \
+    --output ./private-results/hunt-<UTC> \
     --observation-store ./private-results/observation-memory.jsonl
   ```
 

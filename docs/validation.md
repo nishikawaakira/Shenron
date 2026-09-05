@@ -10,13 +10,7 @@ cargo run --bin shenron-lab -- validate --corpus /tmp/waf.jsonl.gz \
   --manifest /tmp/waf.jsonl.gz.manifest.json --report /tmp/report.json
 ```
 
-Validation returns non-zero on a missed expected rule, unexpected rule finding, or parser-error count mismatch. It reports a machine-readable JSON report with `PARSER_ERROR`, `EXPECTED_RULE_MISSED`, or `EXPECTED_BEHAVIOR_ERROR` failure categories. Corpus validation parses and matches in-process, so parser errors are included. Findings-only validation is also supported for the ordinary scanner pipeline:
-
-```bash
-cargo run --bin shenron -- scan --input /tmp/waf.jsonl.gz --format aws-waf \
-  --rules ./tests/rules --output /tmp/findings.jsonl
-cargo run --bin shenron-lab -- validate --findings /tmp/findings.jsonl --truth /tmp/truth.jsonl
-```
+Validation returns non-zero on a missed expected rule, unexpected rule finding, or parser-error count mismatch. It reports a machine-readable JSON report with `PARSER_ERROR`, `EXPECTED_RULE_MISSED`, or `EXPECTED_BEHAVIOR_ERROR` failure categories. Corpus validation parses and matches in-process, so parser errors are included. Prefer this corpus path for synthetic validation; `hunt` stdout uses the operational private-finding schema and is not a synthetic ground-truth sidecar.
 
 True/false positive and negative, recall, precision, and false-positive rate are valid only here because the synthetic truth labels are explicit. Production analysis must continue to use neutral terms such as known threat matches and other historical matches.
 

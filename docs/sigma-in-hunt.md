@@ -11,10 +11,11 @@ config files — produces only the few findings whose paths happen to map to a C
 template. The remaining requests are a generic TTP, not a known CVE, so they are
 invisible to a CVE-only pass.
 
-`hunt` already streams every event exactly once. The Sigma engine (previously
-reachable only from the separate `scan` command) can run in that same pass at
-almost no additional cost, covering generic path-pattern detection alongside the
-CVE-anchored Nuclei pass.
+`hunt` is the single detection entry point and streams every event exactly once.
+The Sigma engine runs in that same pass, covering generic path-pattern detection
+alongside the CVE-anchored Nuclei pass. For a setup-free Sigma-only stream, use
+`hunt --no-nuclei --rules <PATH>`; Nuclei inputs are then neither resolved nor
+required. `--no-nuclei` and `--no-sigma` cannot be combined.
 
 ## Default on
 
@@ -23,6 +24,13 @@ rules directory (`<data-dir>/sigma-rules`) when present, or from an explicit
 `--rules <PATH>`. If neither exists, Sigma is skipped with a one-line note (not an
 error), so a hunt with no Sigma rules behaves exactly as before. `--no-sigma`
 disables the pass explicitly.
+
+Without `--output`, `hunt` writes private findings only to stdout as JSONL (or
+flattened CSV with `--output-format csv`) and creates no files. These records can
+contain raw IPs, paths, hosts, headers, and other request evidence. With
+`--output <DIR>`, the same pass writes the complete private and sanitized run
+artifacts. `validate-rules` remains available for checking the supported Sigma
+subset without running a hunt.
 
 `shenron-lab setup` populates that default directory. It installs the **bundled
 Shenron pack** — a small set of curated, Shenron-supported generic-TTP rules
