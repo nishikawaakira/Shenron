@@ -1476,7 +1476,10 @@ fn hunt_uses_validated_matchers_and_separates_sensitive_output() {
     assert!(sanitized.contains("\"template_ids\":[\"synthetic-cve-2024-10001\"]"));
     let manifest = fs::read_to_string(output.path().join("run-manifest.json")).unwrap();
     assert!(manifest.contains("\"report_kind\": \"RUN_MANIFEST\""));
-    assert!(manifest.contains("\"shenron_version\": \"0.1.0\""));
+    assert!(manifest.contains(&format!(
+        "\"shenron_version\": \"{}\"",
+        env!("CARGO_PKG_VERSION")
+    )));
     assert!(manifest.contains("\"telemetry_profile\": \"aws-waf\""));
     assert!(manifest.contains("\"nuclei_revision\": \"synthetic-fixture-revision\""));
     assert!(manifest.contains("\"filter_from\": null"));
