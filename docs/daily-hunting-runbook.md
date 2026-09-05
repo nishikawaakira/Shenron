@@ -177,26 +177,36 @@ Open `report.html` and look, in rough priority order, at:
    `/.git/config`, `/.aws/credentials` etc. that returned success. The most
    alarming daily signal: the file may actually have been served. Confirm with
    `response_bytes` / `response_status` on the finding.
-2. **Request-concentration spikes** — a path or source with sharply elevated
+2. **High/critical catalog severity or KEV CVEs** — the observed-CVEs table
+   shows a Severity column (the source catalog's declared `info.severity`) and a
+   per-severity breakdown, plus KEV membership. Start with critical/high and any
+   KEV-listed CVE. Severity and KEV are catalog facts, not Shenron's judgment of
+   impact; use `SHENRON_SLACK_MIN_SEVERITY` to notify only at or above a level.
+3. **Request-concentration spikes** — a path or source with sharply elevated
    per-minute volume (the status-class timeline separates 2xx/4xx/5xx over time).
-3. **Baseline delta** — first-seen entities and elevated-volume paths/IPs vs
+4. **Baseline delta** — first-seen entities and elevated-volume paths/IPs vs
    yesterday (`comparison-summary.json` / the report's compare view).
-4. **Declared-vs-observed mismatches** — e.g. a `Googlebot` User-Agent whose
+5. **Declared-vs-observed mismatches** — e.g. a `Googlebot` User-Agent whose
    observed peer is outside Google's published ranges.
-5. **Protection-gap** — a CVE-related request that available WAF evidence shows
+6. **Protection-gap** — a CVE-related request that available WAF evidence shows
    was not blocked.
 
+The stdout daily summary and the report both surface these as aggregate counts
+(catalog-severity buckets, KEV, sensitive-file 2xx, concentration, baseline
+delta) so you know whether a run is worth opening.
+
 **Why each is only a lead:** every one has innocent explanations (a decoy file,
-a CDN/NAT peer, a popular resource, a stale published range, a crawler). Shenron
-labels and prioritizes; *you* decide whether it is an incident. That non-
-assertion discipline is deliberate — it keeps false certainty out of your day.
+a CDN/NAT peer, a popular resource, a stale published range, a crawler,
+a catalog severity that overstates the request-side risk). Shenron labels and
+prioritizes; *you* decide whether it is an incident. That non-assertion
+discipline is deliberate — it keeps false certainty out of your day.
 
 ### 5. Act: turn a confirmed finding into a COUNT-only WAF rule
 
 ```bash
-shenron candidate build  --from-findings <private-findings.jsonl> \
-  --output cand.json --telemetry apache
-shenron candidate replay --candidate cand.json --input ./logs/today \
+shenron candidate build  --from-findings ./private-results/hunt-<UTC>/private-findings.jsonl \
+  --output cand.json --telemetry nginx           # match your telemetry profile
+shenron candidate replay --candidate cand.json --input /var/log/nginx --format nginx \
   --output cand-replayed.json
 shenron candidate export --candidate cand-replayed.json \
   --backend aws-waf-json --priority 100 --output rule.json
@@ -227,7 +237,7 @@ Shenron never deploys, never emits BLOCK, and cannot infer WebACL priority — s
   across weeks (prefixes/ASNs only, never individual IPs):
 
   ```bash
-  shenron hunt --input ./logs/today \
+  shenron hunt --input /var/log/nginx --format nginx \
     --output ./private-results/hunt-<UTC> \
     --observation-store ./private-results/observation-memory.jsonl
   ```
