@@ -85,6 +85,34 @@ For a setup-free Sigma-only check, add `--no-nuclei --rules <DIR>`; use the
 retained `validate-rules` command to inspect rule compatibility. Nuclei and
 Sigma cannot both be disabled.
 
+## First run on a new log source
+
+Before wiring a source into the daily pipeline, do two quick things.
+
+**Confirm what the logs actually contain** — no setup needed:
+
+```bash
+shenron inspect --input /var/log/nginx --format nginx
+```
+
+**Why:** it reports which fields are present (status, response bytes, client IP,
+JA4, WAF outcome, timestamps) without emitting request values. You interpret
+findings against the evidence you actually have, and you never assume a field the
+log lacks. It also confirms the right `--format` (auto recognizes AWS WAF and
+vhost-prefixed Apache; standard nginx/Apache need an explicit `--format`).
+
+**Take a fast, setup-free look** — Sigma-only findings straight to stdout:
+
+```bash
+shenron hunt --input /var/log/nginx --format nginx --rules ./rules --no-nuclei \
+  | jq 'select(.response_status == 200)'
+```
+
+**Why:** `--no-nuclei` skips the prepared Nuclei inputs, so you get findings
+without `setup`; with no `--output` they stream to stdout for immediate `jq`/grep
+(for example, secret-file requests that returned 200). The stream is private raw
+content — redirect it only to a protected local destination.
+
 ## The daily loop
 
 ### 1. Point at the log directory and bound the window
@@ -157,11 +185,20 @@ supported; no log content is sent over the network.
 ```bash
 shenron explain --findings ./private-results/hunt-<UTC>/private-findings.jsonl \
   --show-source-ips --show-asn --show-request
+
+# Pivot on a suspect IP set or path subtree (CTI-free, private detail):
+shenron concentration --input /var/log/nginx --format nginx \
+  --source-ip 198.51.100.7,203.0.113.9 --show-paths
+shenron concentration --input /var/log/nginx --format nginx \
+  --path-prefix /wp-admin --show-paths --show-source-ips
 ```
 
 `explain` groups findings by connection/client IP, ASN, or JA4, and ranks them
 with an offline behavior-priority score (from observed request behavior only).
-Add `--reputation-dataset` / `--asn-dataset` for local enrichment.
+Add `--reputation-dataset` / `--asn-dataset` for local enrichment. Use
+`concentration` to pivot: `--source-ip a,b` lists what one or more peers
+requested, and `--path-prefix /x` rolls up a subtree with its sub-paths and
+peers. Raw paths/IPs stay in the private artifact and behind `--show-*` gates.
 
 **Why:** volume alone is noisy. You want the few entities that combine breadth
 (many distinct probes), depth, and distinctiveness — and you want ASN,
@@ -245,6 +282,22 @@ Shenron never deploys, never emits BLOCK, and cannot infer WebACL priority — s
 **Why:** a single day rarely proves anything. Persistence across days
 (baseline deltas) and across weeks (observation store) is what separates
 background noise from a source that keeps coming back.
+
+### 7. Validate coverage (periodic)
+
+Not every run; do this on a schedule to check the detection itself, not the day.
+
+```bash
+shenron replay ...           # known-finding re-observation and other matches across the corpus
+shenron ablation ...         # match volume by strategy (URI-only -> IR -> request-specific)
+shenron count-hypotheses ... # broad-to-narrow conditions as COUNT-mode simulations
+```
+
+**Why:** hunting daily tells you what changed; these tell you whether the
+detection has blind spots or is over-broad. `replay` measures re-observation
+coverage, `ablation` compares strategy volume, and `count-hypotheses` compares
+broad-to-narrow conditions before you ever build a candidate. All are aggregate,
+sanitized, and never emit BLOCK.
 
 ## Privacy and retention
 
