@@ -1,11 +1,11 @@
 # Nuclei test generation
 
-`shenron-lab nuclei inventory --templates ./nuclei-templates` reads Nuclei YAML as static data and reports feature usage. `shenron-lab nuclei coverage` additionally converts the literal supported subset to an internal request-side detection, generates in-memory AWS WAF-shaped events, and runs exact and mutation checks locally.
+`shenron nuclei inventory --templates ./nuclei-templates` reads Nuclei YAML as static data and reports feature usage. `shenron nuclei coverage` additionally converts the literal supported subset to an internal request-side detection, generates in-memory AWS WAF-shaped events, and runs exact and mutation checks locally.
 
 ```bash
-cargo run --bin shenron-lab -- nuclei inventory \
+cargo run --bin shenron -- nuclei inventory \
   --templates ./nuclei-templates --revision <pinned-revision> --report inventory.json
-cargo run --bin shenron-lab -- nuclei coverage \
+cargo run --bin shenron -- nuclei coverage \
   --templates ./nuclei-templates --revision <pinned-revision> --report coverage.json
 ```
 

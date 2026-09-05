@@ -10,10 +10,6 @@ autobins = false
 name = "shenron"
 path = "src/main.rs"
 
-[[bin]]
-name = "shenron-lab"
-path = "src/bin/shenron-lab.rs"
-
 [dependencies]
 anyhow = "1.0"
 chrono = { version = "0.4", features = ["serde"] }

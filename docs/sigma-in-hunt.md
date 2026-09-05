@@ -32,7 +32,7 @@ contain raw IPs, paths, hosts, headers, and other request evidence. With
 artifacts. `validate-rules` remains available for checking the supported Sigma
 subset without running a hunt.
 
-`shenron-lab setup` populates that default directory. It installs the **bundled
+`shenron setup` populates that default directory. It installs the **bundled
 Shenron pack** — a small set of curated, Shenron-supported generic-TTP rules
 embedded in the binary (secret/config-file probes, version-control exposure
 probes, management/actuator endpoint probes) — into

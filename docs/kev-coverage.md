@@ -1,8 +1,8 @@
 # CISA KEV Coverage
 
-`shenron-lab kev coverage` joins two local, untrusted-data inputs: an official CISA KEV JSON snapshot and a Shenron Nuclei coverage report. It does not download data, execute templates, scan targets, or evaluate payloads.
+`shenron kev coverage` joins two local, untrusted-data inputs: an official CISA KEV JSON snapshot and a Shenron Nuclei coverage report. It does not download data, execute templates, scan targets, or evaluate payloads.
 
-`shenron-lab setup` can perform the public download and this local join in one
+`shenron setup` can perform the public download and this local join in one
 preparation step. It stores `known_exploited_vulnerabilities.json`,
 `kev-report.json`, and `kev-manifest.json` in the Shenron data directory. The
 manifest records the public source URL, retrieval time, SHA-256 values, and
@@ -11,7 +11,7 @@ step. With `--skip-nuclei`, an existing frozen Nuclei report is reused; without
 one, only the join is skipped and the reason is reported.
 
 ```bash
-cargo run --bin shenron-lab -- kev coverage \
+cargo run --bin shenron -- kev coverage \
   --kev ./known_exploited_vulnerabilities.json \
   --nuclei-report ./research/nuclei/<revision>/final.json \
   --report ./research/kev/<snapshot-date>/coverage.json

@@ -1,6 +1,6 @@
 //! The curated Sigma rule pack shipped with Shenron.
 //!
-//! These rules are embedded at compile time, so `shenron-lab setup` can install
+//! These rules are embedded at compile time, so `shenron setup` can install
 //! a set of Shenron-supported generic-TTP rules into the local data directory
 //! regardless of where the binary runs — no network access is needed for the
 //! bundled pack. Each rule stays within the intentionally small supported Sigma

@@ -1,7 +1,8 @@
 //! Deterministic conversion of public IP/ASN list downloads into local inputs.
 //!
-//! Network retrieval is deliberately kept in `shenron-lab`; these helpers only
-//! parse already-downloaded public text and never receive customer telemetry.
+//! Network retrieval is deliberately limited to explicit `shenron reputation
+//! update`/`shenron setup` command paths; these helpers only parse
+//! already-downloaded public text and never receive customer telemetry.
 
 use std::{
     net::{IpAddr, Ipv4Addr},

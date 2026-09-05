@@ -20,38 +20,38 @@ pub fn default_data_dir() -> PathBuf {
     )
 }
 
-/// Default local Nuclei checkout created by `shenron-lab nuclei update`.
+/// Default local Nuclei checkout created by `shenron nuclei update`.
 pub fn default_templates_dir() -> PathBuf {
     default_data_dir().join("nuclei-templates")
 }
 
-/// Default frozen Nuclei report created by `shenron-lab nuclei update`.
+/// Default frozen Nuclei report created by `shenron nuclei update`.
 pub fn default_nuclei_report() -> PathBuf {
     default_data_dir().join("nuclei-report.json")
 }
 
-/// Default downloaded CISA KEV catalog created by `shenron-lab setup`.
+/// Default downloaded CISA KEV catalog created by `shenron setup`.
 pub fn default_kev_snapshot() -> PathBuf {
     default_data_dir().join("known_exploited_vulnerabilities.json")
 }
 
-/// Default frozen KEV/Nuclei join report created by `shenron-lab setup`.
+/// Default frozen KEV/Nuclei join report created by `shenron setup`.
 pub fn default_kev_report() -> PathBuf {
     default_data_dir().join("kev-report.json")
 }
 
-/// Default local reputation dataset created by `shenron-lab reputation update`.
+/// Default local reputation dataset created by `shenron reputation update`.
 pub fn default_reputation_dataset() -> PathBuf {
     default_data_dir().join("reputation.jsonl")
 }
 
-/// Default local IPv4 ASN-range dataset created by `shenron-lab reputation update`.
+/// Default local IPv4 ASN-range dataset created by `shenron reputation update`.
 pub fn default_asn_dataset() -> PathBuf {
     default_data_dir().join("asn-ranges.tsv")
 }
 
 /// Default frozen published crawler-range snapshot created by
-/// `shenron-lab bot-ranges update` or `shenron-lab setup`.
+/// `shenron bot-ranges update` or `shenron setup`.
 pub fn default_bot_range_snapshot() -> PathBuf {
     default_data_dir().join("bot-ranges.json")
 }

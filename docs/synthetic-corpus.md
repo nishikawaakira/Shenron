@@ -28,7 +28,7 @@ It renders through the same logical request model for `aws-waf`, `nginx`, and
 `apache`:
 
 ```bash
-shenron-lab generate --profile volumetric-concentration \
+shenron generate --profile volumetric-concentration \
   --format apache --output /tmp/volume.log \
   --ground-truth /tmp/volume.truth.jsonl \
   --manifest /tmp/volume.manifest.json
@@ -39,4 +39,4 @@ shenron concentration --input /tmp/volume.log --format apache \
 
 JA4 values are intentionally not a simple bad/good split: the deterministic corpus has a malicious-only exact JA4, a shared JA4 used by an attack and benign assets, and a common background JA4. The compound test verifies that URI + JA4 avoids the shared-JA4 background match.
 
-Use `shenron-lab measure --corpus path` for an on-demand parser throughput measurement. It reports input bytes, wall time, events/sec, and input MB/sec; it does not claim peak-memory measurement.
+Use `shenron measure --corpus path` for an on-demand parser throughput measurement. It reports input bytes, wall time, events/sec, and input MB/sec; it does not claim peak-memory measurement.

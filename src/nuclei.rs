@@ -924,13 +924,13 @@ pub fn validate_frozen_report_value(path: &Path) -> Result<serde_json::Value> {
     match value.get("report_kind").and_then(|kind| kind.as_str()) {
         Some(NUCLEI_COVERAGE_KIND) => Ok(value),
         Some(NUCLEI_TELEMETRY_COVERAGE_KIND) => anyhow::bail!(
-            "the Nuclei report at {} is a --telemetry coverage assessment (report_kind {}), which is an analysis-only artifact and not a frozen hunt input (report_kind {}). Regenerate the frozen report with `shenron-lab nuclei update`, or `shenron-lab nuclei coverage` without --telemetry, and pass that file.",
+            "the Nuclei report at {} is a --telemetry coverage assessment (report_kind {}), which is an analysis-only artifact and not a frozen hunt input (report_kind {}). Regenerate the frozen report with `shenron nuclei update`, or `shenron nuclei coverage` without --telemetry, and pass that file.",
             path.display(),
             NUCLEI_TELEMETRY_COVERAGE_KIND,
             NUCLEI_COVERAGE_KIND
         ),
         Some(other) => anyhow::bail!(
-            "the Nuclei report at {} has report_kind {:?}, but a frozen hunt input must be {}. Regenerate it with `shenron-lab nuclei update`.",
+            "the Nuclei report at {} has report_kind {:?}, but a frozen hunt input must be {}. Regenerate it with `shenron nuclei update`.",
             path.display(),
             other,
             NUCLEI_COVERAGE_KIND

@@ -4,12 +4,12 @@ Shenron statically analyzes local, untrusted Nuclei YAML. It never executes temp
 
 ## Updating public template inputs
 
-`shenron-lab nuclei update` is the only Nuclei-template command that uses the
+`shenron nuclei update` is the only Nuclei-template command that uses the
 network. It invokes system `git` to download public Nuclei templates into a
 local checkout. It never uploads or transmits customer logs, findings, IP
-addresses, request values, or any other customer data. The analysis binary
-`shenron`, including its production and candidate commands, remains offline
-during analysis.
+addresses, request values, or any other customer data. Shenron is a single
+binary: analysis and candidate commands remain offline, while only explicitly
+invoked preparation/update commands download public intelligence.
 
 Run this once to use the standard local layout. It writes the checkout to
 `$SHENRON_DATA_DIR/nuclei-templates`, or to
@@ -18,14 +18,14 @@ when the override is absent, and generates the matching frozen coverage report
 at `nuclei-report.json` in the same data directory:
 
 ```bash
-shenron-lab nuclei update
+shenron nuclei update
 ```
 
 Pin a reviewed commit when reproducibility matters. `--templates` and `--report`
 can override the standard locations:
 
 ```bash
-shenron-lab nuclei update \
+shenron nuclei update \
   --revision <full-commit-sha> \
   --templates ./nuclei-templates \
   --report ./research/nuclei/<full-commit-sha>/final.json
@@ -33,7 +33,7 @@ shenron-lab nuclei update \
 
 When `--revision` is omitted, the command checks out the current remote default
 branch tip, prints its resolved full SHA, and writes a frozen report generated
-by the same coverage logic as `shenron-lab nuclei coverage`. After either form,
+by the same coverage logic as `shenron nuclei coverage`. After either form,
 hunt uses the default prepared inputs without repeating their paths:
 
 ```bash
@@ -47,7 +47,7 @@ not access the network or execute templates.
 
 ## Updating public reputation and ASN inputs
 
-`shenron-lab reputation update` is a separate, explicit preparation command. It
+`shenron reputation update` is a separate, explicit preparation command. It
 uses system `curl` only to download public Spamhaus DROP, FireHOL level 1, CINS
 Army, blocklist.de, and iptoasn IPv4 data; it never uploads customer logs,
 findings, observed IPs, request values, or any other customer data. The command
@@ -57,13 +57,13 @@ XDG/home data directory), recording successful source URLs, retrieval times,
 source and output SHA-256 hashes, record counts, and any failed source with its
 reason. Each public source is attempted independently. Records from reachable
 sources are retained, but any source failure is disclosed and makes the update
-exit non-zero; zero usable reputation records makes that step fail. The main
-`shenron` binary remains offline and automatically
-uses those local files during `explain` when no explicit dataset
+exit non-zero; zero usable reputation records makes that step fail. Analysis
+commands remain offline and automatically use those local files during
+`explain` when no explicit dataset
 paths are supplied.
 
 ```bash
-shenron-lab reputation update
+shenron reputation update
 shenron explain --findings ./private-findings.jsonl --show-source-ips --show-asn
 ```
 
@@ -71,9 +71,9 @@ The generated opinions are third-party context, not a determination of attack,
 exploitation, compromise, or attribution. Review and comply with the terms of
 use for each source before downloading or relying on its list.
 
-`shenron-lab nuclei coverage` includes a template capability funnel: all CVE templates, HTTP CVE templates, templates with supported request IR, and the resulting IR alternatives split into `request-specific` and `response-unverified`. This separates the request-feature distribution of the convertible template corpus from the limitations of a selected telemetry source. It is not a field precision, true-positive-rate, attack, exploitation, compromise, or vulnerability-presence measurement; the funnel contains no ground truth.
+`shenron nuclei coverage` includes a template capability funnel: all CVE templates, HTTP CVE templates, templates with supported request IR, and the resulting IR alternatives split into `request-specific` and `response-unverified`. This separates the request-feature distribution of the convertible template corpus from the limitations of a selected telemetry source. It is not a field precision, true-positive-rate, attack, exploitation, compromise, or vulnerability-presence measurement; the funnel contains no ground truth.
 
-**Report kinds.** Every report names its shape in a `report_kind` field. `shenron-lab nuclei coverage` **without** `--telemetry`, and `shenron-lab nuclei update`, write the frozen coverage report (`report_kind: NUCLEI_COVERAGE_REPORT`) — the only shape `hunt`/`ablation`/`replay`/`count-hypotheses` and `kev coverage` accept as a frozen input. `shenron-lab nuclei coverage --telemetry <profile>` writes a per-profile detectability assessment (`report_kind: NUCLEI_TELEMETRY_COVERAGE`) whose templates carry `level`/`convertible`/`validated` rather than `protocol`/`conversion_status`/`validation_status`; it is an **analysis-only artifact and is not a frozen hunt input**. `--telemetry` accepts `aws-waf`, `nginx`, `apache`, and `apache-vhost`, so lab-side analysis can target the same vhost profile a hunt uses. If a telemetry report (or any other kind) is passed where a frozen input is required, the loader checks `report_kind` before deserializing the body and fails with a message that names the file, the kind found, the kind required, and the command to regenerate it, rather than an opaque serde field error. A report written before `report_kind` existed carries none and is accepted as a frozen input for backward compatibility.
+**Report kinds.** Every report names its shape in a `report_kind` field. `shenron nuclei coverage` **without** `--telemetry`, and `shenron nuclei update`, write the frozen coverage report (`report_kind: NUCLEI_COVERAGE_REPORT`) — the only shape `hunt`/`ablation`/`replay`/`count-hypotheses` and `kev coverage` accept as a frozen input. `shenron nuclei coverage --telemetry <profile>` writes a per-profile detectability assessment (`report_kind: NUCLEI_TELEMETRY_COVERAGE`) whose templates carry `level`/`convertible`/`validated` rather than `protocol`/`conversion_status`/`validation_status`; it is an **analysis-only artifact and is not a frozen hunt input**. `--telemetry` accepts `aws-waf`, `nginx`, `apache`, and `apache-vhost`, so lab-side analysis can target the same vhost profile a hunt uses. If a telemetry report (or any other kind) is passed where a frozen input is required, the loader checks `report_kind` before deserializing the body and fails with a message that names the file, the kind found, the kind required, and the command to regenerate it, rather than an opaque serde field error. A report written before `report_kind` existed carries none and is accepted as a frozen input for backward compatibility.
 
 | Level | Meaning |
 | --- | --- |
@@ -111,14 +111,14 @@ auditable lists are the `GENERIC_BASENAMES` and `GENERIC_SEGMENTS` constants in
 
 ## Matcher codebook listing
 
-`shenron-lab nuclei matchers` lists the literal method, path, query, fragment,
+`shenron nuclei matchers` lists the literal method, path, query, fragment,
 headers, request-specificity, and path-distinctiveness for every Detection IR alternative that hunt
 can use. With `--report`, it applies the same frozen-report gates as hunt:
 `SUPPORTED` conversion, `passed` validation, and a non-empty CVE list. Without
 `--report`, it lists every supported literal Detection IR in the local checkout.
 
 ```bash
-shenron-lab nuclei matchers \
+shenron nuclei matchers \
   --templates ./nuclei-templates \
   --revision <pinned-revision> \
   --report ./research/nuclei/<revision>/final.json \

@@ -148,7 +148,7 @@ fn hunt_without_no_nuclei_still_requires_prepared_inputs() {
         .assert()
         .failure()
         .stderr(predicate::str::contains(
-            "first run `shenron-lab nuclei update`",
+            "first run `shenron nuclei update`",
         ));
 }
 

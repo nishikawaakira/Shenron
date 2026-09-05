@@ -8,31 +8,31 @@ use std::{
 
 use anyhow::{bail, Context, Result};
 use chrono::Utc;
-use clap::{ArgAction, Parser, Subcommand, ValueEnum};
+use clap::{ArgAction, Subcommand, ValueEnum};
 use flate2::read::GzDecoder;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
-use shenron::bot_ranges::{
+use crate::bot_ranges::{
     default_source_catalog, parse_source_catalog, snapshot_from_downloads, BotRangeSourceDefinition,
 };
-use shenron::event::TelemetryProfile;
-use shenron::kev::{coverage as kev_coverage, KevCoverageReport};
-use shenron::lab::{
+use crate::event::TelemetryProfile;
+use crate::kev::{coverage as kev_coverage, KevCoverageReport};
+use crate::lab::{
     generate_for_format, measure, validate_corpus, validate_findings, GeneratorConfig, Profile,
     SyntheticFormat, ValidationReport,
 };
-use shenron::minimum_telemetry::{analyze as minimum_telemetry_analyze, MinimumTelemetryReport};
-use shenron::nuclei::{
+use crate::minimum_telemetry::{analyze as minimum_telemetry_analyze, MinimumTelemetryReport};
+use crate::nuclei::{
     compare_telemetry, coverage as nuclei_coverage, coverage_for_telemetry,
     frozen_nuclei_selection, inventory as nuclei_inventory, supported_detections,
     validated_detections, CoverageReport, InventoryReport, RequestMatcherView,
     TelemetryComparisonReport, TelemetryCoverageReport,
 };
-use shenron::paths::{
+use crate::paths::{
     default_bot_range_snapshot, default_data_dir, default_nuclei_report, default_templates_dir,
 };
-use shenron::reputation_update::{
+use crate::reputation_update::{
     parse_blocklist_de, parse_cins, parse_firehol_level1, parse_iptoasn_v4, parse_spamhaus_drop,
     write_asn_ranges, write_reputation_jsonl, ReputationRecord, BLOCKLIST_DE_URL, CINS_URL,
     FIREHOL_LEVEL1_URL, IPTOASN_V4_URL, SPAMHAUS_DROP_URL,
@@ -41,19 +41,9 @@ use shenron::reputation_update::{
 const CISA_KEV_URL: &str =
     "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json";
 
-#[derive(Debug, Parser)]
-#[command(
-    name = "shenron-lab",
-    version,
-    about = "Generate and validate passive synthetic AWS WAF corpora"
-)]
-struct Cli {
-    #[command(subcommand)]
-    command: Command,
-}
-
 #[derive(Debug, Subcommand)]
-enum Command {
+#[allow(clippy::large_enum_variant)]
+pub enum LabCommand {
     Generate {
         #[arg(long, value_enum, default_value_t = ProfileArg::Deterministic)]
         profile: ProfileArg,
@@ -195,7 +185,7 @@ enum Command {
 }
 
 #[derive(Debug, Subcommand)]
-enum NucleiCommand {
+pub enum NucleiCommand {
     /// Fetch or update the local Nuclei templates checkout over the network.
     /// Downloads public templates only; no customer data is transmitted.
     Update {
@@ -272,12 +262,12 @@ struct MatcherRecord {
     query: Option<String>,
     fragment: Option<String>,
     headers: Vec<(String, String)>,
-    request_specificity: shenron::nuclei::RequestSpecificity,
-    path_distinctiveness: shenron::nuclei::PathDistinctiveness,
+    request_specificity: crate::nuclei::RequestSpecificity,
+    path_distinctiveness: crate::nuclei::PathDistinctiveness,
 }
 
 #[derive(Debug, Subcommand)]
-enum KevCommand {
+pub enum KevCommand {
     /// Join an offline official CISA KEV JSON snapshot with a Nuclei coverage report.
     Coverage {
         #[arg(long)]
@@ -290,7 +280,7 @@ enum KevCommand {
 }
 
 #[derive(Debug, Subcommand)]
-enum ReputationCommand {
+pub enum ReputationCommand {
     /// Download public lists and write local, offline explain inputs only.
     Update {
         /// Output directory (defaults to Shenron's local data directory).
@@ -321,7 +311,7 @@ enum ReputationCommand {
 }
 
 #[derive(Debug, Subcommand)]
-enum BotRangesCommand {
+pub enum BotRangesCommand {
     /// Download public range JSON and freeze a local offline snapshot.
     Update {
         /// Output snapshot path (defaults to <data-dir>/bot-ranges.json).
@@ -334,7 +324,7 @@ enum BotRangesCommand {
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
-enum ProfileArg {
+pub enum ProfileArg {
     Deterministic,
     Mutations,
     Large,
@@ -343,7 +333,7 @@ enum ProfileArg {
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
-enum TelemetryFormatArg {
+pub enum TelemetryFormatArg {
     AwsWaf,
     Nginx,
     Apache,
@@ -359,9 +349,9 @@ impl From<TelemetryFormatArg> for SyntheticFormat {
 }
 /// The telemetry profile a lab-side analysis (`nuclei coverage --telemetry`)
 /// evaluates. Unlike synthetic generation, analysis can target the vhost profile
-/// a hunt uses, so this mirrors the full set `shenron production` exposes.
+/// a hunt uses, so this mirrors the full set `shenron` exposes.
 #[derive(Clone, Copy, Debug, ValueEnum)]
-enum AnalysisProfileArg {
+pub enum AnalysisProfileArg {
     AwsWaf,
     Nginx,
     Apache,
@@ -390,9 +380,9 @@ impl From<ProfileArg> for Profile {
     }
 }
 
-fn main() -> Result<()> {
-    match Cli::parse().command {
-        Command::Generate {
+pub fn run(command: LabCommand) -> Result<()> {
+    match command {
+        LabCommand::Generate {
             profile,
             output,
             ground_truth,
@@ -409,7 +399,7 @@ fn main() -> Result<()> {
             let profile: Profile = profile.into();
             let events = events.unwrap_or({
                 if matches!(profile, Profile::VolumetricConcentration) {
-                    shenron::lab::VOLUMETRIC_CONCENTRATION_EVENTS
+                    crate::lab::VOLUMETRIC_CONCENTRATION_EVENTS
                 } else {
                     15
                 }
@@ -430,7 +420,7 @@ fn main() -> Result<()> {
                 generate_for_format(&output, &ground_truth, &manifest, &config, format.into())?;
             println!("Generated valid events: {}\nExpected parser errors: {}\nGround truth records: {}\nManifest: {}", result.manifest.valid_events, result.manifest.expected_parser_errors, result.truth_records, manifest.display());
         }
-        Command::Validate {
+        LabCommand::Validate {
             findings,
             corpus,
             truth,
@@ -456,12 +446,12 @@ fn main() -> Result<()> {
                 std::process::exit(1);
             }
         }
-        Command::Measure { corpus } => {
+        LabCommand::Measure { corpus } => {
             let (events, bytes, seconds) = measure(&corpus)?;
             let seconds = seconds.max(f64::EPSILON);
             println!("Events: {events}\nInput bytes: {bytes}\nWall seconds: {seconds:.3}\nEvents/sec: {:.0}\nInput MB/sec: {:.2}", events as f64 / seconds, bytes as f64 / 1_000_000.0 / seconds);
         }
-        Command::Nuclei { command } => match command {
+        LabCommand::Nuclei { command } => match command {
             NucleiCommand::Update {
                 templates,
                 revision,
@@ -469,9 +459,9 @@ fn main() -> Result<()> {
                 report,
             } => {
                 run_nuclei_update(templates, revision, &repo, report)?;
-                println!("Public templates only were downloaded; no customer data was transmitted. The shenron analysis binary remains offline.");
+                println!("Public templates only were downloaded; no customer data was transmitted. Shenron analysis commands remain offline.");
                 println!("Pin this revision with --revision for later reproducibility.");
-                println!("Next: shenron production hunt --input <logs> --format <fmt>");
+                println!("Next: shenron hunt --input <logs> --format <fmt>");
             }
             NucleiCommand::Inventory {
                 templates,
@@ -550,7 +540,7 @@ fn main() -> Result<()> {
                 }
             }
         },
-        Command::Kev { command } => match command {
+        LabCommand::Kev { command } => match command {
             KevCommand::Coverage {
                 kev,
                 nuclei_report,
@@ -563,7 +553,7 @@ fn main() -> Result<()> {
                 }
             }
         },
-        Command::Reputation { command } => match command {
+        LabCommand::Reputation { command } => match command {
             ReputationCommand::Update {
                 out_dir,
                 reputation,
@@ -587,7 +577,7 @@ fn main() -> Result<()> {
                 true,
             )?,
         },
-        Command::BotRanges { command } => match command {
+        LabCommand::BotRanges { command } => match command {
             BotRangesCommand::Update { output, catalog } => {
                 update_bot_ranges(
                     &output.unwrap_or_else(default_bot_range_snapshot),
@@ -596,7 +586,7 @@ fn main() -> Result<()> {
                 )?;
             }
         },
-        Command::Setup {
+        LabCommand::Setup {
             skip_nuclei,
             skip_kev,
             skip_reputation,
@@ -639,7 +629,7 @@ fn main() -> Result<()> {
             };
             run_setup(&data_dir.unwrap_or_else(default_data_dir), plan, inputs)?;
         }
-        Command::MinimumTelemetry {
+        LabCommand::MinimumTelemetry {
             templates,
             comparison,
             kev,
@@ -655,9 +645,7 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn matcher_records(
-    detections: Vec<shenron::nuclei::ValidatedNucleiDetection>,
-) -> Vec<MatcherRecord> {
+fn matcher_records(detections: Vec<crate::nuclei::ValidatedNucleiDetection>) -> Vec<MatcherRecord> {
     let mut records = detections
         .into_iter()
         .map(|detection| {
@@ -709,8 +697,8 @@ fn print_matchers(matchers: &[MatcherRecord]) {
             target.push_str(fragment);
         }
         let specificity = match matcher.request_specificity {
-            shenron::nuclei::RequestSpecificity::RequestSpecific => "request-specific",
-            shenron::nuclei::RequestSpecificity::ResponseUnverified => "response-unverified",
+            crate::nuclei::RequestSpecificity::RequestSpecific => "request-specific",
+            crate::nuclei::RequestSpecificity::ResponseUnverified => "response-unverified",
         };
         let distinctiveness = matcher.path_distinctiveness.label();
         println!(
@@ -1000,12 +988,12 @@ fn run_setup(data_dir: &Path, plan: SetupPlan, inputs: SetupInputs<'_>) -> Resul
     // The privacy guarantee holds regardless of outcome: only public URLs are
     // ever passed to git/curl. Print the reassurance before any failure return
     // so a partial failure still surfaces it.
-    println!("Public intelligence only was downloaded; no customer data was transmitted. The shenron analysis binary remains offline.");
+    println!("Public intelligence only was downloaded; no customer data was transmitted. Shenron analysis commands remain offline.");
     println!("Review and comply with each source's terms of use before relying on these lists.");
     if let Some((_, error)) = failures.into_iter().next() {
         bail!("setup completed with failures: {error}");
     }
-    println!("Next: shenron production hunt --input <logs> --format <fmt>");
+    println!("Next: shenron hunt --input <logs> --format <fmt>");
     Ok(())
 }
 
@@ -1015,7 +1003,7 @@ fn run_setup(data_dir: &Path, plan: SetupPlan, inputs: SetupInputs<'_>) -> Resul
 /// downloaded; no customer data is transmitted.
 fn install_sigma_rules(data_dir: &Path, sources: &[String]) -> Result<String> {
     let sigma_dir = data_dir.join("sigma-rules");
-    let bundled = shenron::sigma_pack::install_bundled_pack(&sigma_dir)?;
+    let bundled = crate::sigma_pack::install_bundled_pack(&sigma_dir)?;
     let mut external_rules = 0;
     for url in sources {
         let name = sigma_source_dir_name(url);
@@ -1023,7 +1011,7 @@ fn install_sigma_rules(data_dir: &Path, sources: &[String]) -> Result<String> {
         let dest = sigma_dir.join("external").join(&name);
         external_rules += fetch_sigma_source(url, &staging, &dest)?;
     }
-    let supported = shenron::sigma::load_rules(&sigma_dir).supported.len();
+    let supported = crate::sigma::load_rules(&sigma_dir).supported.len();
     println!(
         "Sigma rules installed to {} (bundled pack: {}, external web rules fetched: {}, supported rules loadable: {}).",
         sigma_dir.display(),
@@ -1240,7 +1228,7 @@ fn update_bot_ranges(output: &Path, catalog: Option<&Path>, announce: bool) -> R
         serde_json::to_writer_pretty(File::create(output)?, &snapshot)?;
         if announce {
             println!("Frozen published crawler ranges: {}", output.display());
-            println!("Public range JSON only was downloaded; no customer logs, findings, IPs, User-Agents, or request values were transmitted. The shenron analysis binary remains offline.");
+            println!("Public range JSON only was downloaded; no customer logs, findings, IPs, User-Agents, or request values were transmitted. Shenron analysis commands remain offline.");
             println!("Published ranges can be incomplete or stale; this snapshot supports labeled review, not impersonation, attack, or abuse determinations.");
         }
         Ok(())
@@ -1421,7 +1409,7 @@ fn update_reputation_inputs(
                 out_dir.display()
             );
             println!("Manifest: {}", manifest_path.display());
-            println!("Public lists only were downloaded; no customer data was transmitted. The shenron analysis binary remains offline.");
+            println!("Public lists only were downloaded; no customer data was transmitted. Shenron analysis commands remain offline.");
             println!("production explain automatically uses these local files when no --reputation-dataset or --asn-dataset override is supplied.");
             println!(
                 "Review and comply with each source's terms of use before relying on these lists."
@@ -1485,7 +1473,7 @@ fn download_and_parse_asn_source(
     url: &str,
     destination: &Path,
 ) -> Result<(
-    Vec<shenron::reputation_update::AsnRangeRecord>,
+    Vec<crate::reputation_update::AsnRangeRecord>,
     chrono::DateTime<Utc>,
     String,
 )> {

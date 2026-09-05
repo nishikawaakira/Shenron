@@ -8,9 +8,9 @@ impersonation, attack, abuse, compromise, vulnerability, or attacker identity.
 Prepare the snapshot explicitly with either:
 
 ```bash
-shenron-lab bot-ranges update
+shenron bot-ranges update
 # or as part of all public-input preparation
-shenron-lab setup
+shenron setup
 ```
 
 The preparation command downloads only public JSON range files. It does not

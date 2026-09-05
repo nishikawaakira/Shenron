@@ -1,11 +1,11 @@
 # Synthetic validation
 
-`shenron-lab` is a passive local validation harness. It generates AWS WAF-shaped JSONL records and a separate JSONL ground-truth sidecar, then compares scanner findings to exact expected rule IDs. Test metadata is never inserted into a WAF record: `httpRequest.requestId` is the join key already present in the schema.
+`shenron` is a passive local validation harness. It generates AWS WAF-shaped JSONL records and a separate JSONL ground-truth sidecar, then compares scanner findings to exact expected rule IDs. Test metadata is never inserted into a WAF record: `httpRequest.requestId` is the join key already present in the schema.
 
 ```bash
-cargo run --bin shenron-lab -- generate --profile deterministic \
+cargo run --bin shenron -- generate --profile deterministic \
   --output /tmp/waf.jsonl.gz --ground-truth /tmp/truth.jsonl --seed 42
-cargo run --bin shenron-lab -- validate --corpus /tmp/waf.jsonl.gz \
+cargo run --bin shenron -- validate --corpus /tmp/waf.jsonl.gz \
   --truth /tmp/truth.jsonl --rules ./tests/rules \
   --manifest /tmp/waf.jsonl.gz.manifest.json --report /tmp/report.json
 ```

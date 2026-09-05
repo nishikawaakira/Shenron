@@ -10,6 +10,7 @@ pub mod cti_export;
 pub mod event;
 pub mod kev;
 pub mod lab;
+pub mod lab_cli;
 pub mod minimum_telemetry;
 pub mod nuclei;
 pub mod observation_store;

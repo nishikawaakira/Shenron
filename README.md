@@ -6,7 +6,12 @@ Shenron is a passive Rust threat-hunting engine for historical web telemetry. It
 
 ## How it works (architecture overview)
 
-In one line: **Shenron correlates public CTI with your own historical logs in an offline analysis pipeline, producing confidence-labeled evidence and COUNT-only WAF rule candidates that you review before deploying.** Explicit preparation commands `shenron-lab nuclei update` and `shenron-lab reputation update` may download public intelligence, but never upload customer logs, findings, IPs, request values, or other customer data.
+In one line: **Shenron correlates public CTI with your own historical logs in an offline analysis pipeline, producing confidence-labeled evidence and COUNT-only WAF rule candidates that you review before deploying.** Explicit preparation commands `shenron nuclei update` and `shenron reputation update` may download public intelligence, but never upload customer logs, findings, IPs, request values, or other customer data.
+
+All analysis and preparation commands ship in one `shenron` binary. Analysis
+stays offline by default; network access is limited to explicitly invoked
+public-intelligence setup/update commands and the opt-in sanitized Slack
+notification.
 
 ```
 input logs ─▶ parser ─▶ WebEvent ─▶ matching engine ─▶ findings ─▶ aggregate / triage / scoring ─▶ candidates / COUNT rules
@@ -15,10 +20,10 @@ input logs ─▶ parser ─▶ WebEvent ─▶ matching engine ─▶ findings 
 ```
 
 1. **Normalize inputs.** Different log formats are parsed into one internal `WebEvent`, so downstream logic is format-agnostic. Fields a log does not contain (JA3/JA4, WAF outcome, request body) are never invented.
-2. **Ingest public CTI statically.** `shenron-lab nuclei update` can explicitly download public Nuclei templates, and `shenron-lab reputation update` can download public IP-reputation and IPv4 ASN lists; both write local, reviewable inputs and never receive customer data. Nuclei templates are parsed locally, never executed, into a literal request subset (method, path, query, fragment, headers). Anything needing payload expansion, multi-request state, or response/OAST confirmation is rejected with a stable reason instead of being silently approximated.
+2. **Ingest public CTI statically.** `shenron nuclei update` can explicitly download public Nuclei templates, and `shenron reputation update` can download public IP-reputation and IPv4 ASN lists; both write local, reviewable inputs and never receive customer data. Nuclei templates are parsed locally, never executed, into a literal request subset (method, path, query, fragment, headers). Anything needing payload expansion, multi-request state, or response/OAST confirmation is rejected with a stable reason instead of being silently approximated.
 3. **Match.** Those matchers run over each historical `WebEvent` to surface CVE-related requests. A small Sigma subset provides a second, independent rule-matching path.
 4. **Label fidelity.** Every match is labeled on two transparent axes: request-specificity (`request-specific` vs `response-unverified`) and path-distinctiveness (`distinctive` vs `generic` — `/robots.txt` and `/login` are generic). Matches are labeled, never dropped.
-5. **Triage and score.** Findings are grouped by connection/client IP, JA4, or (with a dataset) ASN, and each group gets an offline behavior priority score from observed behavior alone. `shenron-lab reputation update` can prepare optional local IP/ASN inputs; `explain` reads them locally with no external API calls.
+5. **Triage and score.** Findings are grouped by connection/client IP, JA4, or (with a dataset) ASN, and each group gets an offline behavior priority score from observed behavior alone. `shenron reputation update` can prepare optional local IP/ASN inputs; `explain` reads them locally with no external API calls.
 6. **Candidates and COUNT output.** Defensive conditions are proposed and simulated across the full history offline. Exported WAF rules always start as `COUNT` (observe, do not block); a human applies them.
 
 The whole tool follows a **FIND → EXPLAIN → PIVOT → ACT → VALIDATE** workflow:
@@ -36,17 +41,17 @@ Four design pillars: (1) static conversion — templates are never executed; (2)
 
 ## Capabilities
 
-The hunt pipeline streams web logs (including gzip) → normalized `WebEvent` → validated Nuclei and/or a deliberately small Sigma subset → private findings. It supports AWS WAF action, labels, request metadata, and optional JA3/JA4 fingerprints. Analysis commands are offline by default, never upload raw customer data, execute exploits, change AWS, deploy candidates, or take automatic BLOCK actions. Explicit `shenron-lab` preparation commands such as `nuclei update`, `reputation update`, and `bot-ranges update` may download public threat-intelligence inputs. The sole opt-in analysis-side exception is the post-hunt Slack notification described below: it sends sanitized aggregate counters only when `SHENRON_SLACK_WEBHOOK` is set, never IPs, paths, hosts, headers, log values, or private findings.
+The hunt pipeline streams web logs (including gzip) → normalized `WebEvent` → validated Nuclei and/or a deliberately small Sigma subset → private findings. It supports AWS WAF action, labels, request metadata, and optional JA3/JA4 fingerprints. Analysis commands are offline by default, never upload raw customer data, execute exploits, change AWS, deploy candidates, or take automatic BLOCK actions. Explicit `shenron` preparation commands such as `nuclei update`, `reputation update`, and `bot-ranges update` may download public threat-intelligence inputs. The sole opt-in analysis-side exception is the post-hunt Slack notification described below: it sends sanitized aggregate counters only when `SHENRON_SLACK_WEBHOOK` is set, never IPs, paths, hosts, headers, log values, or private findings.
 
 It also includes a reproducible synthetic validation loop: project-owned AWS WAF-shaped corpora, separate ground truth, mutation tests, regression fixtures, and machine-readable validation results. See [validation](docs/validation.md) and [synthetic corpus generation](docs/synthetic-corpus.md).
 
-Static Nuclei CVE analysis is available through `shenron-lab nuclei inventory` and `shenron-lab nuclei coverage`. `shenron-lab nuclei update` can prepare a local checkout by downloading public templates only; inventory and coverage remain passive local YAML analysis, and no template is executed or transmitted. See [detectability policy](docs/nuclei-detectability.md) and [Nuclei test generation](docs/nuclei-test-generation.md).
+Static Nuclei CVE analysis is available through `shenron nuclei inventory` and `shenron nuclei coverage`. `shenron nuclei update` can prepare a local checkout by downloading public templates only; inventory and coverage remain passive local YAML analysis, and no template is executed or transmitted. See [detectability policy](docs/nuclei-detectability.md) and [Nuclei test generation](docs/nuclei-test-generation.md).
 
 Read-only local AWS WAF production inspection and validated Nuclei hunting are available through `shenron inspect` and `shenron hunt`. They separate private investigation evidence from sanitized aggregate output and make no AWS changes. See [production hunting](docs/production-hunting.md).
 
 Hunt can also label deterministic [declared-versus-observed consistency](docs/declared-observed-consistency.md) outcomes. Missing reference data, unsupported telemetry, and missing observed values remain distinct `unavailable` results rather than mismatches; raw declaration/observation values stay private, and no outcome determines impersonation, automation, attack, abuse, compromise, or identity.
 
-`shenron explain` reviews private findings locally: its summary groups CVEs and templates by request method/path, alongside per-request evidence and breadth/depth/windowed triage of connection/client IP groups (`--show-source-ips`), locally resolved ASN groups (`--show-asn`), or JA4 client fingerprints (`--show-fingerprints`). By default it hides only response-unverified matches on generic paths; pass `--include-generic` to review every stored finding. This is a display filter only — it changes what is listed, never triage grouping or scoring, which always see every finding — so a source mixing one distinctive probe with several generic ones still meets the breadth basis. `shenron-lab reputation update` prepares public reputation/ASN inputs that explain automatically reads from the local data directory when present; explicit dataset paths remain available. Each group carries an offline [behavior priority score](docs/production-hunting.md#behavior-priority-score) computed only from observed request behavior; it transparently limits repeated generic-path depth and gives a small distinctiveness component, normalizes the total against the maximum the finding's telemetry profile can reach (so combined logs without a WAF outcome are not systematically depressed), ranks entities for triage, and is never a probability of malice, an exploitation or compromise determination, or attacker attribution. Optional local [IP/ASN reputation enrichment](docs/production-hunting.md#ipasn-reputation-enrichment-offline) uses frozen datasets only, never an inline external lookup, and remains a third-party opinion rather than a conclusion. `--output-format json` (with optional `--output <PATH>`) emits the same content — scores, score components, triage basis, and groupings — as a machine-readable `EXPLAIN_PRIVATE_TRIAGE` report that honors the identical `--show-*` privacy gates.
+`shenron explain` reviews private findings locally: its summary groups CVEs and templates by request method/path, alongside per-request evidence and breadth/depth/windowed triage of connection/client IP groups (`--show-source-ips`), locally resolved ASN groups (`--show-asn`), or JA4 client fingerprints (`--show-fingerprints`). By default it hides only response-unverified matches on generic paths; pass `--include-generic` to review every stored finding. This is a display filter only — it changes what is listed, never triage grouping or scoring, which always see every finding — so a source mixing one distinctive probe with several generic ones still meets the breadth basis. `shenron reputation update` prepares public reputation/ASN inputs that explain automatically reads from the local data directory when present; explicit dataset paths remain available. Each group carries an offline [behavior priority score](docs/production-hunting.md#behavior-priority-score) computed only from observed request behavior; it transparently limits repeated generic-path depth and gives a small distinctiveness component, normalizes the total against the maximum the finding's telemetry profile can reach (so combined logs without a WAF outcome are not systematically depressed), ranks entities for triage, and is never a probability of malice, an exploitation or compromise determination, or attacker attribution. Optional local [IP/ASN reputation enrichment](docs/production-hunting.md#ipasn-reputation-enrichment-offline) uses frozen datasets only, never an inline external lookup, and remains a third-party opinion rather than a conclusion. `--output-format json` (with optional `--output <PATH>`) emits the same content — scores, score components, triage basis, and groupings — as a machine-readable `EXPLAIN_PRIVATE_TRIAGE` report that honors the identical `--show-*` privacy gates.
 
 `shenron ablation` compares aggregate match volume from URI-only through validated Nuclei IR and request-specific IR. It is a volume comparison, not precision, ground truth, or an attack/compromise determination; see [detection-strategy ablation](docs/ablation.md).
 
@@ -64,7 +69,7 @@ Private entity triage also reports bounded [ordered request-sequence](docs/reque
 
 `hunt --observation-store <PATH>` explicitly enables a bounded, append-only [private observation memory](docs/observation-store.md) for recurring network prefixes and optional local ASNs across runs. It is disabled by default and does not establish common ownership, operation, or identity.
 
-`shenron-lab generate --profile volumetric-concentration` produces a
+`shenron generate --profile volumetric-concentration` produces a
 deterministic 40,000-request synthetic corpus for reproducing distributed
 volume-shape measurements without sharing real logs. It is synthetic research
 data and does not represent a real attack, attacker, campaign, vulnerability,
@@ -90,7 +95,7 @@ Log-reading commands default to `--format auto`. Auto mode safely recognizes AWS
 
 ## Prebuilt binaries
 
-Tagged releases ship `shenron` and `shenron-lab` binaries for Linux
+Tagged releases ship one `shenron` binary for Linux
 (`x86_64`/`aarch64`, glibc and static musl), macOS (Intel and Apple Silicon),
 and Windows (`x86_64`) on the [Releases](../../releases) page. Each archive
 carries a `.sha256` checksum and bundles the license and READMEs. To cut a
@@ -103,7 +108,7 @@ git push origin v0.1.0
 ```
 
 Building from source needs a stable Rust toolchain; a release build is
-`cargo build --release --bin shenron --bin shenron-lab`.
+`cargo build --release --bin shenron`.
 
 ## Quick start
 
@@ -126,7 +131,7 @@ Prepare public Nuclei, CISA KEV, reputation, ASN, and published crawler-range in
 safely recognizable local log input without a format option:
 
 ```bash
-shenron-lab setup
+shenron setup
 shenron hunt --input ./waf-logs --output ./private-results/hunt-20260905T000000Z
 ```
 
@@ -162,7 +167,7 @@ reproducible workflow. If `--kev-report` is omitted,
 the prepared default is used when present; otherwise Shenron uses an empty KEV
 set. `setup --skip-kev` omits KEV preparation.
 
-`shenron-lab nuclei update`, `shenron-lab reputation update`, and `shenron-lab bot-ranges update` remain available
+`shenron nuclei update`, `shenron reputation update`, and `shenron bot-ranges update` remain available
 when only one public input family should be refreshed. `setup` downloads public
 intelligence only and never transmits customer data.
 Reputation and ASN sources are attempted independently: usable records from
@@ -175,7 +180,7 @@ Alongside the CVE-anchored Nuclei pass, `hunt` runs a generic **Sigma** detectio
 pass **on by default** in the same stream, catching generic request-pattern TTPs
 (such as secret-file path enumeration) that map to no CVE template. It loads rules
 from `--rules <DIR>` or the prepared `<data-dir>/sigma-rules`; `--no-sigma`
-disables it. `shenron-lab setup` installs a bundled, Shenron-supported Sigma pack
+disables it. `shenron setup` installs a bundled, Shenron-supported Sigma pack
 there so the pass works out of the box, and `setup --sigma-source <git-url>` can
 additionally fetch an external source's `rules/web` (e.g. SigmaHQ). Sigma findings
 carry a `source` field, are counted separately from the CVE metrics, and never

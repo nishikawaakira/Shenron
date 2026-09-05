@@ -13,7 +13,7 @@ inputs once. This
 downloads public intelligence only and never sends customer data:
 
 ```bash
-shenron-lab setup
+shenron setup
 ```
 
 The default data directory is `$SHENRON_DATA_DIR` when set, otherwise
@@ -55,12 +55,12 @@ one of those explicit formats.
 
 `--nuclei-templates` and `--nuclei-report` remain available to select an
 explicit frozen checkout/report pair. If neither default input exists, Shenron
-asks you to run `shenron-lab nuclei update` or `shenron-lab setup` first. `--kev-report` is optional;
+asks you to run `shenron nuclei update` or `shenron setup` first. `--kev-report` is optional;
 when omitted, the prepared default is used if present and otherwise KEV
 membership is empty. The same prepared-input defaults apply
 to `ablation`, `replay`, and `count-hypotheses`.
 
-`shenron-lab setup` is an explicit download-only preparation command. It
+`shenron setup` is an explicit download-only preparation command. It
 refreshes public Nuclei templates and their frozen report together with the
 public CISA KEV catalog and frozen Nuclei join, public reputation, and ASN
 inputs in one local data directory; it never uploads logs,
@@ -76,8 +76,9 @@ default-on hunt Sigma pass then picks up automatically. Pass
 directory, with only the supported subset loaded and each source's license the
 user's responsibility. The existing `nuclei update` and `reputation update`
 commands remain available for individual refreshes, and `bot-ranges update`
-refreshes only the operator-published crawler snapshot. The main `shenron`
-analysis binary remains offline.
+refreshes only the operator-published crawler snapshot. Shenron is a single
+binary: these explicit preparation/update commands may download public data,
+while analysis commands remain offline by default.
 
 KEV preparation records the source URL, retrieval time, SHA-256, record count,
 and output hashes in `kev-manifest.json`. If `--skip-nuclei` is used, setup
@@ -427,7 +428,7 @@ This behavioral score is intentionally computed offline and involves no network 
 
 ## IP/ASN reputation enrichment (offline)
 
-`explain --show-source-ips` can join the private IP groups to frozen local datasets without any HTTP request or external API call. `shenron-lab reputation update` can prepare public reputation and ASN inputs once; when `<data-dir>/reputation.jsonl` and/or `<data-dir>/asn-ranges.tsv` exist, `explain` automatically uses them unless an explicit `--reputation-dataset` or `--asn-dataset` path overrides them. The data directory is `SHENRON_DATA_DIR`, then `$XDG_DATA_HOME/shenron`, then `~/.local/share/shenron`. Explicit datasets also remain supported: `--asn-dataset ./GeoLite2-ASN-Blocks-CSV.csv` accepts a GeoLite2-ASN-compatible CSV, while the prepared `asn-ranges.tsv` is a sorted IPv4 `start_ip<TAB>end_ip<TAB>asn<TAB>org` file resolved by binary search. The JSONL dataset has one record per opinion, for example `{"scope":"ip","value":"203.0.113.7","score":90,"source":"example-feed","categories":["scanner"],"as_of":"2026-08-01"}`. `scope` is `ip`, `cidr`, or `asn`; scores are integer values from 0 through 100, categories default to an empty list, and ASN values can be strings or numbers.
+`explain --show-source-ips` can join the private IP groups to frozen local datasets without any HTTP request or external API call. `shenron reputation update` can prepare public reputation and ASN inputs once; when `<data-dir>/reputation.jsonl` and/or `<data-dir>/asn-ranges.tsv` exist, `explain` automatically uses them unless an explicit `--reputation-dataset` or `--asn-dataset` path overrides them. The data directory is `SHENRON_DATA_DIR`, then `$XDG_DATA_HOME/shenron`, then `~/.local/share/shenron`. Explicit datasets also remain supported: `--asn-dataset ./GeoLite2-ASN-Blocks-CSV.csv` accepts a GeoLite2-ASN-compatible CSV, while the prepared `asn-ranges.tsv` is a sorted IPv4 `start_ip<TAB>end_ip<TAB>asn<TAB>org` file resolved by binary search. The JSONL dataset has one record per opinion, for example `{"scope":"ip","value":"203.0.113.7","score":90,"source":"example-feed","categories":["scanner"],"as_of":"2026-08-01"}`. `scope` is `ip`, `cidr`, or `asn`; scores are integer values from 0 through 100, categories default to an empty list, and ASN values can be strings or numbers.
 
 ```bash
 cargo run --bin shenron -- explain \

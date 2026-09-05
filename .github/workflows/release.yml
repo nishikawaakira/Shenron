@@ -1,7 +1,7 @@
 name: Release
 
-# Build the shenron and shenron-lab binaries for every supported platform
-# and attach them to the GitHub Release for a pushed version tag. The build
+# Build the single shenron binary for every supported platform and attach it
+# to the GitHub Release for a pushed version tag. The build
 # itself is offline once dependencies are fetched; it never contacts a target,
 # an AWS API, or any customer system. Cutting a release is manual: push a tag.
 #
@@ -64,12 +64,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
-      # Builds both binaries for the target (using cross when the target needs
-      # it), packages them into one archive with the license and READMEs, emits
+      # Builds the binary for the target (using cross when the target needs
+      # it), packages it into one archive with the license and READMEs, emits
       # a SHA-256 checksum, and uploads everything to the release created above.
       - uses: taiki-e/upload-rust-binary-action@v1
         with:
-          bin: shenron,shenron-lab
+          bin: shenron
           target: ${{ matrix.target }}
           archive: shenron-$tag-$target
           include: LICENSE,README.md,README.ja.md

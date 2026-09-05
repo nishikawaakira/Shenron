@@ -197,7 +197,7 @@ fn volumetric_concentration_profile_renders_every_supported_telemetry_format() {
 
 #[test]
 fn setup_reports_an_explicit_kev_skip_without_network_access() {
-    Command::cargo_bin("shenron-lab")
+    Command::cargo_bin("shenron")
         .unwrap()
         .args([
             "setup",
@@ -211,4 +211,23 @@ fn setup_reports_an_explicit_kev_skip_without_network_access() {
         .assert()
         .success()
         .stdout(contains("skipped: CISA KEV preparation (--skip-kev)"));
+}
+
+#[test]
+fn preparation_commands_are_top_level_on_the_single_binary() {
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .args(["setup", "--help"])
+        .assert()
+        .success();
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .args(["nuclei", "update", "--help"])
+        .assert()
+        .success();
+
+    let manifest = fs::read_to_string("Cargo.toml").unwrap();
+    assert_eq!(manifest.matches("[[bin]]").count(), 1);
+    assert!(manifest.contains("name = \"shenron\""));
+    assert!(!manifest.contains("name = \"shenron-lab\""));
 }

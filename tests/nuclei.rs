@@ -199,7 +199,7 @@ fn exposes_a_template_derived_request_matcher_view() {
 fn lab_matchers_lists_supported_template_literals_and_respects_frozen_report_gates() {
     let output_directory = tempdir().unwrap();
     let all_output = output_directory.path().join("all-matchers.json");
-    Command::cargo_bin("shenron-lab")
+    Command::cargo_bin("shenron")
         .unwrap()
         .args([
             "nuclei",
@@ -227,7 +227,7 @@ fn lab_matchers_lists_supported_template_literals_and_respects_frozen_report_gat
     assert_eq!(raw_matcher["path_distinctiveness"], "distinctive");
 
     let filtered_output = output_directory.path().join("filtered-matchers.json");
-    Command::cargo_bin("shenron-lab")
+    Command::cargo_bin("shenron")
         .unwrap()
         .args([
             "nuclei",
@@ -263,7 +263,7 @@ fn lab_update_checks_out_an_explicit_local_revision() {
     let report = directory.path().join("nuclei-report.json");
     let repository = format!("file://{}", source.display());
 
-    let mut command = Command::cargo_bin("shenron-lab").unwrap();
+    let mut command = Command::cargo_bin("shenron").unwrap();
     command.env("GIT_ALLOW_PROTOCOL", "file");
     command
         .args([
@@ -294,7 +294,7 @@ fn lab_update_uses_the_local_remote_default_branch_tip_when_unpinned() {
     let report = directory.path().join("nuclei-report.json");
     let repository = format!("file://{}", source.display());
 
-    let mut command = Command::cargo_bin("shenron-lab").unwrap();
+    let mut command = Command::cargo_bin("shenron").unwrap();
     command.env("GIT_ALLOW_PROTOCOL", "file");
     command
         .args([

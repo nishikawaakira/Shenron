@@ -30,6 +30,7 @@ use shenron::{
     },
     cti_export::{export_run as export_cti_run, CtiExportFormat, TlpLevel},
     event::{TelemetryCapabilities, TelemetryProfile, TrustedProxy, TrustedProxySet},
+    lab_cli::{run as run_lab_command, LabCommand},
     nuclei::{path_distinctiveness, PathDistinctiveness},
     observation_store::{update_observation_store, ObservationStoreLimits},
     paths::{
@@ -83,6 +84,10 @@ struct Cli {
 // entire production command would add dispatch indirection solely for enum size.
 #[allow(clippy::large_enum_variant)]
 enum Command {
+    /// Prepare, inspect, generate, and validate public or synthetic inputs.
+    /// Network access occurs only in explicitly invoked update/setup commands.
+    #[command(flatten)]
+    Lab(LabCommand),
     /// Report which user-provided rules are in the intentionally small MVP subset.
     ValidateRules {
         #[arg(long)]
@@ -700,6 +705,7 @@ impl OutputFormat {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
+        Command::Lab(command) => run_lab_command(command),
         Command::ValidateRules { rules } => validate(&rules),
         Command::Production(command) => match command {
             ProductionCommand::Inspect {
@@ -1486,13 +1492,13 @@ fn resolve_nuclei_inputs(
     let report = report.unwrap_or_else(default_nuclei_report);
     if templates_were_defaulted && !templates.is_dir() {
         anyhow::bail!(
-            "default Nuclei templates checkout is missing at {}; first run `shenron-lab nuclei update`",
+            "default Nuclei templates checkout is missing at {}; first run `shenron nuclei update`",
             templates.display()
         );
     }
     if report_was_defaulted && !report.is_file() {
         anyhow::bail!(
-            "default frozen Nuclei report is missing at {}; first run `shenron-lab nuclei update`",
+            "default frozen Nuclei report is missing at {}; first run `shenron nuclei update`",
             report.display()
         );
     }
@@ -2040,7 +2046,7 @@ fn print_hunt(report: &SanitizedHuntReport, sanitized_path: &Path) {
         );
     } else {
         println!(
-            "\nSelf-declared bot range comparison: skipped (no frozen snapshot; run `shenron-lab bot-ranges update`). CVE and Sigma metrics are unaffected."
+            "\nSelf-declared bot range comparison: skipped (no frozen snapshot; run `shenron bot-ranges update`). CVE and Sigma metrics are unaffected."
         );
     }
     if !metrics.declared_observed_consistency.checks.is_empty() {

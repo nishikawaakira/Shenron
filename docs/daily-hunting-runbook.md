@@ -17,9 +17,9 @@ The companion driver is [`scripts/daily-hunt.sh`](../scripts/daily-hunt.sh).
 
 ## Prerequisites
 
-- The `shenron` and `shenron-lab` binaries.
+- The single `shenron` binary.
 - System `curl` only when the optional Slack notification is enabled.
-- `git` on the PATH — `shenron-lab setup` clones the public
+- `git` on the PATH — `shenron setup` clones the public
   `projectdiscovery/nuclei-templates` repository (a `--filter=blob:none
   --no-checkout` partial clone). **Why git is a good choice here:** it is
   near-universal in security-engineering environments, it lets you pin an exact
@@ -35,7 +35,7 @@ Split the work into an occasional **prepare** step and a frequent **hunt** step.
 ### Prepare (weekly, or when you deliberately refresh CTI)
 
 ```bash
-shenron-lab setup     # downloads Nuclei, CISA KEV, reputation, ASN, Sigma, bot-ranges
+shenron setup     # downloads Nuclei, CISA KEV, reputation, ASN, Sigma, bot-ranges
 ```
 
 **Why not daily:** CTI freshness matters, but changing the templates mid-window
