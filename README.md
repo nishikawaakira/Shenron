@@ -93,6 +93,38 @@ Defensive candidates can be built from private hunt findings, replayed locally, 
 
 Log-reading commands default to `--format auto`. Auto mode safely recognizes AWS WAF JSON and vhost-prefixed Apache Combined logs. Standard nginx and Apache Combined logs have the same shape, so Shenron does not guess between them: pass `--format nginx` or `--format apache`. The Apache mode accepts both standard and vhost-prefixed Combined lines; `--format apache-vhost` remains available when a vhost prefix must be required. See [telemetry capabilities](docs/telemetry-capabilities.md).
 
+## Commands
+
+Shenron is a **single binary**. Preparation commands download public
+intelligence; everything else is local analysis (offline unless you opt into the
+post-hunt Slack notification).
+
+| Command | Purpose |
+| --- | --- |
+| `setup` | Download and freeze all public CTI at once (Nuclei templates, CISA KEV, reputation, ASN, bundled Sigma pack, bot ranges) |
+| `nuclei update` / `kev` / `reputation update` / `bot-ranges update` | Refresh a single public input family |
+| `inspect` | Report which fields a log source actually contains, without emitting request values |
+| `hunt` | The single detection entry point — Nuclei CVE + Sigma in one pass. `--output <DIR>` writes the full private/sanitized artifacts; without `--output`, findings stream to stdout only. `--no-nuclei` runs Sigma-only with no setup; `--since`, `--baseline-latest`, `--report`, `--observation-store` shape a run |
+| `explain` | Triage a run's private findings by connection/client IP, ASN, or JA4 with behavior-priority scores, request sequences, and windowed rates |
+| `concentration` | Request-volume distribution without CTI; `--path` / `--path-prefix` / `--source-ip` focus |
+| `compare` | Diff two run directories (first-seen entities, elevated volume, newly observed CVEs) |
+| `candidate build` / `replay` / `compatibility` / `explain` / `export` | Turn a confirmed finding into a reviewed **COUNT-only** WAF rule |
+| `export` | Convert a run into a sanitized STIX 2.1 or MISP file for sharing (file-only, TLP-marked) |
+| `replay` / `ablation` / `count-hypotheses` | Coverage and detection-strategy measurement |
+| `validate-rules` | Report which of your Sigma rules fall in the supported subset |
+| `generate` / `validate` / `measure` / `minimum-telemetry` | Synthetic-corpus and validation tooling (development/research) |
+
+### Choosing a command
+
+- **Quick, no setup, findings on stdout** → `shenron hunt --input <logs> --format <fmt> --rules <dir> --no-nuclei`
+- **Full daily hunt + report + baseline diff** → `shenron hunt --input <log-dir> --since 24h --baseline-latest ./private-results --output ./private-results/hunt-<UTC> --report --lang ja`
+- **Investigate a run** → `shenron explain …` and `shenron concentration …`
+- **Ship a control** → `shenron candidate build → replay → export`
+- **Share results** → `shenron export` (sanitized STIX/MISP)
+
+The full daily procedure and the reasoning behind each step are in the
+[daily-hunting runbook](docs/daily-hunting-runbook.md).
+
 ## Prebuilt binaries
 
 Tagged releases ship one `shenron` binary for Linux

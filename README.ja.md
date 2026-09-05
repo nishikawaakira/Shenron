@@ -76,6 +76,38 @@ Shenron は、Web アクセスログを対象にした Rust 製の「受動的�
 - 防御候補（candidate）の作成、履歴での replay、バックエンド互換性の確認
 - COUNT 固定の AWS WAF JSON / Terraform ルール断片、または OSSEC 検知 XML の出力
 
+## コマンド一覧
+
+Shenron は**単一バイナリ**です。準備系コマンドだけが公開インテリジェンスを
+ダウンロードし、それ以外はローカル解析（post-hunt Slack 通知を明示的に有効化した
+場合を除きオフライン）です。
+
+| コマンド | 用途 |
+| --- | --- |
+| `setup` | 公開 CTI を一括でダウンロード・凍結（Nuclei テンプレ・CISA KEV・reputation・ASN・同梱 Sigma パック・bot レンジ） |
+| `nuclei update` / `kev` / `reputation update` / `bot-ranges update` | 特定の公開入力だけを個別更新 |
+| `inspect` | ログにどのフィールドが実在するかを確認（リクエスト値は出さない） |
+| `hunt` | 唯一の検知入口。Nuclei(CVE)＋Sigma を1パス。`--output <DIR>` で private/sanitized の全成果物、`--output` 無しなら findings を stdout のみ。`--no-nuclei` は setup 不要の Sigma のみ。`--since` / `--baseline-latest` / `--report` / `--observation-store` で運用を形作る |
+| `explain` | run の private findings を 接続元/クライアント IP・ASN・JA4 単位でトリアージ（挙動優先度スコア・リクエスト列・時間窓レート） |
+| `concentration` | CTI なしのリクエスト量分布。`--path` / `--path-prefix` / `--source-ip` でフォーカス |
+| `compare` | 2つの run ディレクトリを差分比較（first-seen・volume 上昇・新規 CVE） |
+| `candidate build` / `replay` / `compatibility` / `explain` / `export` | 確定した検出を、レビュー前提の **COUNT のみ** WAF ルールへ |
+| `export` | run を sanitized な STIX 2.1 / MISP ファイルに変換（ファイル出力のみ・TLP 付き） |
+| `replay` / `ablation` / `count-hypotheses` | カバレッジ・検知戦略の計測 |
+| `validate-rules` | 手持ちの Sigma ルールが対応サブセットに入るか確認 |
+| `generate` / `validate` / `measure` / `minimum-telemetry` | 合成コーパス・検証用ツール（開発/研究向け） |
+
+### 使い分け
+
+- **手早く・setup 不要・stdout に findings** → `shenron hunt --input <logs> --format <fmt> --rules <dir> --no-nuclei`
+- **日次のフル hunt＋レポート＋前回差分** → `shenron hunt --input <log-dir> --since 24h --baseline-latest ./private-results --output ./private-results/hunt-<UTC> --report --lang ja`
+- **run を深掘り** → `shenron explain …` / `shenron concentration …`
+- **防御ルールを出す** → `shenron candidate build → replay → export`
+- **結果を共有** → `shenron export`（sanitized な STIX/MISP）
+
+日次運用の手順と各ステップの理由は
+[日次ハンティング runbook](docs/daily-hunting-runbook.md) にあります。
+
 ## ビルド済みバイナリ
 
 タグ付きリリースでは、Linux（`x86_64`/`aarch64`、glibc および静的 musl）、macOS
