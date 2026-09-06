@@ -53,8 +53,12 @@ jobs:
             os: ubuntu-latest
           - target: aarch64-unknown-linux-musl
             os: ubuntu-latest
+          # Build both macOS targets on the Apple Silicon runner. The Intel
+          # macos-13 runners are effectively unschedulable (a job for one sat
+          # in the queue for 24h and was cancelled); macos-14 has the full
+          # cross toolchain and builds the x86_64 target fine.
           - target: x86_64-apple-darwin
-            os: macos-13
+            os: macos-14
           - target: aarch64-apple-darwin
             os: macos-14
           - target: x86_64-pc-windows-msvc
