@@ -39,7 +39,7 @@ use shenron::{
     },
     production::{
         ablation_with_optional_kev as production_ablation,
-        concentration_with_asn_and_rate_windows as production_concentration,
+        concentration_with_asn_rate_windows_and_query_keys as production_concentration,
         count_hypotheses_with_optional_kev as production_count_hypotheses,
         explain_private_findings,
         historical_replay_with_optional_kev as production_historical_replay,
@@ -1044,6 +1044,7 @@ fn main() -> Result<()> {
                     focus_prefix_lengths,
                     asn_database.as_ref(),
                     &rate_window_seconds,
+                    show_paths,
                 )?;
                 let private_path = output.join("request-concentration.json");
                 let private = (show_paths || show_source_ips || focus.is_some())
@@ -2240,6 +2241,17 @@ fn print_concentration(
             ));
         }
         lines.push(format!("  Peak / median requests per minute: {rate}"));
+        lines.push(format!(
+            "  Query shape: {}",
+            format_query_shape(
+                focus_summary.total_requests,
+                focus_summary.requests_with_query,
+                focus_summary.distinct_query_strings,
+                focus_summary.query_strings_beyond_tracking_cap,
+                focus_summary.distinct_query_keys,
+                focus_summary.query_keys_beyond_tracking_cap,
+            )
+        ));
         println!(
             "\n{header} (aggregate requests only; not a DoS/attack/abuse/compromise/attribution determination):\n{}\n  Observed peers may be CDN/LB/NAT/proxy addresses and are not attacker attribution.",
             lines.join("\n"),
@@ -2258,7 +2270,7 @@ fn print_concentration(
             println!("\nPrivate top request paths:");
             for item in private.paths.iter().take(display_limit(limit)) {
                 println!(
-                    "  {}\n    Requests: {} ({:.1}%)\n    Distinct source IPs: {}\n    Response status classes: {}\n    Response bytes: {}",
+                    "  {}\n    Requests: {} ({:.1}%)\n    Distinct source IPs: {}\n    Response status classes: {}\n    Response bytes: {}\n    Query shape: {}\n    Query keys (private; names only): {}",
                     terminal_safe(&item.uri_path),
                     item.summary.requests,
                     item.summary.request_share * 100.0,
@@ -2268,6 +2280,23 @@ fn print_concentration(
                         .response_bytes
                         .map(|value| value.to_string())
                         .unwrap_or_else(|| "unavailable for this telemetry profile".to_owned()),
+                    format_query_shape(
+                        item.summary.requests,
+                        item.summary.requests_with_query,
+                        item.summary.distinct_query_strings,
+                        item.summary.query_strings_beyond_tracking_cap,
+                        item.summary.distinct_query_keys,
+                        item.summary.query_keys_beyond_tracking_cap,
+                    ),
+                    if item.query_keys.is_empty() {
+                        "none".to_owned()
+                    } else {
+                        item.query_keys
+                            .iter()
+                            .map(|key| terminal_safe(key))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    },
                 );
             }
             if let Some(focus) = &private.focus {
@@ -2300,15 +2329,30 @@ fn print_concentration(
                         );
                     }
                 }
+                if !focus.query_keys.is_empty() {
+                    println!(
+                        "  Focus query keys (private; names only): {}",
+                        focus
+                            .query_keys
+                            .iter()
+                            .map(|key| terminal_safe(key))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    );
+                }
             }
+            println!(
+                "  Query-shape counts are request-volume context for human review, not a cache-evasion, DoS, attack, abuse, compromise, or attribution determination. Query strings and values are never output."
+            );
         }
         if show_source_ips {
             println!("\nPrivate top observed connection-peer IPs:");
             for item in private.source_ips.iter().take(display_limit(limit)) {
                 println!(
-                    "  {}\n    Requests: {}\n    Most-requested retained path: {}",
+                    "  {}\n    Requests: {}\n    Response status classes: {}\n    Most-requested retained path: {}",
                     terminal_safe(&item.source_ip),
                     item.requests,
+                    format_status_classes(&item.response_status_classes),
                     item.most_requested_uri_path
                         .as_deref()
                         .map(terminal_safe)
@@ -2339,9 +2383,10 @@ fn print_concentration(
                             "Requests to focus path"
                         };
                         println!(
-                            "  {}\n    {count_label}: {}",
+                            "  {}\n    {count_label}: {}\n    Response status classes: {}",
                             terminal_safe(&source.source_ip),
                             source.requests,
+                            format_status_classes(&source.response_status_classes),
                         );
                     }
                     if focus.sources.len() > display_limit(limit) {
@@ -2531,6 +2576,45 @@ fn format_status_classes(counts: &shenron::concentration::StatusClassCounts) -> 
     .map(|(label, count)| format!("{label}: {count}"))
     .collect::<Vec<_>>()
     .join(", ")
+}
+
+fn format_query_shape(
+    total_requests: u64,
+    requests_with_query: u64,
+    distinct_query_strings: usize,
+    query_strings_beyond_cap: u64,
+    distinct_query_keys: usize,
+    query_keys_beyond_cap: u64,
+) -> String {
+    let share = if total_requests == 0 {
+        0.0
+    } else {
+        requests_with_query as f64 / total_requests as f64 * 100.0
+    };
+    let cardinality = |retained: usize, beyond_cap: u64| {
+        if beyond_cap == 0 {
+            retained.to_string()
+        } else {
+            format!(
+                "at least {retained} (tracking cap reached; {beyond_cap} observations not admitted)"
+            )
+        }
+    };
+    let distinct_ratio = if total_requests == 0 {
+        0.0
+    } else {
+        distinct_query_strings as f64 / total_requests as f64
+    };
+    let distinct_ratio = if query_strings_beyond_cap == 0 {
+        format!("{distinct_ratio:.4}")
+    } else {
+        format!("at least {distinct_ratio:.4} (retained lower bound)")
+    };
+    format!(
+        "requests with query: {requests_with_query} ({share:.1}%); distinct query strings: {}; distinct query strings / requests: {distinct_ratio}; distinct query keys: {}",
+        cardinality(distinct_query_strings, query_strings_beyond_cap),
+        cardinality(distinct_query_keys, query_keys_beyond_cap),
+    )
 }
 
 fn print_request_concentration_summary(

@@ -25,6 +25,12 @@ pub const DEFAULT_MAX_FOCUS_SOURCE_IPS: usize = 1_000_000;
 /// Separate bounded tracking for the distinct URI paths retained inside a focus
 /// (the sub-paths under a path prefix, or the paths one source IP requested).
 pub const DEFAULT_MAX_FOCUS_PATHS: usize = 1_000_000;
+/// Exact distinct query-string tracking is bounded per retained path (and per
+/// explicit focus) because timestamp-, UUID-, or nonce-like values can make
+/// this cardinality grow with every request.
+pub const DEFAULT_MAX_QUERY_STRINGS_PER_PATH: usize = 100_000;
+/// Query-key names are private request metadata and use a separate bound.
+pub const DEFAULT_MAX_QUERY_KEYS_PER_PATH: usize = 10_000;
 /// Roughly 1.9 years of one-minute buckets. Both global and focus timelines
 /// stop admitting new minutes at this fixed cap and disclose omitted records.
 pub const DEFAULT_MAX_MINUTE_BUCKETS: usize = 1_000_000;
@@ -111,6 +117,8 @@ pub struct ConcentrationLimits {
     pub max_focus_paths: usize,
     pub max_source_path_pairs: usize,
     pub max_minute_buckets: usize,
+    pub max_query_strings_per_path: usize,
+    pub max_query_keys_per_path: usize,
 }
 
 impl Default for ConcentrationLimits {
@@ -122,11 +130,13 @@ impl Default for ConcentrationLimits {
             max_focus_paths: DEFAULT_MAX_FOCUS_PATHS,
             max_source_path_pairs: DEFAULT_MAX_TRACKED_SOURCE_PATH_PAIRS,
             max_minute_buckets: DEFAULT_MAX_MINUTE_BUCKETS,
+            max_query_strings_per_path: DEFAULT_MAX_QUERY_STRINGS_PER_PATH,
+            max_query_keys_per_path: DEFAULT_MAX_QUERY_KEYS_PER_PATH,
         }
     }
 }
 
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 pub struct StatusClassCounts {
     pub informational: u64,
     pub success: u64,
@@ -146,6 +156,26 @@ pub struct PathConcentrationSummary {
     pub response_status_classes: StatusClassCounts,
     /// `None` when the selected telemetry profile does not expose response bytes.
     pub response_bytes: Option<u64>,
+    /// Requests for this path that carried a query component, including an
+    /// explicitly empty query.
+    #[serde(default)]
+    pub requests_with_query: u64,
+    /// Exact retained query-string cardinality unless
+    /// `query_strings_beyond_tracking_cap` is non-zero. Query values are never
+    /// serialized into either private or sanitized artifacts.
+    #[serde(default)]
+    pub distinct_query_strings: usize,
+    /// Observations on previously unretained query strings after the fixed cap
+    /// was reached. This is an omission count, not an estimated cardinality.
+    #[serde(default)]
+    pub query_strings_beyond_tracking_cap: u64,
+    /// Exact retained query-key cardinality unless
+    /// `query_keys_beyond_tracking_cap` is non-zero.
+    #[serde(default)]
+    pub distinct_query_keys: usize,
+    /// Query-key observations not admitted after the fixed key-name cap.
+    #[serde(default)]
+    pub query_keys_beyond_tracking_cap: u64,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -193,6 +223,17 @@ pub struct SanitizedFocusSummary {
     /// or other private request value is included.
     #[serde(default)]
     pub request_rates: Vec<WindowedRequestRateSummary>,
+    #[serde(default)]
+    pub requests_with_query: u64,
+    /// Exact retained cardinality unless the disclosed cap count is non-zero.
+    #[serde(default)]
+    pub distinct_query_strings: usize,
+    #[serde(default)]
+    pub query_strings_beyond_tracking_cap: u64,
+    #[serde(default)]
+    pub distinct_query_keys: usize,
+    #[serde(default)]
+    pub query_keys_beyond_tracking_cap: u64,
 }
 
 fn exact_path_kind() -> String {
@@ -235,6 +276,10 @@ pub struct PrivatePathConcentration {
     pub uri_path: String,
     #[serde(flatten)]
     pub summary: PathConcentrationSummary,
+    /// Retained query-key names only. Full query strings and values are never
+    /// serialized. CLI display remains gated by `--show-paths`.
+    #[serde(default)]
+    pub query_keys: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -244,12 +289,18 @@ pub struct PrivateSourceConcentration {
     /// The exact most-requested retained path for this IP. It is unavailable
     /// when any of the IP's source/path pairs exceeded the pair cap.
     pub most_requested_uri_path: Option<String>,
+    /// Per-peer response outcomes. These are private observational counts, not
+    /// an attack, exploitation, compromise, or attribution determination.
+    #[serde(default)]
+    pub response_status_classes: StatusClassCounts,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct PrivateFocusSource {
     pub source_ip: String,
     pub requests: u64,
+    #[serde(default)]
+    pub response_status_classes: StatusClassCounts,
 }
 
 /// One retained URI path inside a focus, with its request count. For a
@@ -351,6 +402,22 @@ pub struct PrivateFocusSummary {
     /// Focus-path records in new minute buckets omitted after the fixed cap.
     #[serde(default)]
     pub minute_buckets_beyond_cap: u64,
+    #[serde(default)]
+    pub requests_with_query: u64,
+    /// Retained exact query cardinality when the cap count is zero. Full query
+    /// strings and values are never serialized.
+    #[serde(default)]
+    pub distinct_query_strings: usize,
+    #[serde(default)]
+    pub query_strings_beyond_tracking_cap: u64,
+    #[serde(default)]
+    pub distinct_query_keys: usize,
+    #[serde(default)]
+    pub query_keys_beyond_tracking_cap: u64,
+    /// Retained key names are private and displayed by the CLI only with
+    /// `--show-paths`. Query values are never stored here.
+    #[serde(default)]
+    pub query_keys: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -381,11 +448,22 @@ struct PathAccumulator {
     source_ips: BTreeSet<String>,
     status_classes: StatusClassCounts,
     response_bytes: u64,
+    query_shape: QueryShapeAccumulator,
 }
 
 #[derive(Debug, Default)]
 struct SourceAccumulator {
     requests: u64,
+    status_classes: StatusClassCounts,
+}
+
+#[derive(Debug, Default)]
+struct QueryShapeAccumulator {
+    requests_with_query: u64,
+    query_strings: BTreeSet<String>,
+    query_strings_beyond_tracking_cap: u64,
+    query_keys: BTreeSet<String>,
+    query_keys_beyond_tracking_cap: u64,
 }
 
 /// A one-pass bounded accumulator. Key admission follows first observation in
@@ -414,7 +492,7 @@ pub struct RequestConcentration {
     rate_buckets_beyond_cap: BTreeMap<u64, u64>,
     focus: Option<FocusSelector>,
     focus_total: u64,
-    focus_sources: BTreeMap<String, u64>,
+    focus_sources: BTreeMap<String, SourceAccumulator>,
     focus_paths: BTreeMap<String, u64>,
     focus_minute_buckets: BTreeMap<i64, u64>,
     focus_minute_buckets_beyond_cap: u64,
@@ -424,6 +502,7 @@ pub struct RequestConcentration {
     focus_status_classes: StatusClassCounts,
     focus_source_ips_beyond_cap: u64,
     focus_paths_beyond_cap: u64,
+    focus_query_shape: QueryShapeAccumulator,
 }
 
 impl RequestConcentration {
@@ -500,6 +579,7 @@ impl RequestConcentration {
             focus_status_classes: StatusClassCounts::default(),
             focus_source_ips_beyond_cap: 0,
             focus_paths_beyond_cap: 0,
+            focus_query_shape: QueryShapeAccumulator::default(),
         }
     }
 
@@ -521,7 +601,8 @@ impl RequestConcentration {
         let path = event.uri_path.as_deref();
         let source_ip = event.source_ip.as_deref();
         let path_tracked = path.is_some_and(|path| self.track_path(path, event));
-        let source_tracked = source_ip.is_some_and(|source_ip| self.track_source_ip(source_ip));
+        let source_tracked =
+            source_ip.is_some_and(|source_ip| self.track_source_ip(source_ip, event.status));
 
         if path.is_none() {
             self.requests_without_uri_path += 1;
@@ -587,6 +668,16 @@ impl RequestConcentration {
     }
 
     pub fn private_report(&self) -> PrivateRequestConcentrationReport {
+        self.private_report_with_query_keys(false)
+    }
+
+    /// Build the private artifact. Query-key names remain excluded by default
+    /// and are included only for the standalone CLI's explicit `--show-paths`
+    /// opt-in. Full query strings and values are never serialized.
+    pub fn private_report_with_query_keys(
+        &self,
+        include_query_keys: bool,
+    ) -> PrivateRequestConcentrationReport {
         PrivateRequestConcentrationReport {
             report_kind: "REQUEST_CONCENTRATION_PRIVATE".to_owned(),
             safety_note: "Private analyst artifact: URI paths and observed connection-peer IPs are included. Request-volume distribution is not a determination of a denial-of-service attempt, attack, abuse, compromise, or attacker identity.".to_owned(),
@@ -597,6 +688,11 @@ impl RequestConcentration {
                 .map(|(path, item)| PrivatePathConcentration {
                     uri_path: path.clone(),
                     summary: self.path_summary(item),
+                    query_keys: if include_query_keys {
+                        item.query_shape.query_keys.iter().cloned().collect()
+                    } else {
+                        Vec::new()
+                    },
                 })
                 .collect(),
             source_ips: self
@@ -606,9 +702,10 @@ impl RequestConcentration {
                     source_ip: source_ip.clone(),
                     requests: item.requests,
                     most_requested_uri_path: self.most_requested_path(source_ip),
+                    response_status_classes: item.status_classes.clone(),
                 })
                 .collect(),
-            focus: self.private_focus_summary(),
+            focus: self.private_focus_summary(include_query_keys),
             requests_per_minute_series: Self::minute_series(&self.minute_buckets),
             status_class_requests_per_minute_series: Self::status_minute_series(
                 &self.status_minute_buckets,
@@ -653,11 +750,23 @@ impl RequestConcentration {
             self.focus_observations_without_timestamp += 1;
         }
         record_status_class(&mut self.focus_status_classes, event.status);
+        Self::observe_query_shape(
+            &mut self.focus_query_shape,
+            event.uri_query.as_deref(),
+            self.limits.max_query_strings_per_path,
+            self.limits.max_query_keys_per_path,
+        );
         if let Some(source_ip) = source_ip {
-            if self.focus_sources.contains_key(source_ip)
-                || self.focus_sources.len() < self.limits.max_focus_source_ips
-            {
-                *self.focus_sources.entry(source_ip.to_owned()).or_default() += 1;
+            if let Some(item) = self.focus_sources.get_mut(source_ip) {
+                item.requests += 1;
+                record_status_class(&mut item.status_classes, event.status);
+            } else if self.focus_sources.len() < self.limits.max_focus_source_ips {
+                let mut item = SourceAccumulator {
+                    requests: 1,
+                    ..SourceAccumulator::default()
+                };
+                record_status_class(&mut item.status_classes, event.status);
+                self.focus_sources.insert(source_ip.to_owned(), item);
             } else {
                 self.focus_source_ips_beyond_cap += 1;
             }
@@ -690,20 +799,30 @@ impl RequestConcentration {
                     &self.focus_rate_buckets_beyond_cap,
                     self.focus_observations_without_timestamp,
                 ),
+                requests_with_query: self.focus_query_shape.requests_with_query,
+                distinct_query_strings: self.focus_query_shape.query_strings.len(),
+                query_strings_beyond_tracking_cap: self
+                    .focus_query_shape
+                    .query_strings_beyond_tracking_cap,
+                distinct_query_keys: self.focus_query_shape.query_keys.len(),
+                query_keys_beyond_tracking_cap: self
+                    .focus_query_shape
+                    .query_keys_beyond_tracking_cap,
             }
         })
     }
 
-    fn private_focus_summary(&self) -> Option<PrivateFocusSummary> {
+    fn private_focus_summary(&self, include_query_keys: bool) -> Option<PrivateFocusSummary> {
         self.focus.as_ref().map(|selector| {
             let (peak, median, _) = Self::request_rate_for(&self.focus_minute_buckets);
             let selector_display = selector.selector_display();
             let mut sources = self
                 .focus_sources
                 .iter()
-                .map(|(source_ip, requests)| PrivateFocusSource {
+                .map(|(source_ip, item)| PrivateFocusSource {
                     source_ip: source_ip.clone(),
-                    requests: *requests,
+                    requests: item.requests,
+                    response_status_classes: item.status_classes.clone(),
                 })
                 .collect::<Vec<_>>();
             sources.sort_by(|left, right| {
@@ -743,6 +862,20 @@ impl RequestConcentration {
                 asn: None,
                 requests_per_minute_series: Self::minute_series(&self.focus_minute_buckets),
                 minute_buckets_beyond_cap: self.focus_minute_buckets_beyond_cap,
+                requests_with_query: self.focus_query_shape.requests_with_query,
+                distinct_query_strings: self.focus_query_shape.query_strings.len(),
+                query_strings_beyond_tracking_cap: self
+                    .focus_query_shape
+                    .query_strings_beyond_tracking_cap,
+                distinct_query_keys: self.focus_query_shape.query_keys.len(),
+                query_keys_beyond_tracking_cap: self
+                    .focus_query_shape
+                    .query_keys_beyond_tracking_cap,
+                query_keys: if include_query_keys {
+                    self.focus_query_shape.query_keys.iter().cloned().collect()
+                } else {
+                    Vec::new()
+                },
             }
         })
     }
@@ -774,6 +907,8 @@ impl RequestConcentration {
     }
 
     fn track_path(&mut self, path: &str, event: &WebEvent) -> bool {
+        let max_query_strings = self.limits.max_query_strings_per_path;
+        let max_query_keys = self.limits.max_query_keys_per_path;
         let source_ip_is_tracked = event.source_ip.as_deref().is_some_and(|source_ip| {
             self.source_ips.contains_key(source_ip)
                 || self.source_ips.len() < self.limits.max_source_ips
@@ -793,6 +928,12 @@ impl RequestConcentration {
             if self.response_bytes_available {
                 item.response_bytes += event.response_bytes.unwrap_or(0);
             }
+            Self::observe_query_shape(
+                &mut item.query_shape,
+                event.uri_query.as_deref(),
+                max_query_strings,
+                max_query_keys,
+            );
             return true;
         }
         if self.paths.len() >= self.limits.max_paths {
@@ -814,21 +955,32 @@ impl RequestConcentration {
         if self.response_bytes_available {
             item.response_bytes += event.response_bytes.unwrap_or(0);
         }
+        Self::observe_query_shape(
+            &mut item.query_shape,
+            event.uri_query.as_deref(),
+            max_query_strings,
+            max_query_keys,
+        );
         self.paths.insert(path.to_owned(), item);
         true
     }
 
-    fn track_source_ip(&mut self, source_ip: &str) -> bool {
+    fn track_source_ip(&mut self, source_ip: &str, status: Option<u16>) -> bool {
         if let Some(item) = self.source_ips.get_mut(source_ip) {
             item.requests += 1;
+            record_status_class(&mut item.status_classes, status);
             return true;
         }
         if self.source_ips.len() >= self.limits.max_source_ips {
             self.source_ips_beyond_tracking_cap += 1;
             return false;
         }
-        self.source_ips
-            .insert(source_ip.to_owned(), SourceAccumulator { requests: 1 });
+        let mut item = SourceAccumulator {
+            requests: 1,
+            ..SourceAccumulator::default()
+        };
+        record_status_class(&mut item.status_classes, status);
+        self.source_ips.insert(source_ip.to_owned(), item);
         true
     }
 
@@ -867,6 +1019,40 @@ impl RequestConcentration {
             distinct_source_ips: item.source_ips.len(),
             response_status_classes: item.status_classes.clone(),
             response_bytes: self.response_bytes_available.then_some(item.response_bytes),
+            requests_with_query: item.query_shape.requests_with_query,
+            distinct_query_strings: item.query_shape.query_strings.len(),
+            query_strings_beyond_tracking_cap: item.query_shape.query_strings_beyond_tracking_cap,
+            distinct_query_keys: item.query_shape.query_keys.len(),
+            query_keys_beyond_tracking_cap: item.query_shape.query_keys_beyond_tracking_cap,
+        }
+    }
+
+    fn observe_query_shape(
+        shape: &mut QueryShapeAccumulator,
+        query: Option<&str>,
+        maximum_strings: usize,
+        maximum_keys: usize,
+    ) {
+        let Some(query) = query else {
+            return;
+        };
+        shape.requests_with_query += 1;
+        if !shape.query_strings.contains(query) {
+            if shape.query_strings.len() < maximum_strings {
+                shape.query_strings.insert(query.to_owned());
+            } else {
+                shape.query_strings_beyond_tracking_cap += 1;
+            }
+        }
+        for key in query_keys(query) {
+            if shape.query_keys.contains(key) {
+                continue;
+            }
+            if shape.query_keys.len() < maximum_keys {
+                shape.query_keys.insert(key.to_owned());
+            } else {
+                shape.query_keys_beyond_tracking_cap += 1;
+            }
         }
     }
 
@@ -1150,6 +1336,17 @@ pub fn add_focus_asn_groups(focus: &mut PrivateFocusSummary, resolver: &impl Asn
     });
 }
 
+/// Return literal query-key names in observation order. Shenron deliberately
+/// does not decode or interpret them: splitting on `&` and taking the bytes
+/// before the first `=` is a transparent request-shape measurement. Empty keys
+/// are ignored, and values are never returned or serialized.
+fn query_keys(query: &str) -> impl Iterator<Item = &str> {
+    query.split('&').filter_map(|component| {
+        let key = component.split_once('=').map_or(component, |(key, _)| key);
+        (!key.is_empty()).then_some(key)
+    })
+}
+
 fn record_status_class(counts: &mut StatusClassCounts, status: Option<u16>) {
     match status {
         Some(100..=199) => counts.informational += 1,
@@ -1212,6 +1409,16 @@ mod tests {
             log_source: LogSource::ApacheCombined,
             raw: String::new(),
         }
+    }
+
+    fn event_with_query(path: &str, source_ip: &str, query: Option<String>) -> WebEvent {
+        let mut event = event(Some(path), Some(source_ip), Some(0));
+        event.uri_query = query.clone();
+        event.uri = Some(match query {
+            Some(query) => format!("{path}?{query}"),
+            None => path.to_owned(),
+        });
+        event
     }
 
     #[test]
@@ -1431,6 +1638,8 @@ mod tests {
                 max_focus_paths: 1,
                 max_source_path_pairs: 1,
                 max_minute_buckets: 1,
+                max_query_strings_per_path: 1,
+                max_query_keys_per_path: 1,
             },
         );
         concentration.observe(&event(Some("/one"), Some("198.51.100.1"), Some(0)));
@@ -1477,6 +1686,8 @@ mod tests {
                 max_focus_paths: 10,
                 max_source_path_pairs: 1,
                 max_minute_buckets: 10,
+                max_query_strings_per_path: 10,
+                max_query_keys_per_path: 10,
             },
         );
         concentration.observe(&event(Some("/first"), Some("198.51.100.1"), Some(0)));
@@ -1562,6 +1773,8 @@ mod tests {
                 max_focus_paths: 1,
                 max_source_path_pairs: 10,
                 max_minute_buckets: 10,
+                max_query_strings_per_path: 10,
+                max_query_keys_per_path: 10,
             },
         );
         concentration.focus_on_path("/target");
@@ -1840,6 +2053,141 @@ mod tests {
         assert_eq!(
             rate.peak_to_median_ratio,
             summary.requests_per_minute.peak_to_median_ratio
+        );
+    }
+
+    #[test]
+    fn measures_reused_query_strings_and_keys_for_one_path_and_focus() {
+        let mut concentration = RequestConcentration::new(true);
+        concentration.focus_on_path("/asset");
+        for index in 0..10_000 {
+            concentration.observe(&event_with_query(
+                "/asset",
+                "198.51.100.1",
+                Some(format!("v={:03}", index % 1_000)),
+            ));
+        }
+
+        let summary = concentration.summary();
+        let top = summary.top_path.unwrap();
+        assert_eq!(top.requests, 10_000);
+        assert_eq!(top.request_share, 1.0);
+        assert_eq!(top.distinct_source_ips, 1);
+        assert_eq!(top.response_status_classes.client_error, 10_000);
+        assert_eq!(top.response_bytes, Some(100_000));
+        assert_eq!(top.requests_with_query, 10_000);
+        assert_eq!(top.distinct_query_strings, 1_000);
+        assert_eq!(top.distinct_query_keys, 1);
+        assert_eq!(top.query_strings_beyond_tracking_cap, 0);
+        let focus = summary.focus.unwrap();
+        assert_eq!(focus.requests_with_query, 10_000);
+        assert_eq!(focus.distinct_query_strings, 1_000);
+        assert_eq!(focus.distinct_query_keys, 1);
+        assert_eq!(
+            concentration.private_report_with_query_keys(true).paths[0].query_keys,
+            vec!["v"]
+        );
+    }
+
+    #[test]
+    fn measures_unique_or_absent_queries_without_dividing_by_zero() {
+        let mut unique = RequestConcentration::new(true);
+        for index in 0..100 {
+            unique.observe(&event_with_query(
+                "/unique",
+                "198.51.100.2",
+                Some(format!("nonce={index}")),
+            ));
+        }
+        let unique = unique.summary().top_path.unwrap();
+        assert_eq!(unique.distinct_query_strings as u64, unique.requests);
+
+        let mut absent = RequestConcentration::new(true);
+        absent.observe(&event_with_query("/plain", "198.51.100.3", None));
+        let absent = absent.summary().top_path.unwrap();
+        assert_eq!(absent.requests_with_query, 0);
+        assert_eq!(absent.distinct_query_strings, 0);
+        assert_eq!(absent.distinct_query_keys, 0);
+        assert_eq!(
+            absent.requests_with_query as f64 / absent.requests as f64,
+            0.0
+        );
+
+        let empty = RequestConcentration::new(true).summary();
+        assert_eq!(empty.total_requests, 0);
+        assert!(empty.top_path.is_none());
+    }
+
+    #[test]
+    fn query_tracking_caps_are_disclosed_without_serializing_query_values() {
+        let mut concentration = RequestConcentration::with_limits(
+            true,
+            ConcentrationLimits {
+                max_query_strings_per_path: 2,
+                max_query_keys_per_path: 1,
+                ..ConcentrationLimits::default()
+            },
+        );
+        concentration.focus_on_path("/private-query");
+        for query in [
+            "first=secret-one",
+            "second=secret-two",
+            "third=secret-three",
+        ] {
+            concentration.observe(&event_with_query(
+                "/private-query",
+                "203.0.113.8",
+                Some(query.to_owned()),
+            ));
+        }
+        let summary = concentration.summary();
+        let top = summary.top_path.as_ref().unwrap();
+        assert_eq!(top.distinct_query_strings, 2);
+        assert_eq!(top.query_strings_beyond_tracking_cap, 1);
+        assert_eq!(top.distinct_query_keys, 1);
+        assert_eq!(top.query_keys_beyond_tracking_cap, 2);
+
+        let sanitized = serde_json::to_string(&summary).unwrap();
+        let private = serde_json::to_string(&concentration.private_report()).unwrap();
+        let opted_in =
+            serde_json::to_string(&concentration.private_report_with_query_keys(true)).unwrap();
+        for value in [
+            "secret-one",
+            "secret-two",
+            "secret-three",
+            "first=",
+            "second=",
+        ] {
+            assert!(!sanitized.contains(value));
+            assert!(!private.contains(value));
+            assert!(!opted_in.contains(value));
+        }
+        assert!(!sanitized.contains("first"));
+        assert!(!private.contains("first"));
+        assert!(opted_in.contains("first"));
+    }
+
+    #[test]
+    fn records_status_classes_for_each_private_observed_peer() {
+        let mut concentration = RequestConcentration::new(true);
+        concentration.focus_on_path("/status");
+        for status in [Some(101), Some(204), Some(302), Some(404), Some(503), None] {
+            let mut request = event(Some("/status"), Some("198.51.100.9"), Some(0));
+            request.status = status;
+            concentration.observe(&request);
+        }
+        let private = concentration.private_report();
+        let source = &private.source_ips[0];
+        assert_eq!(source.requests, 6);
+        assert_eq!(source.response_status_classes.informational, 1);
+        assert_eq!(source.response_status_classes.success, 1);
+        assert_eq!(source.response_status_classes.redirection, 1);
+        assert_eq!(source.response_status_classes.client_error, 1);
+        assert_eq!(source.response_status_classes.server_error, 1);
+        assert_eq!(source.response_status_classes.unavailable, 1);
+        assert_eq!(
+            private.focus.unwrap().sources[0].response_status_classes,
+            source.response_status_classes
         );
     }
 }

@@ -1332,6 +1332,34 @@ pub fn concentration_with_asn_and_rate_windows(
     asn_database: Option<&AsnDatabase>,
     rate_window_seconds: &[u64],
 ) -> anyhow::Result<SanitizedConcentrationReport> {
+    concentration_with_asn_rate_windows_and_query_keys(
+        input,
+        output,
+        telemetry_profile,
+        time_range,
+        focus,
+        focus_prefix_lengths,
+        asn_database,
+        rate_window_seconds,
+        false,
+    )
+}
+
+/// Standalone concentration variant that can explicitly retain private query
+/// key names when the CLI's `--show-paths` privacy gate is enabled. Query
+/// strings and values are never written. Hunt uses the default gated-off path.
+#[allow(clippy::too_many_arguments)]
+pub fn concentration_with_asn_rate_windows_and_query_keys(
+    input: &Path,
+    output: &Path,
+    telemetry_profile: TelemetryProfile,
+    time_range: HuntTimeRange,
+    focus: Option<FocusSelector>,
+    focus_prefix_lengths: FocusPrefixLengths,
+    asn_database: Option<&AsnDatabase>,
+    rate_window_seconds: &[u64],
+    include_private_query_keys: bool,
+) -> anyhow::Result<SanitizedConcentrationReport> {
     time_range.validate()?;
     ensure_separate_output(input, output)?;
     let files = input_files(input, telemetry_profile)?;
@@ -1386,7 +1414,7 @@ pub fn concentration_with_asn_and_rate_windows(
         })?;
     }
     report.request_concentration = accumulator.summary();
-    let mut private_report = accumulator.private_report();
+    let mut private_report = accumulator.private_report_with_query_keys(include_private_query_keys);
     if let Some(focus) = private_report.focus.as_mut() {
         add_focus_prefix_groups(focus, focus_prefix_lengths);
         if let Some(asn_database) = asn_database {

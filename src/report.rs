@@ -13,9 +13,9 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::concentration::{
-    MinuteRequestCount, PrivateFocusPath, PrivateFocusPrefixGroup, PrivateFocusSource,
-    PrivateRequestConcentrationReport, PrivateSourceConcentration, StatusClassCounts,
-    StatusClassMinuteCount,
+    MinuteRequestCount, PathConcentrationSummary, PrivateFocusPath, PrivateFocusPrefixGroup,
+    PrivateFocusSource, PrivateFocusSummary, PrivateRequestConcentrationReport,
+    PrivateSourceConcentration, StatusClassCounts, StatusClassMinuteCount,
 };
 
 pub const PRIVATE_REPORT_WARNING: &str =
@@ -102,6 +102,8 @@ struct Labels {
     top_request_paths: &'static str,
     top_peers: &'static str,
     top_observed_peers: &'static str,
+    peer_status_classes: &'static str,
+    peer_status_note: &'static str,
     requests_per_minute: &'static str,
     global_timeline: &'static str,
     status_requests_per_minute: &'static str,
@@ -155,6 +157,12 @@ struct Labels {
     status: &'static str,
     other: &'static str,
     status_unavailable: &'static str,
+    query_shape: &'static str,
+    query_shape_note: &'static str,
+    requests_with_query: &'static str,
+    distinct_query_strings: &'static str,
+    distinct_query_ratio: &'static str,
+    distinct_query_keys: &'static str,
     cap_disclosure: &'static str,
     cap_not_admitted: &'static str,
     paths: &'static str,
@@ -217,6 +225,8 @@ const EN_LABELS: Labels = Labels {
     top_request_paths: "Top request paths",
     top_peers: "Top observed connection peers",
     top_observed_peers: "Top observed connection peers",
+    peer_status_classes: "HTTP status classes by observed connection peer",
+    peer_status_note: "These are response-status counts per observed connection peer. Status outcomes and their distribution are not a determination of a denial-of-service attempt, attack, exploitation, abuse, compromise, or attacker identity; a peer may be a CDN, load balancer, NAT, or proxy.",
     requests_per_minute: "Requests per minute",
     global_timeline: "Global request timeline",
     status_requests_per_minute: "Requests per minute by HTTP status class",
@@ -270,6 +280,12 @@ const EN_LABELS: Labels = Labels {
     status: "status",
     other: "other",
     status_unavailable: "unavailable",
+    query_shape: "Query shape",
+    query_shape_note: "These are query-shape counts for one URI path. High query use or cardinality can have legitimate causes and is not a determination of cache evasion, a denial-of-service attempt, attack, abuse, or attacker identity. Query strings and values are never included.",
+    requests_with_query: "requests with query",
+    distinct_query_strings: "distinct query strings",
+    distinct_query_ratio: "distinct query strings / requests",
+    distinct_query_keys: "distinct query keys",
     cap_disclosure: "Tracking cap disclosure",
     cap_not_admitted: "were not admitted.",
     paths: "paths",
@@ -332,6 +348,8 @@ const JA_LABELS: Labels = Labels {
     top_request_paths: "上位リクエストパス",
     top_peers: "上位の観測接続ピア",
     top_observed_peers: "上位の観測接続ピア",
+    peer_status_classes: "観測接続ピアごとの HTTP ステータスクラス",
+    peer_status_note: "これは観測接続ピアごとの応答ステータス件数です。ステータス結果や分布は DoS・攻撃・悪用・侵害・攻撃者特定の判定ではありません。接続ピアは CDN・ロードバランサ・NAT・プロキシの場合があります。",
     requests_per_minute: "1分ごとのリクエスト数",
     global_timeline: "全体リクエスト時系列",
     status_requests_per_minute: "HTTP ステータスクラス別 1分ごとのリクエスト数",
@@ -385,6 +403,12 @@ const JA_LABELS: Labels = Labels {
     status: "ステータス",
     other: "その他",
     status_unavailable: "利用不可",
+    query_shape: "クエリ形状",
+    query_shape_note: "これは URI パスごとのクエリ形状件数です。クエリ付与率や種類数が多いことには正当な原因もあり、キャッシュ回避・DoS・攻撃・悪用・攻撃者特定の判定ではありません。クエリ文字列と値は含みません。",
+    requests_with_query: "クエリ付きリクエスト",
+    distinct_query_strings: "異なるクエリ文字列",
+    distinct_query_ratio: "異なるクエリ文字列 / リクエスト",
+    distinct_query_keys: "異なるクエリキー",
     cap_disclosure: "追跡上限の開示",
     cap_not_admitted: "は保持対象に追加されませんでした。",
     paths: "パス",
@@ -579,7 +603,7 @@ pub fn render_report(
 
     let mut html = format!(
         "<!doctype html><html lang=\"{}\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>{}</title><style>\
-        :root{{color-scheme:dark;--bg:#0b1020;--panel:#151d31;--muted:#a8b3c7;--text:#f4f7fb;--accent:#66d9c2;--warn:#ffcf66;--danger:#ff6b78;--line:#33415f}}*{{box-sizing:border-box}}body{{margin:0;overflow-x:hidden;background:var(--bg);color:var(--text);font:14px/1.5 system-ui,sans-serif}}main{{max-width:1240px;margin:auto;padding:24px;min-width:0}}a{{color:var(--accent)}}.private{{background:#6b1320;border:2px solid var(--danger);padding:16px;font-size:18px;font-weight:800;overflow-wrap:anywhere;word-break:break-word}}.note,.unavailable,.cap{{color:var(--muted)}}.note{{border-left:3px solid var(--warn);padding-left:12px}}.priority{{border:2px solid var(--danger);box-shadow:0 0 0 2px #ff6b7826}}.priority h2{{color:#ff9aa4}}.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;min-width:0}}.card,section{{background:var(--panel);border:1px solid var(--line);border-radius:10px;min-width:0}}.card{{padding:14px;overflow:hidden}}.card span,.card b{{overflow-wrap:anywhere;word-break:break-word}}.card b{{display:block;font-size:24px}}.badge,.severity{{display:inline-block;padding:1px 7px;border:1px solid var(--warn);border-radius:999px;color:var(--warn);font-weight:700}}.severity-high{{border-color:#ff9a62;color:#ff9a62}}.severity-critical{{border-color:var(--danger);color:var(--danger)}}section{{margin-top:18px;padding:18px;overflow:hidden}}h1,h2,h3{{margin-top:0;overflow-wrap:anywhere;word-break:break-word}}.chart-scroll,.table-scroll{{max-width:100%;overflow:auto;max-height:70vh}}svg{{width:100%;height:auto;background:#10172a;border-radius:8px}}.chart-scroll svg{{display:block;min-width:1000px}}.bar{{fill:var(--accent)}}.axis{{stroke:var(--line);stroke-width:1}}.timeline{{fill:none;stroke:var(--accent);stroke-width:3}}.timeline-area{{fill:#66d9c226;stroke:none}}.timeline-dot{{fill:var(--accent)}}.status-line{{fill:none;stroke-width:2.5}}.status-line.s1xx{{stroke:#c084fc}}.status-line.s2xx{{stroke:#4ade80}}.status-line.s3xx{{stroke:#38bdf8}}.status-line.s4xx{{stroke:#facc15}}.status-line.s5xx{{stroke:#fb7185}}.status-key.s1xx{{fill:#c084fc}}.status-key.s2xx{{fill:#4ade80}}.status-key.s3xx{{fill:#38bdf8}}.status-key.s4xx{{fill:#facc15}}.status-key.s5xx{{fill:#fb7185}}.col{{cursor:crosshair}}.hit{{fill:transparent;pointer-events:all}}.col:hover .hit{{fill:#66d9c22e}}.tip{{visibility:hidden;pointer-events:none}}.col:hover .tip{{visibility:visible}}.tip-bg{{fill:#070b14;stroke:var(--accent);stroke-width:1}}.tip-label{{fill:#fff;font-weight:700}}svg text{{fill:var(--text);font:12px system-ui,sans-serif}}table{{width:100%;min-width:1000px;border-collapse:collapse}}th,td{{padding:9px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top;white-space:nowrap}}.score{{width:120px;background:#26334f;border-radius:9px;overflow:hidden}}.score span{{display:block;height:10px;background:var(--accent)}}code{{color:#b9f4e8;overflow-wrap:anywhere;word-break:break-word}}.small{{font-size:12px;color:var(--muted)}}</style></head><body><main>",
+        :root{{color-scheme:dark;--bg:#0b1020;--panel:#151d31;--muted:#a8b3c7;--text:#f4f7fb;--accent:#66d9c2;--warn:#ffcf66;--danger:#ff6b78;--line:#33415f}}*{{box-sizing:border-box}}body{{margin:0;overflow-x:hidden;background:var(--bg);color:var(--text);font:14px/1.5 system-ui,sans-serif}}main{{max-width:1240px;margin:auto;padding:24px;min-width:0}}a{{color:var(--accent)}}.private{{background:#6b1320;border:2px solid var(--danger);padding:16px;font-size:18px;font-weight:800;overflow-wrap:anywhere;word-break:break-word}}.note,.unavailable,.cap{{color:var(--muted)}}.note{{border-left:3px solid var(--warn);padding-left:12px}}.priority{{border:2px solid var(--danger);box-shadow:0 0 0 2px #ff6b7826}}.priority h2{{color:#ff9aa4}}.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;min-width:0}}.card,section{{background:var(--panel);border:1px solid var(--line);border-radius:10px;min-width:0}}.card{{padding:14px;overflow:hidden}}.card span,.card b{{overflow-wrap:anywhere;word-break:break-word}}.card b{{display:block;font-size:24px}}.badge,.severity{{display:inline-block;padding:1px 7px;border:1px solid var(--warn);border-radius:999px;color:var(--warn);font-weight:700}}.severity-high{{border-color:#ff9a62;color:#ff9a62}}.severity-critical{{border-color:var(--danger);color:var(--danger)}}section{{margin-top:18px;padding:18px;overflow:hidden}}h1,h2,h3{{margin-top:0;overflow-wrap:anywhere;word-break:break-word}}.chart-scroll,.table-scroll{{max-width:100%;overflow:auto;max-height:70vh}}svg{{width:100%;height:auto;background:#10172a;border-radius:8px}}.chart-scroll svg{{display:block;min-width:1000px}}.bar{{fill:var(--accent)}}.axis{{stroke:var(--line);stroke-width:1}}.timeline{{fill:none;stroke:var(--accent);stroke-width:3}}.timeline-area{{fill:#66d9c226;stroke:none}}.timeline-dot{{fill:var(--accent)}}.status-line{{fill:none;stroke-width:2.5}}.status-line.s1xx{{stroke:#c084fc}}.status-line.s2xx{{stroke:#4ade80}}.status-line.s3xx{{stroke:#38bdf8}}.status-line.s4xx{{stroke:#facc15}}.status-line.s5xx{{stroke:#fb7185}}.status-key.s1xx,.status-fill.s1xx{{fill:#c084fc}}.status-key.s2xx,.status-fill.s2xx{{fill:#4ade80}}.status-key.s3xx,.status-fill.s3xx{{fill:#38bdf8}}.status-key.s4xx,.status-fill.s4xx{{fill:#facc15}}.status-key.s5xx,.status-fill.s5xx{{fill:#fb7185}}.status-key.sother,.status-fill.sother{{fill:#94a3b8}}.status-key.sunavailable,.status-fill.sunavailable{{fill:#475569}}.col{{cursor:crosshair}}.hit{{fill:transparent;pointer-events:all}}.col:hover .hit{{fill:#66d9c22e}}.tip{{visibility:hidden;pointer-events:none}}.col:hover .tip{{visibility:visible}}.tip-bg{{fill:#070b14;stroke:var(--accent);stroke-width:1}}.tip-label{{fill:#fff;font-weight:700}}svg text{{fill:var(--text);font:12px system-ui,sans-serif}}table{{width:100%;min-width:1000px;border-collapse:collapse}}th,td{{padding:9px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top;white-space:nowrap}}.score{{width:120px;background:#26334f;border-radius:9px;overflow:hidden}}.score span{{display:block;height:10px;background:var(--accent)}}code{{color:#b9f4e8;overflow-wrap:anywhere;word-break:break-word}}.small{{font-size:12px;color:var(--muted)}}</style></head><body><main>",
         language.html_lang(),
         html_escape(labels.title),
     );
@@ -828,11 +852,12 @@ fn render_concentration(
             label: path.uri_path.as_str(),
             value: path.summary.requests,
             details: format!(
-                "{:.1}% · {} {} · {}",
+                "{:.1}% · {} {} · {} · {}",
                 path.summary.request_share * 100.0,
                 group_thousands(path.summary.distinct_source_ips as u64),
                 labels.retained_peers,
                 status_details(&path.summary.response_status_classes, language),
+                query_shape_details(&path.summary, language),
             ),
         })
         .collect::<Vec<_>>();
@@ -844,6 +869,10 @@ fn render_concentration(
         labels.paths,
         language,
     );
+    html.push_str(&format!(
+        "<p class=\"note\">{}</p>",
+        html_escape(labels.query_shape_note)
+    ));
 
     html.push_str(&format!("<h3>{}</h3>", html_escape(labels.top_peers)));
     let source_rows = source_rows(&concentration.source_ips, limit, language);
@@ -859,6 +888,17 @@ fn render_concentration(
         labels.peer_addresses,
         language,
     );
+    let status_rows = source_status_rows(&concentration.source_ips, limit);
+    html.push_str(&format!(
+        "<h3>{}</h3><p class=\"note\">{}</p>",
+        html_escape(labels.peer_status_classes),
+        html_escape(labels.peer_status_note),
+    ));
+    html.push_str(&status_class_bar_chart(
+        labels.peer_status_classes,
+        &status_rows,
+        language,
+    ));
 
     html.push_str(&format!(
         "<h3>{}</h3>",
@@ -915,6 +955,12 @@ fn render_concentration(
                 focus.distinct_source_ips as u64,
             )),
         ));
+        html.push_str(&format!(
+            "<p>{}: {}</p><p class=\"note\">{}</p>",
+            html_escape(labels.query_shape),
+            html_escape(&focus_query_shape_details(focus, language)),
+            html_escape(labels.query_shape_note),
+        ));
 
         // Sub-paths of a prefix focus, or the paths one source IP requested.
         if !focus.paths.is_empty() {
@@ -966,6 +1012,17 @@ fn render_concentration(
             let rows = focus_source_rows(&focus.sources, limit, language);
             html.push_str(&bar_chart(peer_chart, &rows, language));
             omitted(html, focus.sources.len(), rows.len(), peer_label, language);
+            let status_rows = focus_source_status_rows(&focus.sources, limit);
+            html.push_str(&format!(
+                "<h3>{}</h3><p class=\"note\">{}</p>",
+                html_escape(labels.peer_status_classes),
+                html_escape(labels.peer_status_note),
+            ));
+            html.push_str(&status_class_bar_chart(
+                labels.peer_status_classes,
+                &status_rows,
+                language,
+            ));
         }
 
         // Network-prefix groups apply only to a path or path-prefix focus.
@@ -1286,6 +1343,105 @@ struct BarRow<'a> {
     label: &'a str,
     value: u64,
     details: String,
+}
+
+struct StatusBarRow<'a> {
+    label: &'a str,
+    total: u64,
+    counts: &'a StatusClassCounts,
+}
+
+fn status_class_bar_chart(
+    title: &str,
+    rows: &[StatusBarRow<'_>],
+    language: ReportLanguage,
+) -> String {
+    if rows.is_empty() {
+        return format!(
+            "<p class=\"unavailable\">{}</p>",
+            html_escape(language.labels().unavailable)
+        );
+    }
+    let labels = language.labels();
+    let maximum = rows.iter().map(|row| row.total).max().unwrap_or(1).max(1);
+    let label_column = rows
+        .iter()
+        .map(|row| {
+            row.label
+                .chars()
+                .count()
+                .saturating_mul(7)
+                .saturating_add(16)
+        })
+        .max()
+        .unwrap_or(300)
+        .clamp(300, 4_000);
+    let chart_width = label_column + 700;
+    let height = rows.len() * 42 + 52;
+    let legend = [
+        ("s1xx", "1xx"),
+        ("s2xx", "2xx"),
+        ("s3xx", "3xx"),
+        ("s4xx", "4xx"),
+        ("s5xx", "5xx"),
+        ("sother", labels.other),
+        ("sunavailable", labels.status_unavailable),
+    ];
+    let mut svg = format!(
+        "<div class=\"chart-scroll\"><svg width=\"{chart_width}\" height=\"{height}\" viewBox=\"0 0 {chart_width} {height}\" role=\"img\" aria-label=\"{}\">",
+        html_escape(title),
+    );
+    for (index, (class, label)) in legend.iter().enumerate() {
+        let x = 8 + index * 125;
+        svg.push_str(&format!(
+            "<rect class=\"status-key {class}\" x=\"{x}\" y=\"8\" width=\"12\" height=\"12\"></rect><text x=\"{}\" y=\"19\">{}</text>",
+            x + 18,
+            html_escape(label),
+        ));
+    }
+    for (index, row) in rows.iter().enumerate() {
+        let y = index * 42 + 40;
+        let segments = [
+            ("s1xx", row.counts.informational),
+            ("s2xx", row.counts.success),
+            ("s3xx", row.counts.redirection),
+            ("s4xx", row.counts.client_error),
+            ("s5xx", row.counts.server_error),
+            ("sother", row.counts.other),
+            ("sunavailable", row.counts.unavailable),
+        ];
+        let tip = format!(
+            "{} · {} · {}",
+            row.label,
+            group_thousands(row.total),
+            status_details(row.counts, language),
+        );
+        svg.push_str(&format!(
+            "<text x=\"8\" y=\"{}\">{}</text>",
+            y + 12,
+            html_escape(row.label),
+        ));
+        let mut x = label_column as f64;
+        for (class, count) in segments {
+            let width = count as f64 / maximum as f64 * 500.0;
+            if width > 0.0 {
+                svg.push_str(&format!(
+                    "<rect class=\"status-fill {class}\" x=\"{x:.2}\" y=\"{y}\" width=\"{width:.2}\" height=\"14\"><title>{}</title></rect>",
+                    html_escape(&tip),
+                ));
+            }
+            x += width;
+        }
+        svg.push_str(&format!(
+            "<text x=\"{}\" y=\"{}\">{} · {}</text>",
+            label_column + 510,
+            y + 12,
+            group_thousands(row.total),
+            html_escape(&status_details(row.counts, language)),
+        ));
+    }
+    svg.push_str("</svg></div>");
+    svg
 }
 
 fn bar_chart(title: &str, rows: &[BarRow<'_>], language: ReportLanguage) -> String {
@@ -1731,6 +1887,20 @@ fn source_rows<'a>(
         .collect()
 }
 
+fn source_status_rows(
+    sources: &[PrivateSourceConcentration],
+    limit: usize,
+) -> Vec<StatusBarRow<'_>> {
+    limited(sources, limit)
+        .iter()
+        .map(|source| StatusBarRow {
+            label: source.source_ip.as_str(),
+            total: source.requests,
+            counts: &source.response_status_classes,
+        })
+        .collect()
+}
+
 fn focus_source_rows<'a>(
     sources: &'a [PrivateFocusSource],
     limit: usize,
@@ -1742,6 +1912,17 @@ fn focus_source_rows<'a>(
             label: source.source_ip.as_str(),
             value: source.requests,
             details: language.labels().request_count_label.to_owned(),
+        })
+        .collect()
+}
+
+fn focus_source_status_rows(sources: &[PrivateFocusSource], limit: usize) -> Vec<StatusBarRow<'_>> {
+    limited(sources, limit)
+        .iter()
+        .map(|source| StatusBarRow {
+            label: source.source_ip.as_str(),
+            total: source.requests,
+            counts: &source.response_status_classes,
         })
         .collect()
 }
@@ -1833,6 +2014,92 @@ fn status_details(counts: &StatusClassCounts, language: ReportLanguage) -> Strin
         labels.status_unavailable,
         group_thousands(counts.unavailable),
     )
+}
+
+fn query_shape_details(summary: &PathConcentrationSummary, language: ReportLanguage) -> String {
+    query_shape_text(
+        summary.requests,
+        summary.requests_with_query,
+        summary.distinct_query_strings,
+        summary.query_strings_beyond_tracking_cap,
+        summary.distinct_query_keys,
+        summary.query_keys_beyond_tracking_cap,
+        language,
+    )
+}
+
+fn focus_query_shape_details(focus: &PrivateFocusSummary, language: ReportLanguage) -> String {
+    query_shape_text(
+        focus.total_requests,
+        focus.requests_with_query,
+        focus.distinct_query_strings,
+        focus.query_strings_beyond_tracking_cap,
+        focus.distinct_query_keys,
+        focus.query_keys_beyond_tracking_cap,
+        language,
+    )
+}
+
+fn query_shape_text(
+    total_requests: u64,
+    requests_with_query: u64,
+    distinct_query_strings: usize,
+    query_strings_beyond_cap: u64,
+    distinct_query_keys: usize,
+    query_keys_beyond_cap: u64,
+    language: ReportLanguage,
+) -> String {
+    let labels = language.labels();
+    let share = if total_requests == 0 {
+        0.0
+    } else {
+        requests_with_query as f64 / total_requests as f64 * 100.0
+    };
+    let strings = capped_cardinality(distinct_query_strings, query_strings_beyond_cap, language);
+    let keys = capped_cardinality(distinct_query_keys, query_keys_beyond_cap, language);
+    let distinct_ratio = if total_requests == 0 {
+        0.0
+    } else {
+        distinct_query_strings as f64 / total_requests as f64
+    };
+    let ratio = if query_strings_beyond_cap == 0 {
+        format!("{distinct_ratio:.4}")
+    } else {
+        match language {
+            ReportLanguage::En => format!("at least {distinct_ratio:.4} (retained lower bound)"),
+            ReportLanguage::Ja => format!("少なくとも {distinct_ratio:.4}（保持下限）"),
+        }
+    };
+    format!(
+        "{}: {} ({share:.1}%) · {}: {} · {}: {} · {}: {}",
+        labels.requests_with_query,
+        group_thousands(requests_with_query),
+        labels.distinct_query_strings,
+        strings,
+        labels.distinct_query_ratio,
+        ratio,
+        labels.distinct_query_keys,
+        keys,
+    )
+}
+
+fn capped_cardinality(retained: usize, beyond_cap: u64, language: ReportLanguage) -> String {
+    if beyond_cap == 0 {
+        group_thousands(retained as u64)
+    } else {
+        match language {
+            ReportLanguage::En => format!(
+                "at least {} (tracking cap reached; {} observations not admitted)",
+                group_thousands(retained as u64),
+                group_thousands(beyond_cap),
+            ),
+            ReportLanguage::Ja => format!(
+                "少なくとも {}（追跡上限到達、{} 観測を保持対象外）",
+                group_thousands(retained as u64),
+                group_thousands(beyond_cap),
+            ),
+        }
+    }
 }
 
 fn focus_summary(language: ReportLanguage, requests: u64, peers: u64) -> String {
@@ -2025,6 +2292,11 @@ mod tests {
                     peak_requests_per_minute: Some(2),
                     median_requests_per_minute: Some(1.5),
                     request_rates: Vec::new(),
+                    requests_with_query: 0,
+                    distinct_query_strings: 0,
+                    query_strings_beyond_tracking_cap: 0,
+                    distinct_query_keys: 0,
+                    query_keys_beyond_tracking_cap: 0,
                 }),
             },
             paths: vec![PrivatePathConcentration {
@@ -2035,12 +2307,19 @@ mod tests {
                     distinct_source_ips: 1,
                     response_status_classes: status.clone(),
                     response_bytes: Some(30),
+                    requests_with_query: 0,
+                    distinct_query_strings: 0,
+                    query_strings_beyond_tracking_cap: 0,
+                    distinct_query_keys: 0,
+                    query_keys_beyond_tracking_cap: 0,
                 },
+                query_keys: Vec::new(),
             }],
             source_ips: vec![PrivateSourceConcentration {
                 source_ip: "198.51.100.1".to_owned(),
                 requests: 3,
                 most_requested_uri_path: Some(path.to_owned()),
+                response_status_classes: status.clone(),
             }],
             focus: Some(PrivateFocusSummary {
                 focus_kind: "exact-path".to_owned(),
@@ -2053,10 +2332,11 @@ mod tests {
                 paths_beyond_cap: 0,
                 peak_requests_per_minute: Some(2),
                 median_requests_per_minute: Some(1.5),
-                response_status_classes: status,
+                response_status_classes: status.clone(),
                 sources: vec![PrivateFocusSource {
                     source_ip: "198.51.100.1".to_owned(),
                     requests: 3,
+                    response_status_classes: status.clone(),
                 }],
                 network_prefix_groups: vec![PrivateFocusPrefixGroup {
                     network_prefix: "198.51.100.0/24".to_owned(),
@@ -2076,6 +2356,12 @@ mod tests {
                     },
                 ],
                 minute_buckets_beyond_cap: 0,
+                requests_with_query: 0,
+                distinct_query_strings: 0,
+                query_strings_beyond_tracking_cap: 0,
+                distinct_query_keys: 0,
+                query_keys_beyond_tracking_cap: 0,
+                query_keys: Vec::new(),
             }),
             requests_per_minute_series: vec![
                 MinuteRequestCount {
@@ -2537,6 +2823,42 @@ mod tests {
     }
 
     #[test]
+    fn observed_peer_status_chart_stacks_every_status_class_without_inference() {
+        let counts = StatusClassCounts {
+            informational: 1,
+            success: 2,
+            redirection: 3,
+            client_error: 4,
+            server_error: 5,
+            other: 6,
+            unavailable: 7,
+        };
+        let rows = [StatusBarRow {
+            label: "198.51.100.1<peer>",
+            total: 28,
+            counts: &counts,
+        }];
+        let html = status_class_bar_chart("status", &rows, ReportLanguage::En);
+        for class in ["s1xx", "s2xx", "s3xx", "s4xx", "s5xx"] {
+            assert!(html.contains(&format!("status-fill {class}")));
+        }
+        assert!(html.contains("198.51.100.1&lt;peer&gt;"));
+        assert!(html.contains("status 1xx:1 2xx:2 3xx:3 4xx:4 5xx:5"));
+        assert_external_reference_policy(&html);
+    }
+
+    #[test]
+    fn query_shape_rendering_discloses_caps_without_query_values() {
+        let text = query_shape_text(10_000, 10_000, 1_000, 12, 1, 0, ReportLanguage::En);
+        assert!(text.contains("requests with query: 10,000 (100.0%)"));
+        assert!(text.contains(
+            "distinct query strings: at least 1,000 (tracking cap reached; 12 observations not admitted)"
+        ));
+        assert!(text.contains("distinct query keys: 1"));
+        assert!(!text.contains("v=secret"));
+    }
+
+    #[test]
     fn long_bar_labels_expand_inside_the_scroll_container() {
         let label = format!("/{}", "segment".repeat(40));
         let rows = [BarRow {
@@ -2593,10 +2915,12 @@ mod tests {
             PrivateFocusSource {
                 source_ip: "198.51.100.1".to_owned(),
                 requests: 5,
+                response_status_classes: StatusClassCounts::default(),
             },
             PrivateFocusSource {
                 source_ip: "198.51.100.2".to_owned(),
                 requests: 3,
+                response_status_classes: StatusClassCounts::default(),
             },
         ];
         let artifacts = ReportArtifacts {

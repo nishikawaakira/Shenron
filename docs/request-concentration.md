@@ -30,6 +30,49 @@ generic rule matches a request. Hunt writes the private concentration artifact
 alongside `private-findings.jsonl`; its sanitized concentration summary is
 embedded in `sanitized-research.json`.
 
+## Query-shape measurements per path
+
+Each retained path and each optional focus records three query-shape metrics in
+the existing streaming pass: `requests_with_query`,
+`distinct_query_strings`, and `distinct_query_keys`. The query attachment share
+is `requests_with_query / requests`; the distinct-string ratio is
+`distinct_query_strings / requests`. A ratio near 1.0 means that nearly every
+request carried a different literal query string, such as a timestamp, UUID, or
+nonce. In that shape, a cache or rate limit keyed on the full URL cannot reuse
+many entries. A much smaller ratio means the observed query value space was
+reused—for example, 1,000 retained strings over 761,978 requests leaves more
+opportunity for reuse. Neither ratio identifies why the shape occurred.
+
+Query strings and query values are never serialized into either the private or
+sanitized artifact. Sanitized output contains counts and ratios only. Retained
+literal query-key names are written to the private artifact and printed by the
+CLI only behind `--show-paths`; without that opt-in, both artifacts contain
+counts only because key names can themselves be sensitive. Hunt does not retain
+query-key names in its private artifact.
+Keys are measured literally before the first `=` in each `&`-separated
+component, without decoding or semantic interpretation.
+
+Exact query-string tracking is capped at 100,000 retained strings per path and
+per focus; key-name tracking is separately capped at 10,000. When a cap is
+reached, Shenron reports the retained cardinality as **at least** that value and
+discloses the number of subsequent observations that were not admitted. It
+does not estimate the missing cardinality and uses no approximate data
+structure.
+
+These are query-shape counts for one URI path. A high share of requests carrying
+a query, or a high ratio of distinct query strings to requests, can equally
+result from cache-control or asset-versioning parameters the site itself emits,
+analytics parameters, pagination, search, or an attempt to avoid a cache or a
+rate limit keyed on the full URL. This is a request-shape measurement for human
+review, not a determination of cache evasion, a denial-of-service attempt, an
+attack, abuse, or attacker identity.
+
+This context also matters when reviewing a defensive candidate. A path-only
+condition for `/.env`, for example, also matches `/.env?x=1`; review the query
+attachment and cardinality measurements before choosing whether a candidate
+needs path-only, query-aware, or other conditions. Shenron does not infer or
+label the appropriate condition from these counts.
+
 ## Focus (`--path`, `--path-prefix`, `--source-ip`)
 
 A focus narrows the private review to one selector kind. The three are mutually
@@ -198,10 +241,20 @@ and deterministic order, is not copied into sanitized output, and contains no
 raw path or IP values. Response status classes are observation context, not a
 determination of attack, exploitation, or compromise.
 
+The private artifact additionally records 1xx, 2xx, 3xx, 4xx, 5xx, other, and
+unavailable response-status counts for every retained observed connection peer
+and every retained focus peer. The HTML report renders the Top-N peer rows as a
+stacked status-class graph while preserving the ordinary per-IP request chart.
+Missing status is `unavailable`, never 2xx. Per-peer status distribution is
+response context only, not a determination of a denial-of-service attempt,
+attack, exploitation, abuse, compromise, or attacker identity; an observed peer
+may be a CDN, load balancer, NAT, or proxy.
+
 ## Bounded tracking and reproducibility
 
-The default exact key limits are 100,000 URI paths, 1,000,000 source IPs, and
-2,000,000 retained source/path pairs. New keys are admitted in input order until
+The default exact key limits are 100,000 URI paths, 1,000,000 source IPs,
+2,000,000 retained source/path pairs, 100,000 distinct query strings per path,
+and 10,000 distinct query keys per path. New keys are admitted in input order until
 a limit is reached; afterward, existing keys continue to receive exact counts
 while new-key observations are omitted from the detailed maps. Shenron reports
 `paths_beyond_tracking_cap`, `source_ips_beyond_tracking_cap`, and

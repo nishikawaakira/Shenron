@@ -193,6 +193,17 @@ normalized path. The path and peer values remain private in
 focus counts and rates. This is volume context only, never a DoS, attack,
 abuse, compromise, or attribution determination.
 
+The same pass records per-path and per-focus query-shape counts (requests with a
+query, retained distinct query strings, and retained distinct query keys)
+without serializing query strings or values. The standalone `concentration`
+command retains and prints query-key names only with `--show-paths`; hunt keeps
+counts only. Fixed tracking caps and omitted
+observations are disclosed. The private HTML report also renders Top-N observed
+peers as a stacked 1xx through 5xx status-class graph, with other and unavailable
+outcomes retained. These are request/response-shape measurements, not cache
+evasion, denial-of-service, attack, exploitation, compromise, or attribution
+determinations.
+
 Two related focuses build on the same private artifact. `--path-prefix /example`
 analyzes a path and everything under it (segment-boundary matching, so
 `/example` does not match `/examplex`); with `--show-paths` it lists the retained

@@ -63,6 +63,8 @@ Hunt can also label deterministic [declared-versus-observed consistency](docs/de
 
 `shenron concentration` measures bounded, aggregate request-volume distribution without CTI inputs and keeps paths/IPs in a separate private artifact. It is not a denial-of-service, attack, abuse, compromise, or attribution determination; see [request concentration](docs/request-concentration.md).
 
+Concentration also measures per-path query attachment and exact retained query/key cardinalities without outputting query strings or values. Its private HTML report shows a stacked 1xx–5xx response-status graph per Top-N observed peer; sanitized output retains only aggregate query counts and no peer IPs. These are request/response-shape measurements for review, not cache-evasion, DoS, attack, exploitation, compromise, or attribution classifications.
+
 It reports deterministic request-rate profiles for `1m`, `10m`, `1h`, and `1d` buckets simultaneously; `--rate-window` selects another set. `explain` likewise accepts repeated or comma-separated `--triage-window` values while keeping the windowed-burst score contribution fixed at five points.
 
 Private entity triage also reports bounded [ordered request-sequence](docs/request-sequences.md) timing with `--sequence-window`; this is review context and not a determination of automation, attack, abuse, or identity.

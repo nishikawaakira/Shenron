@@ -184,6 +184,87 @@ fn concentration_writes_private_detail_without_leaking_it_to_sanitized_or_defaul
 }
 
 #[test]
+fn concentration_keeps_query_values_private_and_gates_key_names_to_show_paths() {
+    let directory = tempdir().unwrap();
+    let input = directory.path().join("query-access.log");
+    fs::write(
+        &input,
+        concat!(
+            "198.51.100.10 - - [01/Jan/2026:00:00:00 +0000] \"GET /asset?version=secret-one HTTP/1.1\" 200 10 \"-\" \"fixture-agent\"\n",
+            "198.51.100.10 - - [01/Jan/2026:00:00:01 +0000] \"GET /asset?version=secret-two HTTP/1.1\" 304 0 \"-\" \"fixture-agent\"\n",
+            "198.51.100.11 - - [01/Jan/2026:00:00:02 +0000] \"GET /asset HTTP/1.1\" 404 10 \"-\" \"fixture-agent\"\n",
+        ),
+    )
+    .unwrap();
+
+    let output = directory.path().join("query-output");
+    let default = Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "concentration",
+            "--input",
+            input.to_str().unwrap(),
+            "--format",
+            "apache",
+            "--output",
+            output.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(default.status.success());
+    let default_stdout = String::from_utf8(default.stdout).unwrap();
+    assert!(!default_stdout.contains("version"));
+    assert!(!default_stdout.contains("secret-one"));
+
+    let sanitized = fs::read_to_string(output.join("sanitized-research.json")).unwrap();
+    let private = fs::read_to_string(output.join("request-concentration.json")).unwrap();
+    for artifact in [&sanitized, &private] {
+        assert!(!artifact.contains("version=secret-one"));
+        assert!(!artifact.contains("version=secret-two"));
+        assert!(!artifact.contains("secret-one"));
+        assert!(!artifact.contains("secret-two"));
+    }
+    assert!(!sanitized.contains("version"));
+    assert!(!sanitized.contains("198.51.100.10"));
+    assert!(!sanitized.contains("/asset"));
+    assert!(private.contains("\"query_keys\": []"));
+    assert!(!private.contains("\"version\""));
+    assert!(private.contains("\"requests_with_query\": 2"));
+
+    let show_output = directory.path().join("query-show-output");
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "concentration",
+            "--input",
+            input.to_str().unwrap(),
+            "--format",
+            "apache",
+            "--output",
+            show_output.to_str().unwrap(),
+            "--show-paths",
+        ])
+        .assert()
+        .success()
+        .stdout(contains("Query keys (private; names only): version"))
+        .stdout(contains("secret-one").not());
+    let opted_in_private =
+        fs::read_to_string(show_output.join("request-concentration.json")).unwrap();
+    assert!(opted_in_private.contains("\"version\""));
+    assert!(!opted_in_private.contains("secret-one"));
+
+    let private: shenron::concentration::PrivateRequestConcentrationReport =
+        serde_json::from_str(&private).unwrap();
+    let source = private
+        .source_ips
+        .iter()
+        .find(|source| source.source_ip == "198.51.100.10")
+        .unwrap();
+    assert_eq!(source.response_status_classes.success, 1);
+    assert_eq!(source.response_status_classes.redirection, 1);
+}
+
+#[test]
 fn concentration_artifacts_are_byte_stable_for_every_focus_shape() {
     use std::collections::BTreeSet;
 

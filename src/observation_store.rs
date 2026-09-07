@@ -419,6 +419,7 @@ mod tests {
                     source_ip: (*ip).to_owned(),
                     requests: 1,
                     most_requested_uri_path: None,
+                    response_status_classes: Default::default(),
                 })
                 .collect(),
             focus: None,

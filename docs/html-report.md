@@ -34,7 +34,8 @@ missing sections unavailable rather than estimating them:
   timeline, and aggregate minute-by-HTTP-status-class counts;
 - `triage-view.json` for the ranked private behavior-priority view.
 
-The report shows aggregate cards, Top-N path and peer-IP bars, global and
+The report shows aggregate cards, Top-N path and peer-IP bars, a stacked
+1xx/2xx/3xx/4xx/5xx response-status graph for each retained Top-N peer, global and
 focused-path request timelines, a five-line global timeline split into HTTP
 status classes 1xx through 5xx, focused-path network-prefix bars when present,
 the hunt triage table, and a sanitized aggregate row for each observed CVE. The
@@ -67,6 +68,16 @@ The series contains aggregate counts only and is stored only in the private
 `request-concentration.json`; it is not copied into sanitized output. HTTP
 response classes are context, not a determination of attack, exploitation, or
 compromise. Other or unavailable status values are not plotted.
+
+Path rows also display aggregate query-shape counts: requests carrying a query,
+retained distinct query strings, and retained distinct query keys. Query strings
+and values are never placed in the report. Cap-limited cardinalities are shown
+as lower bounds with the omitted-observation count, rather than as exact values.
+The per-peer status graph is private because it is keyed by observed peer IP;
+unlike the global timeline, it retains other and unavailable outcomes in the
+stack. Missing status is not treated as 2xx. These displays are request and
+response shape for human review, not determinations of cache evasion, denial of
+service, attack, exploitation, abuse, compromise, or attacker identity.
 
 For hunt runs, a prominent section appears immediately after the aggregate
 summary when the bundled `shenron-secret-config-file-probe` Sigma rule matched

@@ -654,7 +654,13 @@ mod tests {
                         distinct_source_ips: 0,
                         response_status_classes: StatusClassCounts::default(),
                         response_bytes: None,
+                        requests_with_query: 0,
+                        distinct_query_strings: 0,
+                        query_strings_beyond_tracking_cap: 0,
+                        distinct_query_keys: 0,
+                        query_keys_beyond_tracking_cap: 0,
                     },
+                    query_keys: Vec::new(),
                 })
                 .collect(),
             source_ips: sources
@@ -663,6 +669,7 @@ mod tests {
                     source_ip: ip.into(),
                     requests: n,
                     most_requested_uri_path: None,
+                    response_status_classes: StatusClassCounts::default(),
                 })
                 .collect(),
             focus: None,
