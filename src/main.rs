@@ -2032,7 +2032,7 @@ fn print_hunt(report: &SanitizedHuntReport, sanitized_path: &Path) {
             != 0
         {
             println!(
-                "  Private consistency observations beyond cap: {}",
+                "  Private mismatch observations beyond cap: {}",
                 metrics
                     .declared_observed_consistency
                     .private_observations_beyond_cap

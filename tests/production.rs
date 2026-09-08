@@ -534,6 +534,18 @@ fn hunt_compares_declared_bot_ua_with_frozen_ranges_without_changing_cve_metrics
         fs::read_to_string(with_snapshot.join("declared-observed-observations.json")).unwrap();
     assert!(private_consistency.contains("203.0.113.9"));
     assert!(private_consistency.contains("user-agent-operator"));
+    assert!(!private_consistency.contains("198.51.100.7"));
+    let private_consistency: serde_json::Value =
+        serde_json::from_str(&private_consistency).unwrap();
+    assert_eq!(private_consistency["checks"][0]["matches"], 2);
+    assert_eq!(private_consistency["checks"][0]["mismatches"], 1);
+    assert_eq!(
+        private_consistency["mismatch_observations"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
 
     let without_snapshot = directory.path().join("without-snapshot");
     Command::cargo_bin("shenron")
@@ -582,6 +594,18 @@ fn hunt_compares_declared_bot_ua_with_frozen_ranges_without_changing_cve_metrics
         bot_check["unavailable_reasons"]["reference_data_missing"],
         3
     );
+    let private_without_snapshot: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(without_snapshot.join("declared-observed-observations.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        private_without_snapshot["checks"][0]["unavailable_reasons"]["reference_data_missing"],
+        3
+    );
+    assert!(private_without_snapshot["mismatch_observations"]
+        .as_array()
+        .unwrap()
+        .is_empty());
 }
 
 #[test]

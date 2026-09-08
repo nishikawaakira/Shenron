@@ -12,9 +12,15 @@ The first check implemented through this framework is the existing comparison
 of a crawler operator named by its User-Agent with that operator's frozen,
 published address ranges. Its existing aggregate and private bot-range report
 remain unchanged. The generalized aggregate is added to
-`sanitized-research.json`; declaration and observation values are written only
-to the private `declared-observed-observations.json` artifact. Both paths are
-deterministic and perform no network access during analysis.
+`sanitized-research.json`. The private `declared-observed-observations.json`
+artifact repeats the complete per-check aggregate and retains individual
+declaration and observation values only for `mismatch` outcomes that need human
+review. `match` and `unavailable` outcomes remain aggregate-only, including the
+three unavailable-reason counts. The fixed private-record cap applies only to
+retained mismatch records, and the number omitted beyond that cap is disclosed.
+This keeps all-unavailable corpora bounded by the number of checks rather than
+the number of requests. Both paths are deterministic and perform no network
+access during analysis.
 
 `WebEvent` also has optional normalized `tls_protocol` and `tls_cipher` fields.
 All currently implemented telemetry profiles declare both capabilities as
@@ -30,4 +36,3 @@ A mismatch between a self-declared attribute and an observed one is a labeled
 observation. Declarations are freely settable, reference data can be incomplete
 or stale, and intermediaries can rewrite both. It is not a determination of
 impersonation, automation, attack, abuse, compromise, or attacker identity.
-

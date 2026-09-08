@@ -109,7 +109,9 @@ Hunt also records these bot-range comparisons through the general
 [declared-versus-observed consistency](declared-observed-consistency.md)
 framework. Aggregate match, mismatch, and unavailable counts and the distinct
 unavailable reasons are included in sanitized output; declaration and observed
-values remain private in `declared-observed-observations.json`. Missing
+values for mismatches remain private in
+`declared-observed-observations.json`; matches and unavailable results are
+reported there as per-check aggregates with unavailable reasons. Missing
 reference data, an unsupported telemetry capability, and a missing event value
 are each unavailable and are never converted into mismatches. Optional TLS
 protocol/cipher fields exist in the normalized event model, but every current

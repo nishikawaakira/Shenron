@@ -111,6 +111,9 @@ pub struct ConsistencyCheckSummary {
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct ConsistencySummary {
     pub checks: Vec<ConsistencyCheckSummary>,
+    /// Mismatch observations omitted from the private artifact after its fixed
+    /// cap. Match and unavailable outcomes are aggregate-only and never enter
+    /// this cap.
     pub private_observations_beyond_cap: u64,
 }
 
@@ -129,8 +132,14 @@ pub struct PrivateConsistencyObservation {
 pub struct PrivateConsistencyReport {
     pub report_kind: String,
     pub safety_note: String,
-    pub observations: Vec<PrivateConsistencyObservation>,
-    pub observations_beyond_cap: u64,
+    /// Complete aggregate outcomes for every check that ran. Unavailable
+    /// outcomes retain their reason counts and are never folded into mismatch.
+    pub checks: Vec<ConsistencyCheckSummary>,
+    /// Individual private values are retained only for mismatches that require
+    /// human review. Match and unavailable outcomes remain aggregate-only.
+    pub mismatch_observations: Vec<PrivateConsistencyObservation>,
+    /// Mismatch observations omitted after the fixed private-record cap.
+    pub mismatch_observations_beyond_cap: u64,
 }
 
 #[derive(Debug, Default)]
@@ -143,9 +152,9 @@ struct CheckAccumulator {
 
 pub struct ConsistencyAccumulator {
     checks: BTreeMap<String, CheckAccumulator>,
-    private: Vec<PrivateConsistencyObservation>,
-    private_cap: usize,
-    private_beyond_cap: u64,
+    private_mismatches: Vec<PrivateConsistencyObservation>,
+    private_mismatch_cap: usize,
+    private_mismatches_beyond_cap: u64,
 }
 
 impl Default for ConsistencyAccumulator {
@@ -158,9 +167,9 @@ impl ConsistencyAccumulator {
     pub fn new(private_cap: usize) -> Self {
         Self {
             checks: BTreeMap::new(),
-            private: Vec::new(),
-            private_cap,
-            private_beyond_cap: 0,
+            private_mismatches: Vec::new(),
+            private_mismatch_cap: private_cap,
+            private_mismatches_beyond_cap: 0,
         }
     }
 
@@ -196,8 +205,11 @@ impl ConsistencyAccumulator {
                 }
             }
         }
-        if self.private.len() < self.private_cap {
-            self.private.push(PrivateConsistencyObservation {
+        if result.outcome != ComparisonOutcome::Mismatch {
+            return;
+        }
+        if self.private_mismatches.len() < self.private_mismatch_cap {
+            self.private_mismatches.push(PrivateConsistencyObservation {
                 check_id: check_id.to_owned(),
                 declared_attribute: declared_attribute.to_owned(),
                 declared_value: declared_value.to_owned(),
@@ -207,12 +219,12 @@ impl ConsistencyAccumulator {
                 unavailable_reason: result.unavailable_reason,
             });
         } else {
-            self.private_beyond_cap += 1;
+            self.private_mismatches_beyond_cap += 1;
         }
     }
 
     pub fn reports(self) -> (ConsistencySummary, PrivateConsistencyReport) {
-        let checks = self
+        let checks: Vec<ConsistencyCheckSummary> = self
             .checks
             .into_iter()
             .map(|(check_id, item)| ConsistencyCheckSummary {
@@ -223,16 +235,18 @@ impl ConsistencyAccumulator {
                 unavailable_reasons: item.reasons,
             })
             .collect();
+        let private_checks = checks.clone();
         (
             ConsistencySummary {
                 checks,
-                private_observations_beyond_cap: self.private_beyond_cap,
+                private_observations_beyond_cap: self.private_mismatches_beyond_cap,
             },
             PrivateConsistencyReport {
                 report_kind: "DECLARED_OBSERVED_CONSISTENCY_PRIVATE".to_owned(),
                 safety_note: CONSISTENCY_SAFETY_NOTE.to_owned(),
-                observations: self.private,
-                observations_beyond_cap: self.private_beyond_cap,
+                checks: private_checks,
+                mismatch_observations: self.private_mismatches,
+                mismatch_observations_beyond_cap: self.private_mismatches_beyond_cap,
             },
         )
     }
@@ -313,5 +327,105 @@ mod tests {
             result.unavailable_reason,
             Some(UnavailableReason::TelemetryDoesNotExpose)
         );
+    }
+
+    #[test]
+    fn unavailable_private_report_size_does_not_scale_with_request_count() {
+        fn report_for(count: usize) -> PrivateConsistencyReport {
+            let mut accumulator = ConsistencyAccumulator::default();
+            for _ in 0..count {
+                accumulator.record(
+                    "declared-browser-tls-cipher",
+                    "user-agent-browser-family",
+                    "chromium",
+                    "tls-cipher-suite",
+                    None,
+                    unavailable(UnavailableReason::TelemetryDoesNotExpose),
+                );
+            }
+            accumulator.reports().1
+        }
+
+        let ten_thousand = report_for(10_000);
+        let hundred_thousand = report_for(100_000);
+        assert_eq!(ten_thousand.checks.len(), 1);
+        assert_eq!(hundred_thousand.checks.len(), 1);
+        assert!(ten_thousand.mismatch_observations.is_empty());
+        assert!(hundred_thousand.mismatch_observations.is_empty());
+        assert_eq!(
+            serde_json::to_string_pretty(&ten_thousand)
+                .unwrap()
+                .lines()
+                .count(),
+            serde_json::to_string_pretty(&hundred_thousand)
+                .unwrap()
+                .lines()
+                .count()
+        );
+        assert_eq!(
+            hundred_thousand.checks[0]
+                .unavailable_reasons
+                .telemetry_does_not_expose,
+            100_000
+        );
+        assert_eq!(hundred_thousand.checks[0].mismatches, 0);
+    }
+
+    #[test]
+    fn private_report_retains_only_mismatches_and_discloses_its_cap() {
+        let mut accumulator = ConsistencyAccumulator::new(1);
+        accumulator.record(
+            "check",
+            "declared",
+            "matching-value",
+            "observed",
+            Some("matching-value"),
+            ComparisonResult {
+                outcome: ComparisonOutcome::Match,
+                unavailable_reason: None,
+            },
+        );
+        accumulator.record(
+            "check",
+            "declared",
+            "unknown-value",
+            "observed",
+            None,
+            unavailable(UnavailableReason::ObservedValueMissing),
+        );
+        for declared_value in ["first-mismatch", "second-mismatch"] {
+            accumulator.record(
+                "check",
+                "declared",
+                declared_value,
+                "observed",
+                Some("observed-value"),
+                ComparisonResult {
+                    outcome: ComparisonOutcome::Mismatch,
+                    unavailable_reason: None,
+                },
+            );
+        }
+
+        let (summary, private) = accumulator.reports();
+        assert_eq!(private.checks.len(), 1);
+        assert_eq!(private.checks[0].matches, 1);
+        assert_eq!(private.checks[0].mismatches, 2);
+        assert_eq!(private.checks[0].unavailable, 1);
+        assert_eq!(
+            private.checks[0].unavailable_reasons.observed_value_missing,
+            1
+        );
+        assert_eq!(private.mismatch_observations.len(), 1);
+        assert_eq!(
+            private.mismatch_observations[0].declared_value,
+            "first-mismatch"
+        );
+        assert_eq!(
+            private.mismatch_observations[0].outcome,
+            ComparisonOutcome::Mismatch
+        );
+        assert_eq!(private.mismatch_observations_beyond_cap, 1);
+        assert_eq!(summary.private_observations_beyond_cap, 1);
     }
 }
