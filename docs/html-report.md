@@ -100,6 +100,11 @@ force page-level horizontal scrolling or become unreachable. When a run
 recorded no explicit filter window, the provenance time range is the observed
 span of retained minute buckets, and the report says so.
 
+All human-readable timestamp headings and minute labels explicitly identify
+UTC. Stored artifact timestamps remain unchanged RFC 3339 UTC values, and
+rendering never reads the host system timezone, so the same run renders the
+same time values on different machines.
+
 The triage table omits the Reputation opinion or Resolved ASN column when every
 entity lacks that enrichment. If either value exists for at least one entity,
 its column remains visible and unavailable rows are labelled individually. The

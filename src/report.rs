@@ -187,7 +187,7 @@ const EN_LABELS: Labels = Labels {
     time_end: "Time range end (UTC)",
     shenron_version: "Shenron version",
     nuclei_revision: "Nuclei revision",
-    run_generated_at: "Run generated at",
+    run_generated_at: "Run generated at (UTC)",
     aggregate_summary: "Aggregate summary",
     aggregate_unavailable: "Aggregate summary unavailable: sanitized-research.json and request-concentration.json were not found.",
     requests: "Requests",
@@ -199,7 +199,7 @@ const EN_LABELS: Labels = Labels {
     sensitive_path: "Request path",
     sensitive_observed_peer: "Observed connection peer",
     sensitive_response_status: "Response status",
-    sensitive_timestamp: "Timestamp",
+    sensitive_timestamp: "Timestamp (UTC)",
     sensitive_records: "sensitive file/config 2xx records",
     cve_list_heading: "Observed CVEs",
     cve_list_note: "Nuclei template IDs are public CTI metadata. Each template ID links to a public GitHub code search. Opening this report causes no external communication; following a link sends only the public template ID to GitHub, never private values. Template IDs, KEV membership, detectability, and severity are catalog facts, not an exploitation, compromise, or attacker-identity determination. Severity is the Nuclei template's declared info.severity value, not a Shenron judgment of impact, exploitation, or compromise. Request counts are observed matcher volume, not proof of exploitation.",
@@ -213,8 +213,8 @@ const EN_LABELS: Labels = Labels {
     sigma_severity_summary: "Sigma rule matches by catalog severity",
     distinctive_matches: "Distinctive-path matches",
     generic_matches: "Generic-path matches",
-    cve_first_seen: "First-seen",
-    last_seen: "Last-seen",
+    cve_first_seen: "First-seen (UTC)",
+    last_seen: "Last-seen (UTC)",
     protection_gap_rate: "Protection-gap rate",
     triage_entities: "Triage entities",
     tier_summary: "Behavior-priority tiers (not threat severity)",
@@ -310,7 +310,7 @@ const JA_LABELS: Labels = Labels {
     time_end: "期間終了 (UTC)",
     shenron_version: "Shenron バージョン",
     nuclei_revision: "Nuclei リビジョン",
-    run_generated_at: "実行成果物の生成日時",
+    run_generated_at: "実行成果物の生成日時 (UTC)",
     aggregate_summary: "集計サマリ",
     aggregate_unavailable: "集計サマリを利用できません。sanitized-research.json と request-concentration.json が見つかりません。",
     requests: "リクエスト数",
@@ -322,7 +322,7 @@ const JA_LABELS: Labels = Labels {
     sensitive_path: "リクエストパス",
     sensitive_observed_peer: "観測接続ピア",
     sensitive_response_status: "応答ステータス",
-    sensitive_timestamp: "時刻",
+    sensitive_timestamp: "時刻 (UTC)",
     sensitive_records: "秘密・設定ファイルの 2xx レコード",
     cve_list_heading: "観測された CVE",
     cve_list_note: "Nuclei テンプレート ID は公開 CTI メタデータで、公開 GitHub コード検索へのリンクです。このレポートを開くだけでは外部通信は発生せず、リンクを辿った場合も公開テンプレート ID だけが GitHub に送られ、private 値は送信されません。テンプレート ID・KEV 該否・detectability・severity はカタログ上の情報であり、悪用・侵害・攻撃者特定の判定ではありません。Severity は Nuclei テンプレートの info.severity 宣言値であり、Shenron による影響・悪用・侵害の判定ではありません。リクエスト件数は観測されたマッチ量であり、悪用の証明ではありません。",
@@ -336,8 +336,8 @@ const JA_LABELS: Labels = Labels {
     sigma_severity_summary: "カタログ severity 別の Sigma ルール一致数",
     distinctive_matches: "distinctive-path 一致数",
     generic_matches: "generic-path 一致数",
-    cve_first_seen: "初回観測",
-    last_seen: "最終観測",
+    cve_first_seen: "初回観測 (UTC)",
+    last_seen: "最終観測 (UTC)",
     protection_gap_rate: "保護ギャップ率",
     triage_entities: "トリアージ対象数",
     tier_summary: "挙動優先度 tier（脅威の深刻度ではありません）",
@@ -1843,7 +1843,7 @@ fn minute_label(minute_epoch: i64, language: ReportLanguage) -> String {
     minute_epoch
         .checked_mul(60)
         .and_then(|seconds| DateTime::<Utc>::from_timestamp(seconds, 0))
-        .map(|timestamp| timestamp.format("%Y-%m-%d %H:%M").to_string())
+        .map(|timestamp| timestamp.format("%Y-%m-%d %H:%M UTC").to_string())
         .unwrap_or_else(|| {
             format!(
                 "{} {}",
@@ -2678,6 +2678,12 @@ mod tests {
     }
 
     #[test]
+    fn human_timeline_labels_are_explicitly_utc() {
+        assert_eq!(minute_label(0, ReportLanguage::En), "1970-01-01 00:00 UTC");
+        assert_eq!(minute_label(0, ReportLanguage::Ja), "1970-01-01 00:00 UTC");
+    }
+
+    #[test]
     fn status_class_timeline_renders_five_lines_and_a_legend_without_external_refs() {
         let series = vec![
             StatusClassMinuteCount {
@@ -2708,7 +2714,7 @@ mod tests {
             "1,234",
             "<g class=\"col\">",
             "<g class=\"tip\">",
-            "1970-01-01 00:00</tspan>",
+            "1970-01-01 00:00 UTC</tspan>",
             "1xx 1 · 2xx 1,234 · 3xx 2</tspan>",
             "4xx 3 · 5xx 4</tspan>",
         ] {
@@ -2803,7 +2809,7 @@ mod tests {
         assert!(html.contains("<g class=\"col\">"));
         assert!(html.contains("<g class=\"tip\">"));
         assert!(html.contains("<text class=\"tip-label\""));
-        assert!(html.contains("1970-01-01 01:40 · 3 リクエスト"));
+        assert!(html.contains("1970-01-01 01:40 UTC · 3 リクエスト"));
         assert!(html.contains("<title>"));
         assert!(html.contains("class=\"timeline-dot\""));
         assert!(html.contains("<svg width=\"1000\" height=\"220\""));

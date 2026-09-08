@@ -1956,7 +1956,7 @@ fn print_hunt(report: &SanitizedHuntReport, sanitized_path: &Path) {
     let time_range = match (&metrics.filter_from, &metrics.filter_to) {
         (None, None) => "Time filter:                all timestamps".to_owned(),
         (from, to) => format!(
-            "Time filter:                {} to {}\nOutside range ignored:      {}\nTimestamp missing ignored:  {}",
+            "Time filter (UTC):          {} to {}\nOutside range ignored:      {}\nTimestamp missing ignored:  {}",
             from.as_deref().unwrap_or("beginning"),
             to.as_deref().unwrap_or("end"),
             metrics.requests_outside_time_range,
@@ -2076,7 +2076,7 @@ fn input_quality_summary(metrics: &shenron::production::HuntMetrics) -> String {
             .to_owned()
     };
     format!(
-        "Input field availability & quality (populated event counts):\n  Parseable events:          {}\n  Parse errors:              {}\n  Earliest timestamp:        {}\n  Latest timestamp:          {}\n  Verified client IP:        {} (requires --trusted-proxy)\n  JA4:                       {}\n  JA3:                       {}\n  TLS protocol:              {}\n  TLS cipher:                {}\n  URI:                       {}\n  Query:                     {}\n  Headers:                   {}\n  Host:                      {}\n  Method:                    {}\n  WAF action:                {}\n  WAF labels:                {}\n  Terminating rule ID:       {}\n  Non-terminating rules:     {}{}",
+        "Input field availability & quality (populated event counts):\n  Parseable events:          {}\n  Parse errors:              {}\n  Earliest timestamp (UTC):  {}\n  Latest timestamp (UTC):    {}\n  Verified client IP:        {} (requires --trusted-proxy)\n  JA4:                       {}\n  JA3:                       {}\n  TLS protocol:              {}\n  TLS cipher:                {}\n  URI:                       {}\n  Query:                     {}\n  Headers:                   {}\n  Host:                      {}\n  Method:                    {}\n  WAF action:                {}\n  WAF labels:                {}\n  Terminating rule ID:       {}\n  Non-terminating rules:     {}{}",
         metrics.total_requests_analyzed,
         metrics.parse_errors,
         metrics.earliest_timestamp.as_deref().unwrap_or("unknown"),
@@ -2175,7 +2175,7 @@ fn print_concentration(
     let time_range = match (&report.filter_from, &report.filter_to) {
         (None, None) => "Time filter:                all timestamps".to_owned(),
         (from, to) => format!(
-            "Time filter:                {} to {}\nOutside range ignored:      {}\nTimestamp missing ignored:  {}",
+            "Time filter (UTC):          {} to {}\nOutside range ignored:      {}\nTimestamp missing ignored:  {}",
             from.as_deref().unwrap_or("beginning"),
             to.as_deref().unwrap_or("end"),
             report.requests_outside_time_range,
@@ -3324,7 +3324,7 @@ fn print_explanations(
     }
     for (index, finding) in displayed.iter().enumerate() {
         println!(
-            "\n[{}]\nCVE: {}\nNuclei template: {}\nTemplate detectability: {:?}\nRequest specificity: {}\nTimestamp: {}\nWAF action: {}",
+            "\n[{}]\nCVE: {}\nNuclei template: {}\nTemplate detectability: {:?}\nRequest specificity: {}\nTimestamp (UTC): {}\nWAF action: {}",
             index + 1,
             finding.cves.join(", "),
             terminal_safe(&finding.template_id),

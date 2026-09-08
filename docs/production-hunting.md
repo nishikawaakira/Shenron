@@ -144,6 +144,13 @@ cargo run --bin shenron -- hunt \
 
 Restrict a hunt to an inclusive UTC time interval with RFC 3339 timestamps. The report records the selected interval and how many parseable events were excluded because they were outside the interval or had no timestamp.
 
+Stored timestamps remain normalized UTC RFC 3339 values with their `+00:00`
+offset. Human-readable hunt and `explain` labels explicitly identify UTC, and
+no display path consults the host system timezone. This keeps output stable
+across machines while making correlation with offset-bearing source-log
+timestamps unambiguous. Convert the source timestamp to UTC when correlating
+it; `--from` and `--to` continue to require RFC 3339 input.
+
 ```bash
 cargo run --bin shenron -- hunt \
   --input ./production-waf-logs \

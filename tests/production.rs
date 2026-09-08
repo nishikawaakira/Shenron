@@ -1929,7 +1929,7 @@ fn hunt_reports_full_input_availability_and_quality_without_raw_values() {
         .stdout(contains("Parse errors:              1"))
         .stdout(contains("JA4:                       2"))
         .stdout(contains(
-            "Earliest timestamp:        2025-01-01T00:00:00+00:00",
+            "Earliest timestamp (UTC):  2025-01-01T00:00:00+00:00",
         ))
         .stdout(contains(
             "mismatched --format, mixed formats, or malformed records",
@@ -1962,6 +1962,52 @@ fn hunt_reports_full_input_availability_and_quality_without_raw_values() {
         .success()
         .stderr(contains("Input field availability & quality"))
         .stderr(contains("Parse errors:              1"));
+}
+
+#[test]
+fn explain_timestamps_are_explicitly_utc_and_ignore_the_process_timezone() {
+    let directory = tempdir().unwrap();
+    let findings = directory.path().join("private-findings.jsonl");
+    let stored_timestamp = "2026-08-27T15:47:52+00:00";
+    let finding = serde_json::json!({
+        "template_id": "timezone-check",
+        "cves": ["CVE-2026-10001"],
+        "detectability": "HIGH",
+        "request_specificity": "request-specific",
+        "timestamp": stored_timestamp,
+        "source_ip": "198.51.100.10",
+        "host": null,
+        "method": "GET",
+        "uri_path": "/.env",
+        "uri_query": "probe=1",
+        "headers": [],
+        "ja3": null,
+        "ja4": null,
+        "waf_action": null,
+        "request_id": null
+    });
+    fs::write(&findings, format!("{finding}\n")).unwrap();
+
+    let render = |timezone: &str| {
+        Command::cargo_bin("shenron")
+            .unwrap()
+            .env("TZ", timezone)
+            .args([
+                "explain",
+                "--findings",
+                findings.to_str().unwrap(),
+                "--show-request",
+            ])
+            .output()
+            .unwrap()
+    };
+    let tokyo = render("Asia/Tokyo");
+    let los_angeles = render("America/Los_Angeles");
+    assert!(tokyo.status.success());
+    assert!(los_angeles.status.success());
+    assert_eq!(tokyo.stdout, los_angeles.stdout);
+    let stdout = String::from_utf8(tokyo.stdout).unwrap();
+    assert!(stdout.contains(&format!("Timestamp (UTC): {stored_timestamp}")));
 }
 
 #[test]
