@@ -417,6 +417,27 @@ Long streaming commands (`hunt`, `ablation`, `replay`, `count-hypotheses`) emit 
 
 Every hunt also writes `run-manifest.json` beside the sanitized report. It records the Shenron version, generated time, telemetry profile, Nuclei report revision and provenance, optional KEV/Nuclei report byte lengths, trusted-proxy configuration, fixed triage baseline, time filters, and aggregate exclusion counts. The Nuclei report and, when supplied, the KEV report receive streaming SHA-256 values so reviewers can verify that frozen research inputs are identical; the templates directory remains identified by its pinned Nuclei revision rather than a directory-wide hash. This makes a run reviewable and reproducible without placing raw telemetry in the artifact: the manifest never contains raw request values, client or peer IP addresses, hosts, URI/query values, headers, or JA3/JA4 values.
 
+### Optional template metadata filtering
+
+`hunt`, `ablation`, `replay`, and `count-hypotheses` accept
+`--template-allowlist <JSON>` and `--template-denylist <JSON>`. Each file is an
+object with optional `vendors`, `products`, and `tags` string arrays, for
+example `{"vendors":["wordpress"],"tags":["wp-plugin"]}`. Values are matched
+case-insensitively after lowercase normalization. A known template passes an
+allowlist when any declared vendor, product, or tag matches; a denylist match
+takes precedence. Templates with no metadata remain included by default to
+avoid a silent coverage gap. `--exclude-unknown-template-metadata` explicitly
+changes that policy.
+
+Filtering occurs only after the frozen `SUPPORTED`/`passed`/CVE gates. Shenron
+reports counts excluded by allowlist, denylist, and unknown-metadata policy.
+For artifact-producing hunts, `run-manifest.json` also records each list path
+and SHA-256; aggregate-only command reports carry the same provenance when a
+filter is active. No filtering is applied, and no extra filter field is
+serialized, when these options are absent. Product metadata is a catalog
+declaration, not proof that the product is present, vulnerable, attacked,
+exploited, or compromised.
+
 Review the request-to-template mappings locally with `explain`. By default it hides only low-confidence display noise: findings that are both `response-unverified` and on a `generic` path such as `/robots.txt`. Pass `--include-generic` to restore every locally stored finding. This is a **display filter only**: it changes what is *listed* — the per-finding rows and the "Top request paths" summary — but it does **not** affect triage grouping or scoring. Entity grouping (IP/ASN/JA4) and the behavior priority score always see every finding that passed the `--waf-outcome` selection, so a source that mixes one distinctive probe with several generic ones still meets the repeated-pattern (breadth) basis. Because a group's observation and template counts are computed from all matching findings, they can exceed the rows shown; when low-confidence matches are hidden and a triage section is displayed, `explain` states this once in both text and JSON. `--include-generic` therefore changes only what is listed, never a group's score, observation count, or triage basis. Hunt records and sanitized reports always retain every match. The summary groups results by request method and path (up to 20 paths by default), bundling every distinct CVE and template that matched that path into one entry; this keeps paths shared by several CVEs readable. Each entry labels the path as `distinctive` or `generic`, and `--show-request` prints the deterministic path label for each individual matched method/path/query record. Generic paths, especially with response-unverified evidence, may be shared by unrelated applications and deserve closer review; the label is a triage heuristic only, never a precision, attack, exploitation, compromise, or vulnerable-product determination, and it never excludes a match. Add `--show-evidence` for all locally stored evidence, `--show-source-ips` for an IP-group summary, or `--show-fingerprints` for a JA4 client-fingerprint summary. Evidence labels distinguish the observed connection peer from a validated forwarded client IP. IP addresses and JA4 values are shown only from the local private findings file and are never added to the sanitized report. Use `--limit 0` only when intentionally reviewing every request path, IP address, and individual finding.
 
 ```bash

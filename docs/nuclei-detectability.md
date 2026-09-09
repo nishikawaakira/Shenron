@@ -73,6 +73,13 @@ use for each source before downloading or relying on its list.
 
 `shenron nuclei coverage` includes a template capability funnel: all CVE templates, HTTP CVE templates, templates with supported request IR, and the resulting IR alternatives split into `request-specific` and `response-unverified`. This separates the request-feature distribution of the convertible template corpus from the limitations of a selected telemetry source. It is not a field precision, true-positive-rate, attack, exploitation, compromise, or vulnerability-presence measurement; the funnel contains no ground truth.
 
+The frozen coverage report also records catalog-declared `tags`, `vendor`, and
+comma-split `products` for every template. Missing metadata is represented by
+`null`/empty values and remains unknown: Shenron never infers a product from a
+template path or CVE identifier. These fields support optional local
+catalog-selection policies; they are not evidence that a product is deployed
+or vulnerable.
+
 **Report kinds.** Every report names its shape in a `report_kind` field. `shenron nuclei coverage` **without** `--telemetry`, and `shenron nuclei update`, write the frozen coverage report (`report_kind: NUCLEI_COVERAGE_REPORT`) — the only shape `hunt`/`ablation`/`replay`/`count-hypotheses` and `kev coverage` accept as a frozen input. `shenron nuclei coverage --telemetry <profile>` writes a per-profile detectability assessment (`report_kind: NUCLEI_TELEMETRY_COVERAGE`) whose templates carry `level`/`convertible`/`validated` rather than `protocol`/`conversion_status`/`validation_status`; it is an **analysis-only artifact and is not a frozen hunt input**. `--telemetry` accepts `aws-waf`, `nginx`, `apache`, and `apache-vhost`, so lab-side analysis can target the same vhost profile a hunt uses. If a telemetry report (or any other kind) is passed where a frozen input is required, the loader checks `report_kind` before deserializing the body and fails with a message that names the file, the kind found, the kind required, and the command to regenerate it, rather than an opaque serde field error. A report written before `report_kind` existed carries none and is accepted as a frozen input for backward compatibility.
 
 | Level | Meaning |

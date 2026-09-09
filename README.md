@@ -57,6 +57,8 @@ Hunt can also label deterministic [declared-versus-observed consistency](docs/de
 
 `shenron ablation` compares aggregate match volume from URI-only through validated Nuclei IR and request-specific IR. It is a volume comparison, not precision, ground truth, or an attack/compromise determination; see [detection-strategy ablation](docs/ablation.md).
 
+`hunt`, `ablation`, `replay`, and `count-hypotheses` can optionally narrow the frozen validated template set with local vendor/product/tag allowlists or denylists. Unknown catalog metadata stays included unless explicitly excluded, and list hashes plus exclusion counts are recorded for review; catalog metadata is not proof that a product is deployed or vulnerable.
+
 `explain` and sanitized hunt reports also label matched paths as `generic` or `distinctive` with a transparent, non-excluding triage heuristic; this is not a precision, attack, exploitation, or compromise determination.
 
 `shenron replay` measures conservative known-finding re-observation and other aggregate historical matcher matches across a local corpus, writing only a sanitized report; see [historical replay coverage](docs/historical-replay.md).

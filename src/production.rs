@@ -35,7 +35,8 @@ use crate::{
     event::{HttpHeader, LogSource, RawRetention, TelemetryProfile, TrustedProxySet, WebEvent},
     nuclei::{
         frozen_nuclei_selection, path_distinctiveness, validated_detections, CatalogSeverity,
-        Detectability, PathDistinctiveness, RequestSpecificity, ValidatedNucleiDetection,
+        Detectability, FrozenTemplateMetadata, PathDistinctiveness, RequestSpecificity,
+        ValidatedNucleiDetection,
     },
     processed_index::prepare_processed_files,
     reputation::AsnDatabase,
@@ -216,6 +217,77 @@ pub struct HuntOptions {
     /// Snapshot path recorded as additional run provenance without changing
     /// the existing Nuclei/KEV provenance fields or hash behavior.
     pub bot_range_snapshot_path: Option<PathBuf>,
+    /// Optional catalog-metadata selection applied after frozen validation.
+    /// Unknown metadata remains included unless explicitly excluded.
+    pub template_filter: TemplateFilterOptions,
+}
+
+/// Explicit, local catalog-metadata filters. Files contain JSON objects with
+/// optional `vendors`, `products`, and `tags` string arrays. Matching is exact
+/// after lowercase normalization; no product identity is inferred.
+#[derive(Debug, Clone, Default)]
+pub struct TemplateFilterOptions {
+    pub allowlist: Option<PathBuf>,
+    pub denylist: Option<PathBuf>,
+    pub exclude_unknown_metadata: bool,
+}
+
+impl TemplateFilterOptions {
+    pub fn is_active(&self) -> bool {
+        self.allowlist.is_some() || self.denylist.is_some() || self.exclude_unknown_metadata
+    }
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct TemplateMetadataList {
+    #[serde(default)]
+    vendors: BTreeSet<String>,
+    #[serde(default)]
+    products: BTreeSet<String>,
+    #[serde(default)]
+    tags: BTreeSet<String>,
+}
+
+impl TemplateMetadataList {
+    fn load(path: &Path) -> anyhow::Result<Self> {
+        let mut list: Self = serde_json::from_reader(
+            File::open(path).with_context(|| format!("opening {}", path.display()))?,
+        )
+        .with_context(|| format!("parsing template metadata list {}", path.display()))?;
+        normalize_filter_values(&mut list.vendors);
+        normalize_filter_values(&mut list.products);
+        normalize_filter_values(&mut list.tags);
+        Ok(list)
+    }
+
+    fn matches(&self, metadata: &FrozenTemplateMetadata) -> bool {
+        metadata
+            .vendor
+            .as_ref()
+            .is_some_and(|vendor| self.vendors.contains(vendor))
+            || !self.products.is_disjoint(&metadata.products)
+            || !self.tags.is_disjoint(&metadata.tags)
+    }
+}
+
+fn normalize_filter_values(values: &mut BTreeSet<String>) {
+    *values = values
+        .iter()
+        .map(|value| value.trim().to_ascii_lowercase())
+        .filter(|value| !value.is_empty())
+        .collect();
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TemplateFilterSummary {
+    pub allowlist: Option<PathProvenance>,
+    pub denylist: Option<PathProvenance>,
+    pub exclude_unknown_metadata: bool,
+    pub eligible_before_filter: usize,
+    pub included_after_filter: usize,
+    pub excluded_by_allowlist: usize,
+    pub excluded_by_denylist: usize,
+    pub excluded_unknown_metadata: usize,
 }
 
 /// The fixed baseline triage policy recorded with a hunt. Triage itself runs
@@ -328,6 +400,8 @@ pub struct AblationReport {
     pub requests_outside_time_range: usize,
     pub requests_without_timestamp_excluded: usize,
     pub parse_errors: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub template_filter: Option<TemplateFilterSummary>,
     pub strategies: Vec<AblationStrategyVolume>,
     /// Total validated detections compared across the rungs.
     pub validated_detections: usize,
@@ -384,6 +458,8 @@ pub struct ReplayInputs {
     pub nuclei_report_sha256: Option<String>,
     pub kev_report_sha256: Option<String>,
     pub findings_sha256: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub template_filter: Option<TemplateFilterSummary>,
 }
 
 /// Per-CVE conservative source-finding re-observation and aggregate-only
@@ -516,20 +592,22 @@ struct RunManifest {
     exclusions: RunManifestExclusions,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Clone, Serialize)]
 struct RunManifestInputs {
     nuclei_templates: Option<PathProvenance>,
     nuclei_report: Option<PathProvenance>,
     kev_report: Option<PathProvenance>,
     bot_range_snapshot: Option<PathProvenance>,
     approved_validated_template_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    template_filter: Option<TemplateFilterSummary>,
 }
 
-#[derive(Serialize)]
-struct PathProvenance {
-    path: String,
-    byte_length: Option<u64>,
-    sha256: Option<String>,
+#[derive(Debug, Clone, Serialize)]
+pub struct PathProvenance {
+    pub path: String,
+    pub byte_length: Option<u64>,
+    pub sha256: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -874,6 +952,7 @@ pub fn hunt(
             sigma_ruleset: None,
             bot_range_database: None,
             bot_range_snapshot_path: None,
+            template_filter: TemplateFilterOptions::default(),
         },
     )
 }
@@ -962,22 +1041,40 @@ fn hunt_with_destination(
         sigma_ruleset,
         bot_range_database,
         bot_range_snapshot_path,
+        template_filter,
     } = options;
     time_range.validate()?;
     if let Some(output) = output {
         ensure_separate_output(input, output)?;
     }
-    let (approved_templates, nuclei_revision, detections) = match nuclei_inputs {
-        Some((templates, report)) => {
-            let (approved_templates, nuclei_revision) = approved_template_ids(report)?;
-            let detections = validated_detections(templates, &approved_templates);
-            if detections.is_empty() {
-                bail!("no validated Nuclei detections could be rebuilt from the supplied report and template checkout");
+    let (approved_templates, nuclei_revision, detections, template_filter_summary) =
+        match nuclei_inputs {
+            Some((templates, report)) => {
+                let (approved_templates, nuclei_revision, template_filter_summary) =
+                    approved_template_ids(report, &template_filter)?;
+                let detections = validated_detections(templates, &approved_templates);
+                if detections.is_empty() {
+                    bail!("no validated Nuclei detections could be rebuilt from the supplied report and template checkout");
+                }
+                (
+                    approved_templates,
+                    nuclei_revision,
+                    detections,
+                    template_filter_summary,
+                )
             }
-            (approved_templates, nuclei_revision, detections)
-        }
-        None => (BTreeSet::new(), None, Vec::new()),
-    };
+            None => (BTreeSet::new(), None, Vec::new(), None),
+        };
+    if let Some(summary) = &template_filter_summary {
+        eprintln!(
+            "template metadata filter: {} eligible, {} included, {} excluded by allowlist, {} excluded by denylist, {} excluded for unknown metadata",
+            summary.eligible_before_filter,
+            summary.included_after_filter,
+            summary.excluded_by_allowlist,
+            summary.excluded_by_denylist,
+            summary.excluded_unknown_metadata,
+        );
+    }
     let detection_index = DetectionPathIndex::new(&detections);
     let kev_cves = kev_cves(kev_report)?;
     let files = input_files(input, telemetry_profile)?;
@@ -1273,6 +1370,7 @@ fn hunt_with_destination(
             bot_range_snapshot_path.as_deref(),
             nuclei_revision,
             approved_templates.len(),
+            template_filter_summary,
             &time_range,
             &trusted_proxies,
             triage_policy,
@@ -1645,8 +1743,29 @@ pub fn ablation_with_optional_kev(
     telemetry_profile: TelemetryProfile,
     time_range: HuntTimeRange,
 ) -> anyhow::Result<AblationReport> {
+    ablation_with_optional_kev_and_filter(
+        input,
+        nuclei_templates,
+        nuclei_report,
+        kev_report,
+        telemetry_profile,
+        time_range,
+        &TemplateFilterOptions::default(),
+    )
+}
+
+pub fn ablation_with_optional_kev_and_filter(
+    input: &Path,
+    nuclei_templates: &Path,
+    nuclei_report: &Path,
+    kev_report: Option<&Path>,
+    telemetry_profile: TelemetryProfile,
+    time_range: HuntTimeRange,
+    template_filter: &TemplateFilterOptions,
+) -> anyhow::Result<AblationReport> {
     time_range.validate()?;
-    let (approved_templates, _) = approved_template_ids(nuclei_report)?;
+    let (approved_templates, _, template_filter_summary) =
+        approved_template_ids(nuclei_report, template_filter)?;
     let detections = validated_detections(nuclei_templates, &approved_templates);
     if detections.is_empty() {
         bail!("no validated Nuclei detections could be rebuilt from the supplied report and template checkout");
@@ -1734,6 +1853,7 @@ pub fn ablation_with_optional_kev(
         requests_outside_time_range,
         requests_without_timestamp_excluded,
         parse_errors,
+        template_filter: template_filter_summary,
         strategies,
         validated_detections: detections.len(),
         path_and_query_detections_without_query_condition: detections
@@ -1778,8 +1898,32 @@ pub fn historical_replay_with_optional_kev(
     telemetry_profile: TelemetryProfile,
     time_range: HuntTimeRange,
 ) -> anyhow::Result<HistoricalReplayReport> {
+    historical_replay_with_optional_kev_and_filter(
+        input,
+        nuclei_templates,
+        nuclei_report,
+        kev_report,
+        findings,
+        telemetry_profile,
+        time_range,
+        &TemplateFilterOptions::default(),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn historical_replay_with_optional_kev_and_filter(
+    input: &Path,
+    nuclei_templates: &Path,
+    nuclei_report: &Path,
+    kev_report: Option<&Path>,
+    findings: &Path,
+    telemetry_profile: TelemetryProfile,
+    time_range: HuntTimeRange,
+    template_filter: &TemplateFilterOptions,
+) -> anyhow::Result<HistoricalReplayReport> {
     time_range.validate()?;
-    let (approved_templates, _) = approved_template_ids(nuclei_report)?;
+    let (approved_templates, _, template_filter_summary) =
+        approved_template_ids(nuclei_report, template_filter)?;
     let detections = validated_detections(nuclei_templates, &approved_templates);
     if detections.is_empty() {
         bail!("no validated Nuclei detections could be rebuilt from the supplied report and template checkout");
@@ -1936,6 +2080,7 @@ pub fn historical_replay_with_optional_kev(
             nuclei_report_sha256: sha256_file(nuclei_report),
             kev_report_sha256: kev_report.and_then(sha256_file),
             findings_sha256: sha256_file(findings),
+            template_filter: template_filter_summary,
         },
         per_cve: cve_coverage,
         aggregate,
@@ -1976,8 +2121,32 @@ pub fn count_hypotheses_with_optional_kev(
     telemetry_profile: TelemetryProfile,
     time_range: HuntTimeRange,
 ) -> anyhow::Result<CountHypothesisReport> {
+    count_hypotheses_with_optional_kev_and_filter(
+        input,
+        nuclei_templates,
+        nuclei_report,
+        kev_report,
+        findings,
+        telemetry_profile,
+        time_range,
+        &TemplateFilterOptions::default(),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn count_hypotheses_with_optional_kev_and_filter(
+    input: &Path,
+    nuclei_templates: &Path,
+    nuclei_report: &Path,
+    kev_report: Option<&Path>,
+    findings: &Path,
+    telemetry_profile: TelemetryProfile,
+    time_range: HuntTimeRange,
+    template_filter: &TemplateFilterOptions,
+) -> anyhow::Result<CountHypothesisReport> {
     time_range.validate()?;
-    let (approved_templates, _) = approved_template_ids(nuclei_report)?;
+    let (approved_templates, _, template_filter_summary) =
+        approved_template_ids(nuclei_report, template_filter)?;
     let detections = validated_detections(nuclei_templates, &approved_templates);
     if detections.is_empty() {
         bail!("no validated Nuclei detections could be rebuilt from the supplied report and template checkout");
@@ -2125,6 +2294,7 @@ pub fn count_hypotheses_with_optional_kev(
             nuclei_report_sha256: sha256_file(nuclei_report),
             kev_report_sha256: kev_report.and_then(sha256_file),
             findings_sha256: sha256_file(findings),
+            template_filter: template_filter_summary,
         },
         per_cve: cve_hypotheses,
     })
@@ -2164,9 +2334,74 @@ fn known_replay_sources(source_findings: Vec<FindingExplanation>) -> KnownReplay
     }
 }
 
-fn approved_template_ids(path: &Path) -> anyhow::Result<(BTreeSet<String>, Option<String>)> {
+fn approved_template_ids(
+    path: &Path,
+    options: &TemplateFilterOptions,
+) -> anyhow::Result<(
+    BTreeSet<String>,
+    Option<String>,
+    Option<TemplateFilterSummary>,
+)> {
     let selection = frozen_nuclei_selection(path)?;
-    Ok((selection.template_ids, selection.nuclei_revision))
+    if !options.is_active() {
+        return Ok((selection.template_ids, selection.nuclei_revision, None));
+    }
+    let allowlist = options
+        .allowlist
+        .as_deref()
+        .map(TemplateMetadataList::load)
+        .transpose()?;
+    let denylist = options
+        .denylist
+        .as_deref()
+        .map(TemplateMetadataList::load)
+        .transpose()?;
+    let eligible_before_filter = selection.template_ids.len();
+    let mut included = BTreeSet::new();
+    let mut excluded_by_allowlist = 0;
+    let mut excluded_by_denylist = 0;
+    let mut excluded_unknown_metadata = 0;
+    for template_id in selection.template_ids {
+        let metadata = selection
+            .metadata
+            .get(&template_id)
+            .cloned()
+            .unwrap_or_default();
+        if metadata.is_unknown() {
+            if options.exclude_unknown_metadata {
+                excluded_unknown_metadata += 1;
+            } else {
+                included.insert(template_id);
+            }
+            continue;
+        }
+        if denylist
+            .as_ref()
+            .is_some_and(|denylist| denylist.matches(&metadata))
+        {
+            excluded_by_denylist += 1;
+            continue;
+        }
+        if allowlist
+            .as_ref()
+            .is_some_and(|allowlist| !allowlist.matches(&metadata))
+        {
+            excluded_by_allowlist += 1;
+            continue;
+        }
+        included.insert(template_id);
+    }
+    let summary = TemplateFilterSummary {
+        allowlist: options.allowlist.as_deref().map(path_provenance),
+        denylist: options.denylist.as_deref().map(path_provenance),
+        exclude_unknown_metadata: options.exclude_unknown_metadata,
+        eligible_before_filter,
+        included_after_filter: included.len(),
+        excluded_by_allowlist,
+        excluded_by_denylist,
+        excluded_unknown_metadata,
+    };
+    Ok((included, selection.nuclei_revision, Some(summary)))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2179,6 +2414,7 @@ fn write_run_manifest(
     bot_range_snapshot: Option<&Path>,
     nuclei_revision: Option<String>,
     approved_validated_template_count: usize,
+    template_filter: Option<TemplateFilterSummary>,
     time_range: &HuntTimeRange,
     trusted_proxies: &TrustedProxySet,
     triage_policy: HuntTriagePolicy,
@@ -2197,6 +2433,7 @@ fn write_run_manifest(
             kev_report: kev_report.map(path_provenance),
             bot_range_snapshot: bot_range_snapshot.map(path_provenance),
             approved_validated_template_count,
+            template_filter,
         },
         hunt_parameters: RunManifestParameters {
             filter_from: time_range.from.map(|timestamp| timestamp.to_rfc3339()),
@@ -2738,5 +2975,78 @@ mod matcher_index_tests {
                 .collect::<Vec<_>>();
             assert_eq!(indexed, linear);
         }
+    }
+}
+
+#[cfg(test)]
+mod template_filter_tests {
+    use super::*;
+
+    fn write_report(directory: &Path) -> PathBuf {
+        let path = directory.join("nuclei-report.json");
+        fs::write(
+            &path,
+            r#"{
+  "report_kind": "NUCLEI_COVERAGE_REPORT",
+  "nuclei_revision": "filter-fixture",
+  "templates": [
+    {"template_id":"wordpress","cves":["CVE-2026-1"],"conversion_status":"SUPPORTED","validation_status":"passed","tags":["wp-plugin"],"vendor":"wordpress","products":["plugin-a"]},
+    {"template_id":"denied","cves":["CVE-2026-2"],"conversion_status":"SUPPORTED","validation_status":"passed","tags":["web"],"vendor":"vendor-b","products":["blocked-product"]},
+    {"template_id":"unknown","cves":["CVE-2026-3"],"conversion_status":"SUPPORTED","validation_status":"passed"}
+  ]
+}"#,
+        )
+        .unwrap();
+        path
+    }
+
+    #[test]
+    fn allow_deny_and_unknown_policies_are_explicit_and_hash_their_inputs() {
+        let directory = tempfile::tempdir().unwrap();
+        let report = write_report(directory.path());
+        let allowlist = directory.path().join("allow.json");
+        let denylist = directory.path().join("deny.json");
+        fs::write(&allowlist, r#"{"vendors":["WordPress"]}"#).unwrap();
+        fs::write(&denylist, r#"{"products":["blocked-product"]}"#).unwrap();
+
+        let options = TemplateFilterOptions {
+            allowlist: Some(allowlist),
+            denylist: Some(denylist),
+            exclude_unknown_metadata: false,
+        };
+        let (selected, revision, summary) = approved_template_ids(&report, &options).unwrap();
+        assert_eq!(revision.as_deref(), Some("filter-fixture"));
+        assert_eq!(
+            selected,
+            BTreeSet::from(["unknown".to_owned(), "wordpress".to_owned()])
+        );
+        let summary = summary.unwrap();
+        assert_eq!(summary.eligible_before_filter, 3);
+        assert_eq!(summary.included_after_filter, 2);
+        assert_eq!(summary.excluded_by_denylist, 1);
+        assert_eq!(summary.excluded_by_allowlist, 0);
+        assert_eq!(summary.excluded_unknown_metadata, 0);
+        assert_eq!(summary.allowlist.unwrap().sha256.unwrap().len(), 64);
+        assert_eq!(summary.denylist.unwrap().sha256.unwrap().len(), 64);
+
+        let options = TemplateFilterOptions {
+            exclude_unknown_metadata: true,
+            ..options
+        };
+        let (selected, _, summary) = approved_template_ids(&report, &options).unwrap();
+        assert_eq!(selected, BTreeSet::from(["wordpress".to_owned()]));
+        assert_eq!(summary.unwrap().excluded_unknown_metadata, 1);
+    }
+
+    #[test]
+    fn absent_filter_preserves_the_frozen_selection_and_emits_no_filter_record() {
+        let directory = tempfile::tempdir().unwrap();
+        let report = write_report(directory.path());
+        let frozen = frozen_nuclei_selection(&report).unwrap();
+        let (selected, revision, summary) =
+            approved_template_ids(&report, &TemplateFilterOptions::default()).unwrap();
+        assert_eq!(selected, frozen.template_ids);
+        assert_eq!(revision, frozen.nuclei_revision);
+        assert!(summary.is_none());
     }
 }

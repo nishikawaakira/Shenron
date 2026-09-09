@@ -4020,6 +4020,65 @@ fn explain_json_round_trips_score_components() {
     );
 }
 
+#[test]
+fn hunt_records_template_metadata_filter_exclusions_and_file_hash_in_manifest() {
+    let directory = tempdir().unwrap();
+    let report_path = directory.path().join("nuclei-report.json");
+    let mut report: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string("tests/fixtures/production/nuclei-report.json").unwrap(),
+    )
+    .unwrap();
+    let templates = report["templates"].as_array_mut().unwrap();
+    templates[0]["vendor"] = serde_json::json!("fixture-vendor");
+    templates[0]["products"] = serde_json::json!(["fixture-product"]);
+    templates[0]["tags"] = serde_json::json!(["fixture-tag"]);
+    templates.push(serde_json::json!({
+        "template_id": "excluded-template",
+        "cves": ["CVE-2026-32999"],
+        "conversion_status": "SUPPORTED",
+        "validation_status": "passed",
+        "vendor": "other-vendor",
+        "products": [],
+        "tags": []
+    }));
+    fs::write(&report_path, serde_json::to_vec_pretty(&report).unwrap()).unwrap();
+    let allowlist = directory.path().join("allowlist.json");
+    fs::write(&allowlist, r#"{"vendors":["fixture-vendor"]}"#).unwrap();
+    let output = directory.path().join("out");
+
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "hunt",
+            "--input",
+            "tests/fixtures/production/waf.jsonl",
+            "--format",
+            "aws-waf",
+            "--nuclei-templates",
+            "tests/fixtures/nuclei",
+            "--nuclei-report",
+            report_path.to_str().unwrap(),
+            "--template-allowlist",
+            allowlist.to_str().unwrap(),
+            "--no-sigma",
+            "--output",
+            output.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let manifest: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(output.join("run-manifest.json")).unwrap())
+            .unwrap();
+    let filter = &manifest["inputs"]["template_filter"];
+    assert_eq!(filter["eligible_before_filter"], 2);
+    assert_eq!(filter["included_after_filter"], 1);
+    assert_eq!(filter["excluded_by_allowlist"], 1);
+    let hash = filter["allowlist"]["sha256"].as_str().unwrap();
+    assert_eq!(hash.len(), 64);
+    assert!(hash.chars().all(|character| character.is_ascii_hexdigit()));
+}
+
 fn parse_utc(value: &str) -> DateTime<Utc> {
     DateTime::parse_from_rfc3339(value)
         .unwrap()

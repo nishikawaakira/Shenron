@@ -36,6 +36,40 @@ fn inventories_realistic_supported_and_unsupported_template_features() {
 }
 
 #[test]
+fn coverage_records_declared_vendor_tags_and_comma_separated_products_without_inference() {
+    let directory = tempdir().unwrap();
+    fs::write(
+        directory.path().join("metadata.yaml"),
+        r#"id: metadata-cve
+info:
+  name: Metadata fixture
+  severity: medium
+  tags: cve,WordPress,wp-plugin
+  classification:
+    cve-id: CVE-2026-32001
+  metadata:
+    vendor: WordPress
+    product: wp-optimize, srbtranslatin
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/.metadata-fixture"
+"#,
+    )
+    .unwrap();
+
+    let report = coverage(directory.path(), "metadata-revision");
+    let template = report
+        .templates
+        .iter()
+        .find(|template| template.template_id == "metadata-cve")
+        .unwrap();
+    assert_eq!(template.vendor.as_deref(), Some("wordpress"));
+    assert_eq!(template.products, ["srbtranslatin", "wp-optimize"]);
+    assert_eq!(template.tags, ["cve", "wordpress", "wp-plugin"]);
+}
+
+#[test]
 fn classifies_detectability_separately_from_conversion() {
     let report = inventory(Path::new("tests/fixtures/nuclei"), "fixture-revision");
     let template = |id: &str| {

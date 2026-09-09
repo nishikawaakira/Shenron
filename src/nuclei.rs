@@ -208,7 +208,7 @@ pub enum ConversionStatus {
     Unsupported,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct TemplateAnalysis {
     pub template_id: String,
     pub cves: Vec<String>,
@@ -217,6 +217,18 @@ pub struct TemplateAnalysis {
     pub protocol: String,
     /// Nuclei `info.severity`, normalized without reinterpreting it.
     pub severity: CatalogSeverity,
+    /// Nuclei `info.tags`, normalized to distinct lowercase values. An empty
+    /// list means the catalog did not declare tags; no value is inferred.
+    #[serde(default)]
+    pub tags: Vec<String>,
+    /// Nuclei `info.metadata.vendor`. `None` means the catalog did not declare
+    /// a vendor; template paths and CVE identifiers are never used to infer it.
+    #[serde(default)]
+    pub vendor: Option<String>,
+    /// Nuclei `info.metadata.product`, split on commas and normalized to
+    /// distinct lowercase values. Empty means catalog metadata is unavailable.
+    #[serde(default)]
+    pub products: Vec<String>,
     pub detectability: Detectability,
     pub detectability_reasons: Vec<String>,
     pub observable_features: Vec<String>,
@@ -429,6 +441,22 @@ pub struct RequestMatcherView {
 pub struct FrozenNucleiSelection {
     pub template_ids: BTreeSet<String>,
     pub nuclei_revision: Option<String>,
+    /// Catalog-declared metadata for each eligible template. Empty/default
+    /// values represent metadata that was absent from an older frozen report.
+    pub metadata: BTreeMap<String, FrozenTemplateMetadata>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FrozenTemplateMetadata {
+    pub tags: BTreeSet<String>,
+    pub vendor: Option<String>,
+    pub products: BTreeSet<String>,
+}
+
+impl FrozenTemplateMetadata {
+    pub fn is_unknown(&self) -> bool {
+        self.tags.is_empty() && self.vendor.is_none() && self.products.is_empty()
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -444,6 +472,12 @@ struct FrozenNucleiTemplate {
     cves: Vec<String>,
     conversion_status: ConversionStatus,
     validation_status: String,
+    #[serde(default)]
+    tags: Vec<String>,
+    #[serde(default)]
+    vendor: Option<String>,
+    #[serde(default)]
+    products: Vec<String>,
 }
 
 impl ValidatedNucleiDetection {
@@ -945,7 +979,7 @@ pub fn frozen_nuclei_selection(path: &Path) -> Result<FrozenNucleiSelection> {
     let value = validate_frozen_report_value(path)?;
     let report: FrozenNucleiReport = serde_json::from_value(value)
         .with_context(|| format!("parsing Nuclei report {}", path.display()))?;
-    let template_ids = report
+    let eligible = report
         .templates
         .into_iter()
         .filter(|template| {
@@ -953,11 +987,27 @@ pub fn frozen_nuclei_selection(path: &Path) -> Result<FrozenNucleiSelection> {
                 && template.validation_status == "passed"
                 && !template.cves.is_empty()
         })
-        .map(|template| template.template_id)
+        .collect::<Vec<_>>();
+    let template_ids = eligible
+        .iter()
+        .map(|template| template.template_id.clone())
+        .collect();
+    let metadata = eligible
+        .into_iter()
+        .map(|template| {
+            let template_id = template.template_id;
+            let metadata = FrozenTemplateMetadata {
+                tags: template.tags.into_iter().collect(),
+                vendor: template.vendor,
+                products: template.products.into_iter().collect(),
+            };
+            (template_id, metadata)
+        })
         .collect();
     Ok(FrozenNucleiSelection {
         template_ids,
         nuclei_revision: report.nuclei_revision,
+        metadata,
     })
 }
 
@@ -1188,6 +1238,9 @@ fn non_cve_template(path: String) -> AnalyzedTemplate {
             nuclei_revision: "unknown".to_owned(),
             protocol: "not_analyzed_non_cve".to_owned(),
             severity: CatalogSeverity::Unknown,
+            tags: Vec::new(),
+            vendor: None,
+            products: Vec::new(),
             detectability: Detectability::Unknown,
             detectability_reasons: vec!["not_cve_candidate".to_owned()],
             observable_features: Vec::new(),
@@ -1213,6 +1266,9 @@ fn unsupported_parse(path: String) -> AnalyzedTemplate {
             nuclei_revision: "unknown".to_owned(),
             protocol: "unknown".to_owned(),
             severity: CatalogSeverity::Unknown,
+            tags: Vec::new(),
+            vendor: None,
+            products: Vec::new(),
             detectability: Detectability::Unknown,
             detectability_reasons: vec!["nuclei_parse_error".to_owned()],
             observable_features: Vec::new(),
@@ -1237,6 +1293,7 @@ fn analyze_value(root: &Value, path: String) -> AnalyzedTemplate {
             .and_then(|info| value_string(map_get(info, "severity")))
             .as_deref(),
     );
+    let (tags, vendor, products) = extract_catalog_metadata(root);
     let requests = map_get(root, "http")
         .or_else(|| map_get(root, "requests"))
         .and_then(Value::as_sequence)
@@ -1260,6 +1317,9 @@ fn analyze_value(root: &Value, path: String) -> AnalyzedTemplate {
                 nuclei_revision: "unknown".to_owned(),
                 protocol,
                 severity,
+                tags,
+                vendor,
+                products,
                 detectability: Detectability::Undetectable,
                 detectability_reasons: vec!["no_http_request".to_owned()],
                 observable_features: Vec::new(),
@@ -1444,6 +1504,9 @@ fn analyze_value(root: &Value, path: String) -> AnalyzedTemplate {
             nuclei_revision: "unknown".to_owned(),
             protocol,
             severity,
+            tags,
+            vendor,
+            products,
             detectability,
             detectability_reasons: reasons,
             observable_features: observable,
@@ -1609,6 +1672,35 @@ fn value_contains(value: &Value, needle: &str) -> bool {
                 .contains(&needle.to_ascii_lowercase())
         })
         .unwrap_or(false)
+}
+
+fn extract_catalog_metadata(root: &Value) -> (Vec<String>, Option<String>, Vec<String>) {
+    let info = map_get(root, "info");
+    let mut tags = Vec::new();
+    collect_strings(info.and_then(|value| map_get(value, "tags")), &mut tags);
+    normalize_catalog_values(&mut tags);
+
+    let metadata = info.and_then(|value| map_get(value, "metadata"));
+    let vendor = metadata
+        .and_then(|value| value_string(map_get(value, "vendor")))
+        .map(|value| value.trim().to_ascii_lowercase())
+        .filter(|value| !value.is_empty());
+    let mut products = Vec::new();
+    collect_strings(
+        metadata.and_then(|value| map_get(value, "product")),
+        &mut products,
+    );
+    normalize_catalog_values(&mut products);
+    (tags, vendor, products)
+}
+
+fn normalize_catalog_values(values: &mut Vec<String>) {
+    for value in values.iter_mut() {
+        *value = value.trim().to_ascii_lowercase();
+    }
+    values.retain(|value| !value.is_empty());
+    values.sort();
+    values.dedup();
 }
 
 fn extract_cves(root: &Value) -> Vec<String> {

@@ -9,7 +9,7 @@ use std::{
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use serde::{Deserialize, Serialize};
 use walkdir::WalkDir;
 
@@ -39,16 +39,17 @@ use shenron::{
         default_reputation_dataset, default_sigma_rules_dir, default_templates_dir,
     },
     production::{
-        ablation_with_optional_kev as production_ablation,
+        ablation_with_optional_kev_and_filter as production_ablation,
         concentration_with_optional_output as production_daily_concentration,
-        count_hypotheses_with_optional_kev as production_count_hypotheses,
+        count_hypotheses_with_optional_kev_and_filter as production_count_hypotheses,
         explain_private_findings,
-        historical_replay_with_optional_kev as production_historical_replay,
+        historical_replay_with_optional_kev_and_filter as production_historical_replay,
         hunt_to_writer_with_options as production_hunt_to_writer,
         hunt_with_optional_nuclei_options as production_hunt, load_private_concentration,
         terminal_safe, AblationReport, CountHypothesisReport, FindingSource,
         HistoricalReplayReport, HuntFindingFormat, HuntOptions, HuntTimeRange, HuntTriagePolicy,
-        SanitizedConcentrationReport, SanitizedHuntReport, SENSITIVE_CONFIG_PROBE_RULE_ID,
+        SanitizedConcentrationReport, SanitizedHuntReport, TemplateFilterOptions,
+        SENSITIVE_CONFIG_PROBE_RULE_ID,
     },
     report::{
         render_report, ReportArtifacts, ReportLanguage, ReportTriageView, SensitiveSuccessFinding,
@@ -183,7 +184,42 @@ enum CandidateCommand {
     },
 }
 
+#[derive(Debug, Clone, Default, Args)]
+struct TemplateFilterArgs {
+    /// JSON allowlist with `vendors`, `products`, and/or `tags` arrays. Known
+    /// template metadata must match at least one listed value.
+    #[arg(long, value_name = "PATH")]
+    template_allowlist: Option<PathBuf>,
+    /// JSON denylist with `vendors`, `products`, and/or `tags` arrays. A match
+    /// excludes the template and takes precedence over an allowlist match.
+    #[arg(long, value_name = "PATH")]
+    template_denylist: Option<PathBuf>,
+    /// Exclude templates whose frozen report declares no vendor, product, or
+    /// tag metadata. Unknown metadata is included by default.
+    #[arg(long)]
+    exclude_unknown_template_metadata: bool,
+}
+
+impl TemplateFilterArgs {
+    fn into_options(self) -> TemplateFilterOptions {
+        TemplateFilterOptions {
+            allowlist: self.template_allowlist,
+            denylist: self.template_denylist,
+            exclude_unknown_metadata: self.exclude_unknown_template_metadata,
+        }
+    }
+
+    fn is_active(&self) -> bool {
+        self.template_allowlist.is_some()
+            || self.template_denylist.is_some()
+            || self.exclude_unknown_template_metadata
+    }
+}
+
 #[derive(Debug, Subcommand)]
+// Hunt intentionally keeps its typed options together; boxing the filter
+// arguments would add indirection solely to reduce the enum's stack size.
+#[allow(clippy::large_enum_variant)]
 enum ProductionCommand {
     /// Hunt web logs with Nuclei and/or Sigma. Without --output, private findings are written only to stdout.
     Hunt {
@@ -208,6 +244,8 @@ enum ProductionCommand {
         nuclei_templates: Option<PathBuf>,
         #[arg(long, conflicts_with = "results_dir")]
         nuclei_report: Option<PathBuf>,
+        #[command(flatten)]
+        template_filter: TemplateFilterArgs,
         #[arg(long, conflicts_with = "results_dir")]
         kev_report: Option<PathBuf>,
         /// Write the full private/sanitized run artifacts under this directory.
@@ -441,6 +479,8 @@ enum ProductionCommand {
         nuclei_templates: Option<PathBuf>,
         #[arg(long)]
         nuclei_report: Option<PathBuf>,
+        #[command(flatten)]
+        template_filter: TemplateFilterArgs,
         #[arg(long)]
         kev_report: Option<PathBuf>,
         /// Optional aggregate-only JSON report destination.
@@ -463,6 +503,8 @@ enum ProductionCommand {
         nuclei_templates: Option<PathBuf>,
         #[arg(long)]
         nuclei_report: Option<PathBuf>,
+        #[command(flatten)]
+        template_filter: TemplateFilterArgs,
         #[arg(long)]
         kev_report: Option<PathBuf>,
         /// Local private findings from a prior hunt; read only for conservative coverage.
@@ -491,6 +533,8 @@ enum ProductionCommand {
         nuclei_templates: Option<PathBuf>,
         #[arg(long)]
         nuclei_report: Option<PathBuf>,
+        #[command(flatten)]
+        template_filter: TemplateFilterArgs,
         #[arg(long)]
         kev_report: Option<PathBuf>,
         /// Local private findings from a prior hunt; read only to establish conservative coverage.
@@ -832,6 +876,7 @@ fn main() -> Result<()> {
                 format,
                 nuclei_templates,
                 nuclei_report,
+                template_filter,
                 kev_report,
                 output,
                 output_format,
@@ -859,6 +904,11 @@ fn main() -> Result<()> {
                 // configured, the later notification call is a strict no-op.
                 let slack_config = SlackNotificationConfig::from_env()?;
                 if let Some(run_dir) = results_dir {
+                    if template_filter.is_active() {
+                        anyhow::bail!(
+                            "template metadata filters cannot be combined with --results-dir because no hunt is run"
+                        );
+                    }
                     if !run_dir.is_dir() {
                         anyhow::bail!(
                             "--results-dir must be an existing hunt or concentration output directory: {}",
@@ -942,6 +992,7 @@ fn main() -> Result<()> {
                     sigma_ruleset,
                     bot_range_database,
                     bot_range_snapshot_path: bot_range_path,
+                    template_filter: template_filter.into_options(),
                 };
                 let resolved_nuclei = nuclei_inputs
                     .as_ref()
@@ -1254,6 +1305,7 @@ fn main() -> Result<()> {
                 format,
                 nuclei_templates,
                 nuclei_report,
+                template_filter,
                 kev_report,
                 output,
                 from,
@@ -1269,6 +1321,7 @@ fn main() -> Result<()> {
                     kev_report.as_deref(),
                     format.telemetry_profile_for_input(&input)?,
                     HuntTimeRange { from, to },
+                    &template_filter.into_options(),
                 )?;
                 if let Some(path) = output.as_deref() {
                     serde_json::to_writer_pretty(File::create(path)?, &report)?;
@@ -1281,6 +1334,7 @@ fn main() -> Result<()> {
                 format,
                 nuclei_templates,
                 nuclei_report,
+                template_filter,
                 kev_report,
                 findings,
                 output,
@@ -1301,6 +1355,7 @@ fn main() -> Result<()> {
                     &findings,
                     format.telemetry_profile_for_input(&input)?,
                     HuntTimeRange { from, to },
+                    &template_filter.into_options(),
                 )?;
                 if let Some(path) = output.as_deref() {
                     serde_json::to_writer_pretty(File::create(path)?, &report)?;
@@ -1313,6 +1368,7 @@ fn main() -> Result<()> {
                 format,
                 nuclei_templates,
                 nuclei_report,
+                template_filter,
                 kev_report,
                 findings,
                 output,
@@ -1334,6 +1390,7 @@ fn main() -> Result<()> {
                     &findings,
                     format.telemetry_profile_for_input(&input)?,
                     HuntTimeRange { from, to },
+                    &template_filter.into_options(),
                 )?;
                 if let Some(path) = output.as_deref() {
                     serde_json::to_writer_pretty(File::create(path)?, &report)?;
@@ -3068,6 +3125,7 @@ fn print_ablation(report: &AblationReport, output_path: Option<&Path>) {
         "Ablation match-volume comparison only: volume rate = matched events / total events evaluated; it is NOT precision, recall, accuracy, ground truth, or an attack/exploitation/compromise determination."
     );
     println!("{}", report.safety_note);
+    print_template_filter_summary(report.template_filter.as_ref());
     println!(
         "\nTelemetry profile:          {:?}\nTotal events evaluated:     {}\nFiles analyzed:              {}\nParse errors:                {}\nOutside range ignored:      {}\nTimestamp missing ignored:  {}\n\nStrategy volumes:",
         report.telemetry_profile,
@@ -3108,6 +3166,7 @@ fn print_historical_replay(report: &HistoricalReplayReport, output_path: Option<
         .unwrap_or_else(|| "unavailable (no source finding request IDs)".to_owned());
     println!("Historical replay coverage is a conservative lower bound based on source-finding request IDs; it is NOT precision, recall, accuracy, ground truth, or an attack/exploitation/compromise determination.");
     println!("{}", report.safety_note);
+    print_template_filter_summary(report.inputs.template_filter.as_ref());
     println!(
         "\nTelemetry profile:          {:?}\nTotal events evaluated:     {}\nFiles analyzed:              {}\nParse errors:                {}\nOutside range ignored:      {}\nTimestamp missing ignored:  {}\n\nKnown findings:              {}\nKnown findings re-matched:   {}\nKnown findings missed:       {}\nConservative coverage:       {}\nMatched events total:        {}\nOther matches with request ID:    {}\nOther matches without request ID: {}\nMatched events BLOCK:        {}\nMatched events not blocked:  {}\nMatched events unknown outcome: {}\n\nTop CVE coverage:",
         report.telemetry_profile,
@@ -3162,6 +3221,7 @@ fn print_count_hypotheses(
 ) {
     println!("COUNT hypothesis ladder is an offline, non-deploying simulation. It reports trade-off measurements only and does NOT recommend a rung.");
     println!("{}", report.safety_note);
+    print_template_filter_summary(report.inputs.template_filter.as_ref());
     println!(
         "\nTelemetry profile:          {:?}\nTotal events evaluated:     {}\nFiles analyzed:              {}\nParse errors:                {}\nOutside range ignored:      {}\nTimestamp missing ignored:  {}\n\nCVE condition ladders:",
         report.telemetry_profile,
@@ -3210,6 +3270,19 @@ fn print_count_hypotheses(
     }
     if let Some(path) = output_path {
         println!("Aggregate-only JSON report:  {}", path.display());
+    }
+}
+
+fn print_template_filter_summary(summary: Option<&shenron::production::TemplateFilterSummary>) {
+    if let Some(summary) = summary {
+        println!(
+            "Template metadata filter: {} eligible / {} included; excluded by allowlist: {}, denylist: {}, unknown metadata: {}. Filtering narrows catalog evaluation only and is not an attack, exploitation, or compromise determination.",
+            summary.eligible_before_filter,
+            summary.included_after_filter,
+            summary.excluded_by_allowlist,
+            summary.excluded_by_denylist,
+            summary.excluded_unknown_metadata,
+        );
     }
 }
 
