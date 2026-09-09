@@ -40,6 +40,7 @@ use shenron::{
     production::{
         ablation_with_optional_kev as production_ablation,
         concentration_with_asn_rate_windows_and_query_keys as production_concentration,
+        concentration_with_optional_output as production_daily_concentration,
         count_hypotheses_with_optional_kev as production_count_hypotheses,
         explain_private_findings,
         historical_replay_with_optional_kev as production_historical_replay,
@@ -369,6 +370,30 @@ enum ProductionCommand {
         #[arg(long, default_value_t = 20)]
         limit: usize,
     },
+    /// Print a lightweight aggregate-only daily volume summary. No artifacts
+    /// are written unless --output is explicitly supplied.
+    Daily {
+        #[arg(long)]
+        input: PathBuf,
+        #[arg(long, value_enum, default_value_t = InputFormat::Auto)]
+        format: InputFormat,
+        /// Write the normal private and sanitized concentration artifacts.
+        #[arg(long)]
+        output: Option<PathBuf>,
+        /// Machine-readable aggregate-only output.
+        #[arg(long, value_enum, default_value_t = DailyOutputFormat::Text)]
+        output_format: DailyOutputFormat,
+        /// UTC bucket widths evaluated simultaneously. Repeat or comma-separate
+        /// durations such as 1m,10m,1h,1d.
+        #[arg(long, value_delimiter = ',', value_parser = parse_triage_duration)]
+        rate_window: Vec<Duration>,
+        /// Inclusive UTC start time in RFC 3339 format.
+        #[arg(long, value_parser = parse_rfc3339_utc)]
+        from: Option<DateTime<Utc>>,
+        /// Inclusive UTC end time in RFC 3339 format.
+        #[arg(long, value_parser = parse_rfc3339_utc)]
+        to: Option<DateTime<Utc>>,
+    },
     /// Compare aggregate match volume across predicates derived from one validated Nuclei IR. Never writes private findings.
     Ablation {
         #[arg(long)]
@@ -676,6 +701,63 @@ fn is_aws_waf_record(raw: &str) -> bool {
 enum OutputFormat {
     Jsonl,
     Csv,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum DailyOutputFormat {
+    Text,
+    Json,
+}
+
+#[derive(Debug, Serialize)]
+struct DailyVolumeSummary {
+    report_kind: &'static str,
+    safety_note: &'static str,
+    telemetry_profile: TelemetryProfile,
+    files_analyzed: usize,
+    total_requests: usize,
+    distinct_source_ips: usize,
+    top_path_request_share: Option<f64>,
+    top_path_distinct_source_ips: Option<usize>,
+    top_path_requests_per_source_ip: Option<f64>,
+    request_rates: Vec<shenron::concentration::WindowedRequestRateSummary>,
+    parse_errors: usize,
+    requests_outside_time_range: usize,
+    requests_without_timestamp_excluded: usize,
+    paths_beyond_tracking_cap: u64,
+    source_ips_beyond_tracking_cap: u64,
+    source_path_pairs_beyond_tracking_cap: u64,
+}
+
+impl DailyVolumeSummary {
+    fn from_report(report: &SanitizedConcentrationReport) -> Self {
+        let concentration = &report.request_concentration;
+        Self {
+            report_kind: "DAILY_REQUEST_VOLUME_SUMMARY",
+            safety_note: "Aggregate request-volume measurements only. These values are not a threshold, alert, or determination of automation, denial of service, attack, abuse, compromise, or attacker identity. Source IP counts describe observed connection peers and may include CDN, load-balancer, NAT, or proxy addresses.",
+            telemetry_profile: report.telemetry_profile,
+            files_analyzed: report.files_analyzed,
+            total_requests: report.total_requests_analyzed,
+            distinct_source_ips: concentration.distinct_source_ips,
+            top_path_request_share: concentration.top_path.as_ref().map(|item| item.request_share),
+            top_path_distinct_source_ips: concentration
+                .top_path
+                .as_ref()
+                .map(|item| item.distinct_source_ips),
+            top_path_requests_per_source_ip: concentration
+                .top_path
+                .as_ref()
+                .map(|item| item.requests_per_source_ip),
+            request_rates: concentration.request_rates.clone(),
+            parse_errors: report.parse_errors,
+            requests_outside_time_range: report.requests_outside_time_range,
+            requests_without_timestamp_excluded: report.requests_without_timestamp_excluded,
+            paths_beyond_tracking_cap: concentration.paths_beyond_tracking_cap,
+            source_ips_beyond_tracking_cap: concentration.source_ips_beyond_tracking_cap,
+            source_path_pairs_beyond_tracking_cap: concentration
+                .source_path_pairs_beyond_tracking_cap,
+        }
+    }
 }
 
 impl OutputFormat {
@@ -1059,6 +1141,40 @@ fn main() -> Result<()> {
                     limit,
                     focus.as_ref(),
                 );
+                Ok(())
+            }
+            ProductionCommand::Daily {
+                input,
+                format,
+                output,
+                output_format,
+                rate_window,
+                from,
+                to,
+            } => {
+                let rate_window_seconds = normalized_rate_windows(rate_window);
+                let telemetry_profile = format.telemetry_profile_for_input(&input)?;
+                let report = production_daily_concentration(
+                    &input,
+                    output.as_deref(),
+                    telemetry_profile,
+                    HuntTimeRange { from, to },
+                    None,
+                    FocusPrefixLengths::default(),
+                    None,
+                    &rate_window_seconds,
+                    false,
+                )?;
+                let summary = DailyVolumeSummary::from_report(&report);
+                match output_format {
+                    DailyOutputFormat::Text => {
+                        print_daily_volume_summary(&summary, output.as_deref())
+                    }
+                    DailyOutputFormat::Json => {
+                        serde_json::to_writer_pretty(io::stdout().lock(), &summary)?;
+                        println!();
+                    }
+                }
                 Ok(())
             }
             ProductionCommand::Ablation {
@@ -2465,6 +2581,86 @@ fn print_concentration(
             }
         }
     }
+}
+
+fn normalized_rate_windows(rate_window: Vec<Duration>) -> Vec<u64> {
+    if rate_window.is_empty() {
+        DEFAULT_RATE_WINDOW_SECONDS.to_vec()
+    } else {
+        let mut values = rate_window
+            .into_iter()
+            .map(|window| window.as_secs())
+            .collect::<Vec<_>>();
+        values.sort_unstable();
+        values.dedup();
+        values
+    }
+}
+
+fn print_daily_volume_summary(summary: &DailyVolumeSummary, output: Option<&Path>) {
+    println!("Daily request-volume summary (aggregate counts only):");
+    println!(
+        "  Total requests:                         {}",
+        summary.total_requests
+    );
+    println!(
+        "  Distinct observed source IPs:           {}",
+        summary.distinct_source_ips
+    );
+    match (
+        summary.top_path_request_share,
+        summary.top_path_distinct_source_ips,
+        summary.top_path_requests_per_source_ip,
+    ) {
+        (Some(share), Some(sources), Some(per_source)) => println!(
+            "  Top path share / sources / requests per source: {:.1}% / {} / {:.1}",
+            share * 100.0,
+            sources,
+            per_source,
+        ),
+        _ => println!("  Top path metrics:                       unavailable"),
+    }
+    for rate in &summary.request_rates {
+        println!(
+            "  Rate window {}s peak / median / ratio: {} / {} / {} (undated: {}; beyond cap: {})",
+            rate.bucket_width_seconds,
+            rate.peak_requests
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "unavailable".to_owned()),
+            rate.median_requests
+                .map(|value| format!("{value:.1}"))
+                .unwrap_or_else(|| "unavailable".to_owned()),
+            rate.peak_to_median_ratio
+                .map(|value| format!("{value:.2}"))
+                .unwrap_or_else(|| "unavailable".to_owned()),
+            rate.observations_without_timestamp,
+            rate.observations_beyond_bucket_cap,
+        );
+    }
+    println!(
+        "  Files / parse errors / outside range / undated excluded: {} / {} / {} / {}",
+        summary.files_analyzed,
+        summary.parse_errors,
+        summary.requests_outside_time_range,
+        summary.requests_without_timestamp_excluded,
+    );
+    println!(
+        "  Tracking-cap omissions (paths / source IPs / pairs): {} / {} / {}",
+        summary.paths_beyond_tracking_cap,
+        summary.source_ips_beyond_tracking_cap,
+        summary.source_path_pairs_beyond_tracking_cap,
+    );
+    if let Some(output) = output {
+        println!(
+            "  Artifacts written:                      {}",
+            output.display()
+        );
+    } else {
+        println!("  Artifacts written:                      none (use --output to opt in)");
+    }
+    println!(
+        "These are observed volume measurements, not thresholds, alerts, or determinations of automation, denial of service, attack, abuse, compromise, or attacker identity."
+    );
 }
 
 fn print_temporal_comparison(

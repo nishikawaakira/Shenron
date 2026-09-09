@@ -1360,11 +1360,69 @@ pub fn concentration_with_asn_rate_windows_and_query_keys(
     rate_window_seconds: &[u64],
     include_private_query_keys: bool,
 ) -> anyhow::Result<SanitizedConcentrationReport> {
+    concentration_run(
+        input,
+        Some(output),
+        telemetry_profile,
+        time_range,
+        focus,
+        focus_prefix_lengths,
+        asn_database,
+        rate_window_seconds,
+        include_private_query_keys,
+    )
+}
+
+/// Run the same bounded concentration accumulator used by `concentration`,
+/// optionally omitting every artifact write for lightweight daily monitoring.
+/// The returned report contains aggregate counts only and no path, IP, or query
+/// value. Supplying an output directory preserves the normal artifacts.
+#[allow(clippy::too_many_arguments)]
+pub fn concentration_with_optional_output(
+    input: &Path,
+    output: Option<&Path>,
+    telemetry_profile: TelemetryProfile,
+    time_range: HuntTimeRange,
+    focus: Option<FocusSelector>,
+    focus_prefix_lengths: FocusPrefixLengths,
+    asn_database: Option<&AsnDatabase>,
+    rate_window_seconds: &[u64],
+    include_private_query_keys: bool,
+) -> anyhow::Result<SanitizedConcentrationReport> {
+    concentration_run(
+        input,
+        output,
+        telemetry_profile,
+        time_range,
+        focus,
+        focus_prefix_lengths,
+        asn_database,
+        rate_window_seconds,
+        include_private_query_keys,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn concentration_run(
+    input: &Path,
+    output: Option<&Path>,
+    telemetry_profile: TelemetryProfile,
+    time_range: HuntTimeRange,
+    focus: Option<FocusSelector>,
+    focus_prefix_lengths: FocusPrefixLengths,
+    asn_database: Option<&AsnDatabase>,
+    rate_window_seconds: &[u64],
+    include_private_query_keys: bool,
+) -> anyhow::Result<SanitizedConcentrationReport> {
     time_range.validate()?;
-    ensure_separate_output(input, output)?;
+    if let Some(output) = output {
+        ensure_separate_output(input, output)?;
+    }
     let files = input_files(input, telemetry_profile)?;
-    fs::create_dir_all(output)
-        .with_context(|| format!("creating private output directory {}", output.display()))?;
+    if let Some(output) = output {
+        fs::create_dir_all(output)
+            .with_context(|| format!("creating private output directory {}", output.display()))?;
+    }
     let mut report = SanitizedConcentrationReport {
         report_kind: "SANITIZED_REQUEST_CONCENTRATION".to_owned(),
         safety_note: concentration_safety_note().to_owned(),
@@ -1414,21 +1472,24 @@ pub fn concentration_with_asn_rate_windows_and_query_keys(
         })?;
     }
     report.request_concentration = accumulator.summary();
-    let mut private_report = accumulator.private_report_with_query_keys(include_private_query_keys);
-    if let Some(focus) = private_report.focus.as_mut() {
-        add_focus_prefix_groups(focus, focus_prefix_lengths);
-        if let Some(asn_database) = asn_database {
-            add_focus_asn_groups(focus, asn_database);
+    if let Some(output) = output {
+        let mut private_report =
+            accumulator.private_report_with_query_keys(include_private_query_keys);
+        if let Some(focus) = private_report.focus.as_mut() {
+            add_focus_prefix_groups(focus, focus_prefix_lengths);
+            if let Some(asn_database) = asn_database {
+                add_focus_asn_groups(focus, asn_database);
+            }
         }
+        write_private_concentration(output, &private_report)?;
+        let sanitized_path = output.join("sanitized-research.json");
+        serde_json::to_writer_pretty(
+            File::create(&sanitized_path)
+                .with_context(|| format!("creating {}", sanitized_path.display()))?,
+            &report,
+        )?;
+        write_concentration_run_manifest(output, telemetry_profile, &time_range)?;
     }
-    write_private_concentration(output, &private_report)?;
-    let sanitized_path = output.join("sanitized-research.json");
-    serde_json::to_writer_pretty(
-        File::create(&sanitized_path)
-            .with_context(|| format!("creating {}", sanitized_path.display()))?,
-        &report,
-    )?;
-    write_concentration_run_manifest(output, telemetry_profile, &time_range)?;
     Ok(report)
 }
 

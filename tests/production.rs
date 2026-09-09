@@ -187,6 +187,70 @@ fn concentration_writes_private_detail_without_leaking_it_to_sanitized_or_defaul
 }
 
 #[test]
+fn daily_reuses_concentration_metrics_without_writing_default_artifacts() {
+    let directory = tempdir().unwrap();
+    let input = directory.path().join("daily.log");
+    fs::write(
+        &input,
+        concat!(
+            "198.51.100.1 - - [01/Jan/2026:00:00:00 +0000] \"GET /private-hot-path HTTP/1.1\" 200 10 \"-\" \"fixture-agent\"\n",
+            "198.51.100.2 - - [01/Jan/2026:00:00:00 +0000] \"GET /private-hot-path HTTP/1.1\" 200 10 \"-\" \"fixture-agent\"\n",
+            "198.51.100.3 - - [01/Jan/2026:00:01:00 +0000] \"GET /private-hot-path HTTP/1.1\" 404 10 \"-\" \"fixture-agent\"\n",
+            "203.0.113.4 - - [01/Jan/2026:00:01:00 +0000] \"GET /other HTTP/1.1\" 200 5 \"-\" \"fixture-agent\"\n",
+        ),
+    )
+    .unwrap();
+
+    let output = Command::cargo_bin("shenron")
+        .unwrap()
+        .current_dir(directory.path())
+        .args([
+            "daily",
+            "--input",
+            input.to_str().unwrap(),
+            "--format",
+            "apache",
+            "--output-format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let summary: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(summary["report_kind"], "DAILY_REQUEST_VOLUME_SUMMARY");
+    assert_eq!(summary["total_requests"], 4);
+    assert_eq!(summary["distinct_source_ips"], 4);
+    assert_eq!(summary["top_path_request_share"], 0.75);
+    assert_eq!(summary["top_path_distinct_source_ips"], 3);
+    assert_eq!(summary["top_path_requests_per_source_ip"], 1.0);
+    assert!(!stdout.contains("/private-hot-path"));
+    assert!(!stdout.contains("198.51.100.1"));
+    assert!(!directory.path().join("request-concentration.json").exists());
+    assert!(!directory.path().join("sanitized-research.json").exists());
+
+    let artifact_output = directory.path().join("daily-artifacts");
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "daily",
+            "--input",
+            input.to_str().unwrap(),
+            "--format",
+            "apache",
+            "--output",
+            artifact_output.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(contains(
+            "Top path share / sources / requests per source: 75.0% / 3 / 1.0",
+        ));
+    assert!(artifact_output.join("request-concentration.json").is_file());
+    assert!(artifact_output.join("sanitized-research.json").is_file());
+}
+
+#[test]
 fn concentration_keeps_query_values_private_and_gates_key_names_to_show_paths() {
     let directory = tempdir().unwrap();
     let input = directory.path().join("query-access.log");

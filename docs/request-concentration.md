@@ -30,6 +30,30 @@ generic rule matches a request. Hunt writes the private concentration artifact
 alongside `private-findings.jsonl`; its sanitized concentration summary is
 embedded in `sanitized-research.json`.
 
+## Lightweight daily summary
+
+`shenron daily` runs the same bounded concentration accumulator but prints only
+an aggregate summary suitable for cron or another monitoring system:
+
+```bash
+shenron daily --input /var/log/nginx --format nginx
+shenron daily --input /var/log/nginx --format nginx --output-format json
+```
+
+The output includes total requests, retained distinct observed source IPs, the
+leading path's share and retained source count, requests per distinct source,
+and peak/median ratios for the configured simultaneous rate windows. It never
+prints a URI path, IP address, or query value. By default it creates no run
+directory or artifact. Supplying `--output <DIR>` explicitly writes the normal
+private and sanitized concentration artifacts without changing the computed
+numbers. Parse failures, time-range exclusions, undated exclusions, and every
+tracking-cap omission remain visible in both text and JSON output.
+
+The command applies no threshold and does not use its exit status to classify
+traffic. Its values are measurements for downstream review, not alerts or
+determinations of automation, denial of service, attack, abuse, compromise, or
+attacker identity.
+
 ## Requests per distinct source IP
 
 Each retained path and optional focus reports

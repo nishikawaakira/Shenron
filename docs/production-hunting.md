@@ -195,6 +195,13 @@ that contains paths and observed connection-peer IPs. Use the CTI-independent
 hunt. Neither command classifies concentration as a denial-of-service attempt,
 attack, abuse, compromise, or attacker identity.
 
+For a lightweight recurring measurement, `shenron daily --input <logs>
+--format <format>` uses the same concentration accumulator but writes no
+artifacts by default and prints only aggregate counts and ratios. Add
+`--output-format json` for machine-readable monitoring input, or explicitly
+add `--output <DIR>` to retain the normal concentration artifacts. It applies
+no alert threshold or traffic classification.
+
 Use `concentration --path /example/path --show-source-ips` to
 inspect deterministic request counts for observed connection peers on one exact
 normalized path. The path and peer values remain private in
