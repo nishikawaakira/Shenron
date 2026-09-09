@@ -446,15 +446,17 @@ fn sigma_condition(condition: &SigmaLiteralCondition) -> Result<DefensiveConditi
 }
 
 fn sigma_field_condition(field: &str, value: &str, contains: bool) -> Result<DefensiveCondition> {
+    // Store a lowercase needle to align local matching with the exporters'
+    // LOWERCASE transformation, independently of Sigma compiler normalization.
     match (field.to_ascii_lowercase().as_str(), contains) {
         ("cs-uri-stem" | "uri_path", false) => {
             Ok(DefensiveCondition::UriEqualsAsciiCaseInsensitive {
-                value: value.to_owned(),
+                value: value.to_ascii_lowercase(),
             })
         }
         ("cs-uri-stem" | "uri_path", true) => {
             Ok(DefensiveCondition::UriContainsAsciiCaseInsensitive {
-                value: value.to_owned(),
+                value: value.to_ascii_lowercase(),
             })
         }
         _ => {
@@ -1102,4 +1104,33 @@ fn xml(v: &str) -> String {
 }
 fn regex(v: &str) -> String {
     regex::escape(v)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sigma_uri_conditions_normalize_literals_at_the_candidate_boundary() {
+        // Exercise this boundary directly: the Sigma compiler currently folds
+        // literals too, which would otherwise hide a regression here.
+        for (field, literal, contains, expected) in [
+            ("uri_path", "/CGI-BIN", false, "/cgi-bin"),
+            ("cs-uri-stem", "ADMIN", true, "admin"),
+            ("uri_path", "/.env", false, "/.env"),
+            ("cs-uri-stem", "/.env", true, "/.env"),
+        ] {
+            let condition = sigma_field_condition(field, literal, contains).unwrap();
+            let expected = if contains {
+                DefensiveCondition::UriContainsAsciiCaseInsensitive {
+                    value: expected.to_owned(),
+                }
+            } else {
+                DefensiveCondition::UriEqualsAsciiCaseInsensitive {
+                    value: expected.to_owned(),
+                }
+            };
+            assert_eq!(condition, expected);
+        }
+    }
 }

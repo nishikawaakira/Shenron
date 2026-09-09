@@ -677,3 +677,149 @@ fn sigma_ttp_export_requires_replay_remains_count_and_rejects_nonfaithful_backen
         "LOWERCASE"
     );
 }
+
+#[test]
+fn uppercase_sigma_uri_literals_agree_with_replay_and_count_exports() {
+    use shenron::access_log::{parse_combined_line, AccessLogFormat};
+    use shenron::production::explain_private_findings;
+
+    for (field, literal, needle, constraint, paths) in [
+        (
+            "uri_path",
+            "/CGI-BIN",
+            "/cgi-bin",
+            "EXACTLY",
+            [
+                "/CGI-BIN",
+                "/cgi-bin",
+                "/CgI-BiN",
+                "/cgi-bin/extra",
+                "/other",
+            ],
+        ),
+        (
+            "cs-uri-stem|contains",
+            "ADMIN",
+            "admin",
+            "CONTAINS",
+            [
+                "/ADMIN",
+                "/admin",
+                "/prefix/AdMiN/settings",
+                "/admi",
+                "/other",
+            ],
+        ),
+    ] {
+        let directory = tempdir().unwrap();
+        let rule_path = directory.path().join("rule.yml");
+        let findings_path = directory.path().join("findings.jsonl");
+        fs::write(
+            &findings_path,
+            serde_json::to_vec(&serde_json::json!({
+                "source": "sigma", "template_id": "case-test", "cves": [],
+                "detectability": "LOW", "headers": [], "method": "GET",
+                "uri_path": paths[0]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let findings = explain_private_findings(&findings_path).unwrap();
+        let mut built = Vec::new();
+        for source_literal in [literal, needle] {
+            fs::write(
+                &rule_path,
+                format!(
+                    "title: Case test\nid: case-test\nlogsource:\n  category: webserver\ndetection:\n  selection:\n    {field}: '{source_literal}'\n  condition: selection\n"
+                ),
+            )
+            .unwrap();
+            let rules = load_rules(&rule_path);
+            assert!(rules.unsupported.is_empty());
+            let (mut candidates, stats) = build_batch_from_findings_with_sigma(
+                &findings,
+                TelemetryProfile::NginxCombined,
+                false,
+                Some(&rules.supported),
+            );
+            assert_eq!(stats.sigma_candidates, 1);
+            built.push(candidates.pop().unwrap());
+        }
+        // Case alone does not change the serialized candidate, including its
+        // evidence and deterministic ID. Already-lowercase inputs stay stable.
+        assert_eq!(
+            serde_json::to_vec_pretty(&built[0]).unwrap(),
+            serde_json::to_vec_pretty(&built[1]).unwrap()
+        );
+        let expected_condition = if constraint == "EXACTLY" {
+            DefensiveCondition::UriEqualsAsciiCaseInsensitive {
+                value: needle.into(),
+            }
+        } else {
+            DefensiveCondition::UriContainsAsciiCaseInsensitive {
+                value: needle.into(),
+            }
+        };
+        assert_eq!(built[0].conditions, expected_condition);
+
+        let lines = paths.map(|path| format!(
+            "192.0.2.1 - - [09/Sep/2026:00:00:00 +0000] \"GET {path} HTTP/1.1\" 404 12 \"-\" \"test\""
+        ));
+        let log_path = directory.path().join("input.log");
+        fs::write(&log_path, lines.join("\n") + "\n").unwrap();
+        let replayed = replay(
+            built.remove(0),
+            &log_path,
+            TelemetryProfile::NginxCombined,
+            &directory.path().join("replayed.json"),
+        )
+        .unwrap();
+        assert_eq!(replayed.evidence.historical_requests_evaluated, 5);
+        assert_eq!(replayed.evidence.other_historical_matches, 3);
+
+        let aws_path = directory.path().join("aws.json");
+        let tf_path = directory.path().join("count.tf");
+        for (backend, path) in [
+            (Backend::AwsWafJson, &aws_path),
+            (Backend::TerraformAwsWaf, &tf_path),
+        ] {
+            export(
+                &replayed,
+                backend,
+                TelemetryProfile::NginxCombined,
+                path,
+                Some(1),
+                99_001,
+            )
+            .unwrap();
+        }
+        let aws: serde_json::Value = serde_json::from_slice(&fs::read(aws_path).unwrap()).unwrap();
+        let statement = &aws["Statement"]["ByteMatchStatement"];
+        assert_eq!(statement["SearchString"], needle);
+        assert_eq!(
+            statement["TextTransformations"],
+            serde_json::json!([{"Priority": 0, "Type": "LOWERCASE"}])
+        );
+        assert_eq!(statement["PositionalConstraint"], constraint);
+        assert_eq!(aws["Action"], serde_json::json!({"Count": {}}));
+        let terraform = fs::read_to_string(tf_path).unwrap();
+        assert!(terraform.contains(&format!("search_string         = \"{needle}\"")));
+        assert!(terraform.contains("type     = \"LOWERCASE\""));
+        assert!(terraform.contains("count {}"));
+
+        for (index, line) in lines.iter().enumerate() {
+            let event = parse_combined_line(line, AccessLogFormat::NginxCombined).unwrap();
+            let normalized = event.uri_path.as_ref().unwrap().to_ascii_lowercase();
+            // Evaluate the exported byte-match inputs locally; no AWS/network
+            // call is involved. Both forms must predict the same five events.
+            let search = statement["SearchString"].as_str().unwrap();
+            let exported_match = match statement["PositionalConstraint"].as_str().unwrap() {
+                "EXACTLY" => normalized == search,
+                "CONTAINS" => normalized.contains(search),
+                other => panic!("unexpected positional constraint {other}"),
+            };
+            assert_eq!(replayed.conditions.matches(&event), index < 3);
+            assert_eq!(replayed.conditions.matches(&event), exported_match);
+        }
+    }
+}
