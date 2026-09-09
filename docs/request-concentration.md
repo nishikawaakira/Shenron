@@ -54,6 +54,34 @@ traffic. Its values are measurements for downstream review, not alerts or
 determinations of automation, denial of service, attack, abuse, compromise, or
 attacker identity.
 
+### Response outcome health measurements
+
+The daily summary also reports corpus-wide 2xx, 3xx, ordinary 4xx, nginx 499,
+and 5xx counts and shares. The added `client_closed_request_499` count is a
+subset of the backward-compatible `client_error` total; displayed ordinary
+4xx subtracts that subset so 499 is not hidden among other client-error
+responses. These aggregate numeric values are also present in sanitized output.
+If the selected telemetry profile cannot expose response status, the entire
+response outcome is `null`/unavailable rather than a fabricated zero.
+
+For each existing simultaneous rate window, Shenron uses the same admitted UTC
+buckets to report the minimum 2xx share and maximum 5xx share. Buckets below
+`--response-bucket-min-requests` are excluded and counted; the deterministic
+default is 10 requests. Undated observations and records beyond the existing
+bucket cap remain separately disclosed. This inclusion floor is configurable
+for corpus scale, but it is not an alert threshold and produces no label or
+special exit status.
+
+Response outcome shares are counts of what the log recorded. A low success
+share can equally result from redirect-heavy routing, authentication flows,
+health checks, clients that disconnect early, a slow backend, or an unavailable
+origin. It is not a determination of an outage, degraded availability, an
+attack, or abuse.
+
+In one four-site review, three comparison sites recorded 2xx shares of
+77.0–99.7% and 499 shares of 0.0–0.5%. These are case-specific reference
+observations only, not a threshold, baseline, or availability classification.
+
 ### Explicit processed-file index
 
 Recurring `daily` or `concentration` runs may opt into whole-file skipping with

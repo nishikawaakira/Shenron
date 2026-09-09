@@ -91,7 +91,7 @@ Shenron は**単一バイナリ**です。準備系コマンドだけが公開�
 | `hunt` | 唯一の検知入口。Nuclei(CVE)＋Sigma を1パスで照合し、入力フィールド可用性・parse 品質・時刻カバレッジも集計表示。`--output <DIR>` で private/sanitized の全成果物、`--output` 無しなら findings を stdout のみ。`--no-nuclei` は setup 不要の Sigma のみ。`--since` / `--baseline-latest` / `--report` / `--observation-store` で運用を形作る |
 | `explain` | run の private findings を 接続元/クライアント IP・ASN・JA4 単位でトリアージ（挙動優先度スコア・リクエスト列・時間窓レート） |
 | `concentration` | CTI なしのリクエスト量分布。`--path` / `--path-prefix` / `--source-ip` でフォーカス |
-| `daily` | 軽量な集計リクエスト量サマリ。既定では成果物なし、監視向け JSON 出力に対応 |
+| `daily` | 軽量なリクエスト量・応答結果サマリ。nginx 499 と時間窓の極値を分離表示し、既定では成果物なし、監視向け JSON に対応 |
 | `trend` | 明示指定した private URI パスを既存 run 成果物間で追跡（生ログの再処理なし） |
 | `compare` | 2つの run ディレクトリを差分比較（first-seen・volume 上昇・新規 CVE） |
 | `candidate build` / `replay` / `compatibility` / `explain` / `export` | 確定した検出を、レビュー前提の **COUNT のみ** WAF ルールへ |

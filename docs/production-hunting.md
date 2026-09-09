@@ -202,6 +202,14 @@ artifacts by default and prints only aggregate counts and ratios. Add
 add `--output <DIR>` to retain the normal concentration artifacts. It applies
 no alert threshold or traffic classification.
 
+The daily summary includes corpus-wide response outcome shares with nginx 499
+shown separately from ordinary 4xx, plus minimum 2xx and maximum 5xx shares for
+each configured rate window. `--response-bucket-min-requests` controls the
+documented bucket inclusion floor (default 10); excluded sparse buckets,
+undated observations, and cap omissions are counted. These are recorded
+response outcomes, not outage, degraded-availability, attack, or abuse
+determinations.
+
 `daily` and standalone `concentration` also accept the explicit private
 `--processed-index <PATH>` optimization for rotated log sets. Matching whole
 files are skipped and counted; changed files are processed in full, and

@@ -2289,6 +2289,8 @@ mod tests {
                     observations_without_timestamp: 0,
                 },
                 request_rates: Vec::new(),
+                response_outcomes: None,
+                response_outcome_windows: None,
                 focus: Some(SanitizedFocusSummary {
                     focus_kind: "exact-path".to_owned(),
                     total_requests: 3,
@@ -2845,6 +2847,7 @@ mod tests {
             success: 2,
             redirection: 3,
             client_error: 4,
+            client_closed_request_499: 0,
             server_error: 5,
             other: 6,
             unavailable: 7,

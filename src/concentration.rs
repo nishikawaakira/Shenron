@@ -37,6 +37,10 @@ pub const DEFAULT_MAX_MINUTE_BUCKETS: usize = 1_000_000;
 /// Default deterministic rate windows: one minute, ten minutes, one hour, and
 /// one day. They describe volume shape only and are not alert thresholds.
 pub const DEFAULT_RATE_WINDOW_SECONDS: [u64; 4] = [60, 600, 3_600, 86_400];
+/// Default minimum request count for including a time bucket in response
+/// outcome extrema. This avoids presenting a one-request bucket as a useful
+/// minimum or maximum while making no health or availability classification.
+pub const DEFAULT_RESPONSE_BUCKET_MINIMUM_REQUESTS: u64 = 10;
 
 /// What a `concentration` focus selects. Exact and prefix focuses are keyed on
 /// the normalized URI path; the source-IP focus lists what one or more observed
@@ -142,9 +146,57 @@ pub struct StatusClassCounts {
     pub success: u64,
     pub redirection: u64,
     pub client_error: u64,
+    /// nginx 499 responses, also retained inside `client_error` for backward
+    /// compatibility. Presentation subtracts this subset from ordinary 4xx.
+    #[serde(default)]
+    pub client_closed_request_499: u64,
     pub server_error: u64,
     pub other: u64,
     pub unavailable: u64,
+}
+
+impl StatusClassCounts {
+    pub fn ordinary_client_error(&self) -> u64 {
+        self.client_error
+            .saturating_sub(self.client_closed_request_499)
+    }
+
+    fn total_observations(&self) -> u64 {
+        self.informational
+            + self.success
+            + self.redirection
+            + self.client_error
+            + self.server_error
+            + self.other
+            + self.unavailable
+    }
+}
+
+/// Aggregate response outcomes from status-capable telemetry. Shares use all
+/// observed requests, including unavailable/other outcomes in the denominator.
+/// They are measurements, not a health, outage, or availability judgment.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ResponseOutcomeSummary {
+    pub counts: StatusClassCounts,
+    pub success_share: f64,
+    pub redirection_share: f64,
+    /// Ordinary 4xx excluding the separately reported nginx 499 subset.
+    pub ordinary_client_error_share: f64,
+    pub client_closed_request_499_share: f64,
+    pub server_error_share: f64,
+}
+
+/// Response-outcome extrema over one existing request-rate bucket width.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct WindowedResponseOutcomeSummary {
+    pub bucket_width_seconds: u64,
+    pub minimum_requests_per_bucket: u64,
+    pub eligible_buckets: usize,
+    pub buckets_below_minimum: usize,
+    pub minimum_success_share: Option<f64>,
+    pub maximum_server_error_share: Option<f64>,
+    pub observations_without_timestamp: u64,
+    pub observations_beyond_bucket_cap: u64,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -273,6 +325,13 @@ pub struct RequestConcentrationSummary {
     /// per-minute field above remains for artifact compatibility.
     #[serde(default)]
     pub request_rates: Vec<WindowedRequestRateSummary>,
+    /// `None` when the telemetry profile cannot expose response status.
+    #[serde(default)]
+    pub response_outcomes: Option<ResponseOutcomeSummary>,
+    /// Uses the same admitted buckets as `request_rates`; unavailable when the
+    /// telemetry profile cannot expose status.
+    #[serde(default)]
+    pub response_outcome_windows: Option<Vec<WindowedResponseOutcomeSummary>>,
     /// Present only when `production concentration --path` selected an exact
     /// URI path. This aggregate is safe for sanitized output.
     #[serde(default)]
@@ -482,7 +541,10 @@ struct QueryShapeAccumulator {
 pub struct RequestConcentration {
     limits: ConcentrationLimits,
     response_bytes_available: bool,
+    status_available: bool,
+    response_bucket_minimum_requests: u64,
     total_requests: u64,
+    status_classes: StatusClassCounts,
     paths: BTreeMap<String, PathAccumulator>,
     source_ips: BTreeMap<String, SourceAccumulator>,
     source_path_pairs: BTreeMap<String, BTreeMap<String, u64>>,
@@ -500,6 +562,7 @@ pub struct RequestConcentration {
     rate_window_seconds: Vec<u64>,
     rate_buckets: BTreeMap<u64, BTreeMap<i64, u64>>,
     rate_buckets_beyond_cap: BTreeMap<u64, u64>,
+    status_rate_buckets: BTreeMap<u64, BTreeMap<i64, StatusClassCounts>>,
     focus: Option<FocusSelector>,
     focus_total: u64,
     focus_sources: BTreeMap<String, SourceAccumulator>,
@@ -532,10 +595,36 @@ impl RequestConcentration {
         )
     }
 
+    pub fn with_capabilities(response_bytes_available: bool, status_available: bool) -> Self {
+        Self::with_capabilities_and_rate_windows(
+            response_bytes_available,
+            status_available,
+            ConcentrationLimits::default(),
+            &DEFAULT_RATE_WINDOW_SECONDS,
+        )
+    }
+
     /// Construct an accumulator with explicit simultaneous rate windows. Zero
     /// widths are ignored; remaining widths are sorted and deduplicated.
     pub fn with_limits_and_rate_windows(
         response_bytes_available: bool,
+        limits: ConcentrationLimits,
+        rate_window_seconds: &[u64],
+    ) -> Self {
+        Self::with_capabilities_and_rate_windows(
+            response_bytes_available,
+            true,
+            limits,
+            rate_window_seconds,
+        )
+    }
+
+    /// Construct with explicit telemetry capabilities. Existing public
+    /// constructors retain status support for backward-compatible unit use;
+    /// production paths use this variant with their telemetry profile.
+    pub fn with_capabilities_and_rate_windows(
+        response_bytes_available: bool,
+        status_available: bool,
         limits: ConcentrationLimits,
         rate_window_seconds: &[u64],
     ) -> Self {
@@ -548,6 +637,10 @@ impl RequestConcentration {
             .iter()
             .map(|seconds| (*seconds, 0))
             .collect();
+        let status_rate_buckets = rate_window_seconds
+            .iter()
+            .map(|seconds| (*seconds, BTreeMap::new()))
+            .collect();
         let focus_rate_buckets = rate_window_seconds
             .iter()
             .map(|seconds| (*seconds, BTreeMap::new()))
@@ -559,7 +652,10 @@ impl RequestConcentration {
         Self {
             limits,
             response_bytes_available,
+            status_available,
+            response_bucket_minimum_requests: DEFAULT_RESPONSE_BUCKET_MINIMUM_REQUESTS,
             total_requests: 0,
+            status_classes: StatusClassCounts::default(),
             paths: BTreeMap::new(),
             source_ips: BTreeMap::new(),
             source_path_pairs: BTreeMap::new(),
@@ -577,6 +673,7 @@ impl RequestConcentration {
             rate_window_seconds,
             rate_buckets,
             rate_buckets_beyond_cap,
+            status_rate_buckets,
             focus: None,
             focus_total: 0,
             focus_sources: BTreeMap::new(),
@@ -593,6 +690,12 @@ impl RequestConcentration {
         }
     }
 
+    /// Configure the inclusion floor for response-outcome window extrema.
+    /// This changes reporting only and never classifies a bucket.
+    pub fn set_response_bucket_minimum_requests(&mut self, minimum: u64) {
+        self.response_bucket_minimum_requests = minimum;
+    }
+
     /// Enable a focus for subsequent observations. It is used only by
     /// `concentration`; hunt keeps the default `None` focus.
     pub fn focus_on(&mut self, selector: FocusSelector) {
@@ -606,6 +709,7 @@ impl RequestConcentration {
 
     pub fn observe(&mut self, event: &WebEvent) {
         self.total_requests += 1;
+        record_status_class(&mut self.status_classes, event.status);
         self.observe_minute(event.timestamp, event.status);
 
         let path = event.uri_path.as_deref();
@@ -673,6 +777,16 @@ impl RequestConcentration {
                 &self.rate_buckets_beyond_cap,
                 self.observations_without_timestamp,
             ),
+            response_outcomes: self
+                .status_available
+                .then(|| response_outcome_summary(&self.status_classes)),
+            response_outcome_windows: self.status_available.then(|| {
+                self.windowed_response_outcome_summaries(
+                    &self.status_rate_buckets,
+                    &self.rate_buckets_beyond_cap,
+                    self.observations_without_timestamp,
+                )
+            }),
             focus: self.sanitized_focus_summary(),
         }
     }
@@ -921,6 +1035,13 @@ impl RequestConcentration {
             &mut self.rate_buckets_beyond_cap,
             self.limits.max_minute_buckets,
             timestamp,
+        );
+        Self::track_status_rate_windows(
+            &self.rate_window_seconds,
+            &self.rate_buckets,
+            &mut self.status_rate_buckets,
+            timestamp,
+            status,
         );
     }
 
@@ -1202,6 +1323,34 @@ impl RequestConcentration {
         }
     }
 
+    fn track_status_rate_windows(
+        widths: &[u64],
+        admitted_rate_buckets: &BTreeMap<u64, BTreeMap<i64, u64>>,
+        status_buckets: &mut BTreeMap<u64, BTreeMap<i64, StatusClassCounts>>,
+        timestamp: DateTime<Utc>,
+        status: Option<u16>,
+    ) {
+        for width in widths {
+            let Ok(width_i64) = i64::try_from(*width) else {
+                continue;
+            };
+            let bucket = timestamp.timestamp().div_euclid(width_i64);
+            if admitted_rate_buckets
+                .get(width)
+                .is_some_and(|buckets| buckets.contains_key(&bucket))
+            {
+                record_status_class(
+                    status_buckets
+                        .get_mut(width)
+                        .expect("all configured rate widths have a status map")
+                        .entry(bucket)
+                        .or_default(),
+                    status,
+                );
+            }
+        }
+    }
+
     fn windowed_rate_summaries(
         &self,
         rate_buckets: &BTreeMap<u64, BTreeMap<i64, u64>>,
@@ -1221,6 +1370,52 @@ impl RequestConcentration {
                     peak_requests: peak,
                     median_requests: median,
                     peak_to_median_ratio: ratio,
+                    observations_without_timestamp,
+                    observations_beyond_bucket_cap: *beyond_caps.get(seconds).unwrap_or(&0),
+                }
+            })
+            .collect()
+    }
+
+    fn windowed_response_outcome_summaries(
+        &self,
+        status_buckets: &BTreeMap<u64, BTreeMap<i64, StatusClassCounts>>,
+        beyond_caps: &BTreeMap<u64, u64>,
+        observations_without_timestamp: u64,
+    ) -> Vec<WindowedResponseOutcomeSummary> {
+        self.rate_window_seconds
+            .iter()
+            .map(|seconds| {
+                let buckets = status_buckets
+                    .get(seconds)
+                    .expect("all configured rate widths have a status map");
+                let mut minimum_success_share: Option<f64> = None;
+                let mut maximum_server_error_share: Option<f64> = None;
+                let mut eligible_buckets = 0;
+                let mut buckets_below_minimum = 0;
+                for counts in buckets.values() {
+                    let total = counts.total_observations();
+                    if total < self.response_bucket_minimum_requests {
+                        buckets_below_minimum += 1;
+                        continue;
+                    }
+                    eligible_buckets += 1;
+                    let success = share(counts.success, total);
+                    let server_error = share(counts.server_error, total);
+                    minimum_success_share =
+                        Some(minimum_success_share.map_or(success, |current| current.min(success)));
+                    maximum_server_error_share = Some(
+                        maximum_server_error_share
+                            .map_or(server_error, |current| current.max(server_error)),
+                    );
+                }
+                WindowedResponseOutcomeSummary {
+                    bucket_width_seconds: *seconds,
+                    minimum_requests_per_bucket: self.response_bucket_minimum_requests,
+                    eligible_buckets,
+                    buckets_below_minimum,
+                    minimum_success_share,
+                    maximum_server_error_share,
                     observations_without_timestamp,
                     observations_beyond_bucket_cap: *beyond_caps.get(seconds).unwrap_or(&0),
                 }
@@ -1380,12 +1575,36 @@ fn requests_per_distinct_source(requests: u64, distinct_source_ips: usize) -> f6
     }
 }
 
+fn share(count: u64, total: u64) -> f64 {
+    if total == 0 {
+        0.0
+    } else {
+        count as f64 / total as f64
+    }
+}
+
+fn response_outcome_summary(counts: &StatusClassCounts) -> ResponseOutcomeSummary {
+    let total = counts.total_observations();
+    ResponseOutcomeSummary {
+        counts: counts.clone(),
+        success_share: share(counts.success, total),
+        redirection_share: share(counts.redirection, total),
+        ordinary_client_error_share: share(counts.ordinary_client_error(), total),
+        client_closed_request_499_share: share(counts.client_closed_request_499, total),
+        server_error_share: share(counts.server_error, total),
+    }
+}
+
 fn record_status_class(counts: &mut StatusClassCounts, status: Option<u16>) {
     match status {
         Some(100..=199) => counts.informational += 1,
         Some(200..=299) => counts.success += 1,
         Some(300..=399) => counts.redirection += 1,
-        Some(400..=499) => counts.client_error += 1,
+        Some(499) => {
+            counts.client_error += 1;
+            counts.client_closed_request_499 += 1;
+        }
+        Some(400..=498) => counts.client_error += 1,
         Some(500..=599) => counts.server_error += 1,
         Some(_) => counts.other += 1,
         None => counts.unavailable += 1,
@@ -2232,5 +2451,113 @@ mod tests {
             private.focus.unwrap().sources[0].response_status_classes,
             source.response_status_classes
         );
+    }
+
+    #[test]
+    fn summarizes_corpus_response_outcomes_and_separates_499_from_other_4xx() {
+        let mut concentration = RequestConcentration::new(true);
+        for status in [200, 302, 404, 499, 502] {
+            let mut request = event(Some("/status"), Some("198.51.100.9"), Some(0));
+            request.status = Some(status);
+            concentration.observe(&request);
+        }
+        let summary = concentration.summary();
+        assert_eq!(summary.total_requests, 5);
+        let top_path = summary.top_path.as_ref().unwrap();
+        assert_eq!(top_path.requests, 5);
+        assert_eq!(top_path.request_share, 1.0);
+        assert_eq!(top_path.distinct_source_ips, 1);
+        assert_eq!(top_path.requests_per_source_ip, 5.0);
+        let outcome = summary.response_outcomes.unwrap();
+        assert_eq!(outcome.counts.success, 1);
+        assert_eq!(outcome.counts.redirection, 1);
+        assert_eq!(outcome.counts.client_error, 2);
+        assert_eq!(outcome.counts.ordinary_client_error(), 1);
+        assert_eq!(outcome.counts.client_closed_request_499, 1);
+        assert_eq!(outcome.counts.server_error, 1);
+        assert_eq!(outcome.success_share, 0.2);
+        assert_eq!(outcome.ordinary_client_error_share, 0.2);
+        assert_eq!(outcome.client_closed_request_499_share, 0.2);
+        assert_eq!(outcome.server_error_share, 0.2);
+    }
+
+    #[test]
+    fn response_windows_expose_short_zero_success_periods_without_labeling_them() {
+        let mut concentration = RequestConcentration::with_limits_and_rate_windows(
+            true,
+            ConcentrationLimits::default(),
+            &[60, 86_400],
+        );
+        for minute in 0..1_440 {
+            for source in 0..10 {
+                let mut request = event(
+                    Some("/status"),
+                    Some(&format!("198.51.100.{source}")),
+                    Some(minute),
+                );
+                request.status = Some(if (1_085..1_097).contains(&minute) {
+                    504
+                } else {
+                    200
+                });
+                concentration.observe(&request);
+            }
+        }
+        let windows = concentration.summary().response_outcome_windows.unwrap();
+        let minute = windows
+            .iter()
+            .find(|item| item.bucket_width_seconds == 60)
+            .unwrap();
+        let day = windows
+            .iter()
+            .find(|item| item.bucket_width_seconds == 86_400)
+            .unwrap();
+        assert_eq!(minute.minimum_success_share, Some(0.0));
+        assert_eq!(minute.maximum_server_error_share, Some(1.0));
+        assert!(day.minimum_success_share.unwrap() > 0.99);
+        assert!(day.maximum_server_error_share.unwrap() < 0.01);
+    }
+
+    #[test]
+    fn response_window_floor_excludes_sparse_buckets_and_status_can_be_unavailable() {
+        let mut concentration = RequestConcentration::with_limits_and_rate_windows(
+            true,
+            ConcentrationLimits::default(),
+            &[60],
+        );
+        concentration.set_response_bucket_minimum_requests(10);
+        let mut sparse = event(Some("/status"), Some("198.51.100.1"), Some(0));
+        sparse.status = Some(503);
+        concentration.observe(&sparse);
+        for source in 0..10 {
+            let mut dense = event(
+                Some("/status"),
+                Some(&format!("203.0.113.{source}")),
+                Some(1),
+            );
+            dense.status = Some(200);
+            concentration.observe(&dense);
+        }
+        let window = &concentration.summary().response_outcome_windows.unwrap()[0];
+        assert_eq!(window.eligible_buckets, 1);
+        assert_eq!(window.buckets_below_minimum, 1);
+        assert_eq!(window.minimum_success_share, Some(1.0));
+        assert_eq!(window.maximum_server_error_share, Some(0.0));
+
+        let unavailable = RequestConcentration::with_capabilities(true, false).summary();
+        assert!(unavailable.response_outcomes.is_none());
+        assert!(unavailable.response_outcome_windows.is_none());
+    }
+
+    #[test]
+    fn old_concentration_json_without_response_fields_remains_readable() {
+        let summary = RequestConcentration::new(true).summary();
+        let mut value = serde_json::to_value(summary).unwrap();
+        let object = value.as_object_mut().unwrap();
+        object.remove("response_outcomes");
+        object.remove("response_outcome_windows");
+        let decoded: RequestConcentrationSummary = serde_json::from_value(value).unwrap();
+        assert!(decoded.response_outcomes.is_none());
+        assert!(decoded.response_outcome_windows.is_none());
     }
 }

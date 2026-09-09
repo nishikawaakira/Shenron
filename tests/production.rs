@@ -251,6 +251,88 @@ fn daily_reuses_concentration_metrics_without_writing_default_artifacts() {
 }
 
 #[test]
+fn daily_reports_sanitized_response_outcomes_and_window_extrema() {
+    let directory = tempdir().unwrap();
+    let input = directory.path().join("response-outcomes.log");
+    fs::write(
+        &input,
+        concat!(
+            "198.51.100.1 - - [01/Jan/2026:00:00:00 +0000] \"GET /private-response HTTP/1.1\" 200 10 \"-\" \"fixture-agent\"\n",
+            "198.51.100.2 - - [01/Jan/2026:00:00:10 +0000] \"GET /private-response HTTP/1.1\" 404 10 \"-\" \"fixture-agent\"\n",
+            "198.51.100.3 - - [01/Jan/2026:00:00:20 +0000] \"GET /private-response HTTP/1.1\" 499 10 \"-\" \"fixture-agent\"\n",
+            "198.51.100.4 - - [01/Jan/2026:00:00:30 +0000] \"GET /private-response HTTP/1.1\" 502 10 \"-\" \"fixture-agent\"\n",
+        ),
+    )
+    .unwrap();
+    let artifacts = directory.path().join("response-artifacts");
+    let output = Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "daily",
+            "--input",
+            input.to_str().unwrap(),
+            "--format",
+            "nginx",
+            "--rate-window",
+            "1m",
+            "--response-bucket-min-requests",
+            "1",
+            "--output-format",
+            "json",
+            "--output",
+            artifacts.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let report: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let outcomes = &report["response_outcomes"];
+    assert_eq!(outcomes["counts"]["success"], 1);
+    assert_eq!(outcomes["counts"]["client_error"], 2);
+    assert_eq!(outcomes["counts"]["client_closed_request_499"], 1);
+    assert_eq!(outcomes["counts"]["server_error"], 1);
+    assert_eq!(outcomes["success_share"], 0.25);
+    assert_eq!(outcomes["ordinary_client_error_share"], 0.25);
+    assert_eq!(outcomes["client_closed_request_499_share"], 0.25);
+    assert_eq!(outcomes["server_error_share"], 0.25);
+    assert_eq!(
+        report["response_outcome_windows"][0]["minimum_success_share"],
+        0.25
+    );
+    assert!(!stdout.contains("/private-response"));
+    assert!(!stdout.contains("198.51.100.1"));
+
+    let sanitized = fs::read_to_string(artifacts.join("sanitized-research.json")).unwrap();
+    assert!(sanitized.contains("response_outcomes"));
+    assert!(sanitized.contains("client_closed_request_499"));
+    assert!(!sanitized.contains("/private-response"));
+    assert!(!sanitized.contains("198.51.100.1"));
+
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "daily",
+            "--input",
+            input.to_str().unwrap(),
+            "--format",
+            "nginx",
+            "--rate-window",
+            "1m",
+            "--response-bucket-min-requests",
+            "1",
+        ])
+        .assert()
+        .success()
+        .stdout(contains(
+            "Response outcome: 2xx 25.0% (1) / 3xx 0.0% (0) / 4xx excl. 499 25.0% (1) / 499 25.0% (1) / 5xx 25.0% (1)",
+        ))
+        .stdout(contains(
+            "Response window 60s minimum 2xx / maximum 5xx share: 25.0% / 25.0%",
+        ));
+}
+
+#[test]
 fn processed_index_skips_unchanged_files_and_reprocesses_changed_or_forced_inputs() {
     let directory = tempdir().unwrap();
     let inputs = directory.path().join("logs");

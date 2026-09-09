@@ -26,7 +26,8 @@ use shenron::{
     },
     concentration::{
         FocusPrefixLengths, FocusSelector, PrivateRequestConcentrationReport,
-        DEFAULT_RATE_WINDOW_SECONDS,
+        ResponseOutcomeSummary, WindowedResponseOutcomeSummary, DEFAULT_RATE_WINDOW_SECONDS,
+        DEFAULT_RESPONSE_BUCKET_MINIMUM_REQUESTS,
     },
     cti_export::{export_run as export_cti_run, CtiExportFormat, TlpLevel},
     event::{TelemetryCapabilities, TelemetryProfile, TrustedProxy, TrustedProxySet},
@@ -354,6 +355,10 @@ enum ProductionCommand {
         /// Repeat or comma-separate durations such as 1m,10m,1h,1d.
         #[arg(long, value_delimiter = ',', value_parser = parse_triage_duration)]
         rate_window: Vec<Duration>,
+        /// Minimum requests required before a rate bucket contributes response
+        /// outcome minima/maxima. This is an inclusion floor, not an alert.
+        #[arg(long, default_value_t = DEFAULT_RESPONSE_BUCKET_MINIMUM_REQUESTS, value_parser = clap::value_parser!(u64).range(1..))]
+        response_bucket_min_requests: u64,
         /// Inclusive UTC start time in RFC 3339 format.
         #[arg(long, value_parser = parse_rfc3339_utc)]
         from: Option<DateTime<Utc>>,
@@ -394,6 +399,10 @@ enum ProductionCommand {
         /// durations such as 1m,10m,1h,1d.
         #[arg(long, value_delimiter = ',', value_parser = parse_triage_duration)]
         rate_window: Vec<Duration>,
+        /// Minimum requests required before a rate bucket contributes response
+        /// outcome minima/maxima. This is an inclusion floor, not an alert.
+        #[arg(long, default_value_t = DEFAULT_RESPONSE_BUCKET_MINIMUM_REQUESTS, value_parser = clap::value_parser!(u64).range(1..))]
+        response_bucket_min_requests: u64,
         /// Inclusive UTC start time in RFC 3339 format.
         #[arg(long, value_parser = parse_rfc3339_utc)]
         from: Option<DateTime<Utc>>,
@@ -763,6 +772,8 @@ struct DailyVolumeSummary {
     source_path_pairs_beyond_tracking_cap: u64,
     processed_index_enabled: bool,
     files_skipped_as_processed: usize,
+    response_outcomes: Option<ResponseOutcomeSummary>,
+    response_outcome_windows: Option<Vec<WindowedResponseOutcomeSummary>>,
 }
 
 impl DailyVolumeSummary {
@@ -770,7 +781,7 @@ impl DailyVolumeSummary {
         let concentration = &report.request_concentration;
         Self {
             report_kind: "DAILY_REQUEST_VOLUME_SUMMARY",
-            safety_note: "Aggregate request-volume measurements only. These values are not a threshold, alert, or determination of automation, denial of service, attack, abuse, compromise, or attacker identity. Source IP counts describe observed connection peers and may include CDN, load-balancer, NAT, or proxy addresses.",
+            safety_note: "Aggregate request-volume and response-outcome measurements only. Response shares are counts of what the log recorded: low success can also result from redirects, authentication, health checks, early client disconnects, a slow backend, or an unavailable origin. These values are not thresholds, alerts, or determinations of outage, degraded availability, automation, denial of service, attack, abuse, compromise, or attacker identity. Source IP counts describe observed connection peers and may include CDN, load-balancer, NAT, or proxy addresses.",
             telemetry_profile: report.telemetry_profile,
             files_analyzed: report.files_analyzed,
             total_requests: report.total_requests_analyzed,
@@ -794,6 +805,8 @@ impl DailyVolumeSummary {
                 .source_path_pairs_beyond_tracking_cap,
             processed_index_enabled,
             files_skipped_as_processed: report.files_skipped_as_processed,
+            response_outcomes: concentration.response_outcomes.clone(),
+            response_outcome_windows: concentration.response_outcome_windows.clone(),
         }
     }
 }
@@ -1101,6 +1114,7 @@ fn main() -> Result<()> {
                 ipv6_group_prefix,
                 asn_dataset,
                 rate_window,
+                response_bucket_min_requests,
                 from,
                 to,
                 processed_index,
@@ -1159,6 +1173,7 @@ fn main() -> Result<()> {
                     show_paths,
                     processed_index.as_deref(),
                     reprocess_all,
+                    response_bucket_min_requests,
                 )?;
                 let private_path = output.join("request-concentration.json");
                 let private = (show_paths || show_source_ips || focus.is_some())
@@ -1185,6 +1200,7 @@ fn main() -> Result<()> {
                 output,
                 output_format,
                 rate_window,
+                response_bucket_min_requests,
                 from,
                 to,
                 processed_index,
@@ -1204,6 +1220,7 @@ fn main() -> Result<()> {
                     false,
                     processed_index.as_deref(),
                     reprocess_all,
+                    response_bucket_min_requests,
                 )?;
                 let summary = DailyVolumeSummary::from_report(&report, processed_index.is_some());
                 match output_format {
@@ -2675,6 +2692,24 @@ fn print_daily_volume_summary(summary: &DailyVolumeSummary, output: Option<&Path
         ),
         _ => println!("  Top path metrics:                       unavailable"),
     }
+    match &summary.response_outcomes {
+        Some(outcomes) => println!(
+            "  Response outcome: 2xx {:.1}% ({}) / 3xx {:.1}% ({}) / 4xx excl. 499 {:.1}% ({}) / 499 {:.1}% ({}) / 5xx {:.1}% ({})",
+            outcomes.success_share * 100.0,
+            outcomes.counts.success,
+            outcomes.redirection_share * 100.0,
+            outcomes.counts.redirection,
+            outcomes.ordinary_client_error_share * 100.0,
+            outcomes.counts.ordinary_client_error(),
+            outcomes.client_closed_request_499_share * 100.0,
+            outcomes.counts.client_closed_request_499,
+            outcomes.server_error_share * 100.0,
+            outcomes.counts.server_error,
+        ),
+        None => println!(
+            "  Response outcome: unavailable (telemetry profile does not expose status)"
+        ),
+    }
     for rate in &summary.request_rates {
         println!(
             "  Rate window {}s peak / median / ratio: {} / {} / {} (undated: {}; beyond cap: {})",
@@ -2691,6 +2726,27 @@ fn print_daily_volume_summary(summary: &DailyVolumeSummary, output: Option<&Path
             rate.observations_without_timestamp,
             rate.observations_beyond_bucket_cap,
         );
+    }
+    if let Some(windows) = &summary.response_outcome_windows {
+        for window in windows {
+            println!(
+                "  Response window {}s minimum 2xx / maximum 5xx share: {} / {} (buckets with >= {} requests: {}; below minimum: {}; undated: {}; beyond cap: {})",
+                window.bucket_width_seconds,
+                window
+                    .minimum_success_share
+                    .map(|value| format!("{:.1}%", value * 100.0))
+                    .unwrap_or_else(|| "unavailable".to_owned()),
+                window
+                    .maximum_server_error_share
+                    .map(|value| format!("{:.1}%", value * 100.0))
+                    .unwrap_or_else(|| "unavailable".to_owned()),
+                window.minimum_requests_per_bucket,
+                window.eligible_buckets,
+                window.buckets_below_minimum,
+                window.observations_without_timestamp,
+                window.observations_beyond_bucket_cap,
+            );
+        }
     }
     println!(
         "  Files / parse errors / outside range / undated excluded: {} / {} / {} / {}",
@@ -2724,6 +2780,9 @@ fn print_daily_volume_summary(summary: &DailyVolumeSummary, output: Option<&Path
     }
     println!(
         "These are observed volume measurements, not thresholds, alerts, or determinations of automation, denial of service, attack, abuse, compromise, or attacker identity."
+    );
+    println!(
+        "Response outcome shares are counts of what the log recorded. A low success share can equally result from redirect-heavy routing, authentication flows, health checks, clients that disconnect early, a slow backend, or an unavailable origin. It is not a determination of an outage, degraded availability, an attack, or abuse."
     );
 }
 
@@ -2870,7 +2929,8 @@ fn format_status_classes(counts: &shenron::concentration::StatusClassCounts) -> 
         ("1xx", counts.informational),
         ("2xx", counts.success),
         ("3xx", counts.redirection),
-        ("4xx", counts.client_error),
+        ("4xx excl. 499", counts.ordinary_client_error()),
+        ("499", counts.client_closed_request_499),
         ("5xx", counts.server_error),
         ("other", counts.other),
         ("unavailable", counts.unavailable),

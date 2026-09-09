@@ -1011,8 +1011,9 @@ fn hunt_with_destination(
     let mut all_sources = BTreeSet::new();
     let mut all_ja4s = BTreeSet::new();
     let mut matched_sigma_rules = BTreeSet::new();
+    let capabilities = telemetry_profile.capabilities();
     let mut concentration =
-        RequestConcentration::new(telemetry_profile.capabilities().response_bytes);
+        RequestConcentration::with_capabilities(capabilities.response_bytes, capabilities.status);
     let mut bot_ranges = BotRangeAccumulator::default();
     metrics.bot_range_snapshot_loaded = bot_range_database.is_some();
     let bot_catalog = if bot_range_database.is_none() {
@@ -1381,6 +1382,7 @@ pub fn concentration_with_asn_rate_windows_and_query_keys(
         include_private_query_keys,
         None,
         false,
+        crate::concentration::DEFAULT_RESPONSE_BUCKET_MINIMUM_REQUESTS,
     )
 }
 
@@ -1401,6 +1403,7 @@ pub fn concentration_with_optional_output(
     include_private_query_keys: bool,
     processed_index: Option<&Path>,
     reprocess_all: bool,
+    response_bucket_minimum_requests: u64,
 ) -> anyhow::Result<SanitizedConcentrationReport> {
     concentration_run(
         input,
@@ -1414,6 +1417,7 @@ pub fn concentration_with_optional_output(
         include_private_query_keys,
         processed_index,
         reprocess_all,
+        response_bucket_minimum_requests,
     )
 }
 
@@ -1430,6 +1434,7 @@ fn concentration_run(
     include_private_query_keys: bool,
     processed_index: Option<&Path>,
     reprocess_all: bool,
+    response_bucket_minimum_requests: u64,
 ) -> anyhow::Result<SanitizedConcentrationReport> {
     time_range.validate()?;
     if let Some(output) = output {
@@ -1453,16 +1458,19 @@ fn concentration_run(
         requests_without_timestamp_excluded: 0,
         parse_errors: 0,
         files_skipped_as_processed: plan.skipped_files,
-        request_concentration: RequestConcentration::new(
+        request_concentration: RequestConcentration::with_capabilities(
             telemetry_profile.capabilities().response_bytes,
+            telemetry_profile.capabilities().status,
         )
         .summary(),
     };
-    let mut accumulator = RequestConcentration::with_limits_and_rate_windows(
+    let mut accumulator = RequestConcentration::with_capabilities_and_rate_windows(
         telemetry_profile.capabilities().response_bytes,
+        telemetry_profile.capabilities().status,
         crate::concentration::ConcentrationLimits::default(),
         rate_window_seconds,
     );
+    accumulator.set_response_bucket_minimum_requests(response_bucket_minimum_requests);
     if let Some(selector) = focus {
         accumulator.focus_on(selector);
     }
@@ -1604,7 +1612,7 @@ fn write_private_consistency(
 }
 
 fn concentration_safety_note() -> &'static str {
-    "This is a request-volume distribution only. It is not a determination of a denial-of-service attempt, an attack, abuse, or an attacker identity. High concentration on one path can equally result from a popular or embedded resource, a misconfigured client, a crawler, a load test, or a denial-of-service attempt; distinguishing them requires human review. No raw request values, source IPs, hostnames, JA3, JA4, or headers are included here."
+    "This is a request-volume and recorded response-outcome distribution only. It is not a determination of an outage, degraded availability, a denial-of-service attempt, an attack, abuse, or an attacker identity. High concentration on one path can equally result from a popular or embedded resource, a misconfigured client, a crawler, or a load test. A low success share can also result from redirects, authentication flows, health checks, early client disconnects, a slow backend, or an unavailable origin; distinguishing causes requires human review. No raw request values, source IPs, hostnames, JA3, JA4, or headers are included here."
 }
 
 /// Compare aggregate match volume among predicates derived from the same
