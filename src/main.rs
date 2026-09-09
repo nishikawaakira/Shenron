@@ -30,6 +30,10 @@ use shenron::{
         DEFAULT_RESPONSE_BUCKET_MINIMUM_REQUESTS,
     },
     cti_export::{export_run as export_cti_run, CtiExportFormat, TlpLevel},
+    disposition::{
+        record_disposition, AnalystDisposition, DispositionKey, DispositionStore,
+        DISPOSITION_SAFETY_NOTE,
+    },
     event::{TelemetryCapabilities, TelemetryProfile, TrustedProxy, TrustedProxySet},
     lab_cli::{run as run_lab_command, LabCommand},
     nuclei::{path_distinctiveness, PathDistinctiveness},
@@ -94,6 +98,11 @@ enum Command {
         #[arg(long)]
         rules: PathBuf,
     },
+    /// Record private analyst-authored dispositions for stable finding patterns.
+    Disposition {
+        #[command(subcommand)]
+        command: DispositionCommand,
+    },
     /// Read-only local hunting and aggregate analysis of historical web logs.
     /// These subcommands are flattened to the top level (for example
     /// `shenron hunt`), so there is no `production` subcommand group.
@@ -122,6 +131,46 @@ enum Command {
         #[arg(long, value_enum)]
         tlp: Option<TlpLevel>,
     },
+}
+
+#[derive(Debug, Subcommand)]
+enum DispositionCommand {
+    /// Append or update one analyst opinion. Repeating an identical opinion is idempotent.
+    Set {
+        #[arg(long)]
+        store: PathBuf,
+        #[arg(long, default_value = "nuclei")]
+        source: String,
+        #[arg(long)]
+        template_id: String,
+        #[arg(long)]
+        method: String,
+        #[arg(long)]
+        path: String,
+        #[arg(long)]
+        query: Option<String>,
+        #[arg(long, value_enum)]
+        disposition: DispositionValue,
+        #[arg(long)]
+        comment: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum DispositionValue {
+    Reviewed,
+    Expected,
+    NeedsReview,
+}
+
+impl From<DispositionValue> for AnalystDisposition {
+    fn from(value: DispositionValue) -> Self {
+        match value {
+            DispositionValue::Reviewed => Self::Reviewed,
+            DispositionValue::Expected => Self::Expected,
+            DispositionValue::NeedsReview => Self::NeedsReview,
+        }
+    }
 }
 
 #[derive(Debug, Subcommand)]
@@ -308,6 +357,10 @@ enum ProductionCommand {
         /// and optional locally resolved ASNs across completed runs.
         #[arg(long, conflicts_with = "results_dir")]
         observation_store: Option<PathBuf>,
+        /// Private append-only analyst disposition store. Matching opinions
+        /// classify findings for review but never remove or recount them.
+        #[arg(long, conflicts_with = "results_dir")]
+        disposition_store: Option<PathBuf>,
         /// IPv4 prefix length recorded in the private observation store (default: 24).
         #[arg(long, value_parser = parse_ipv4_prefix_length, conflicts_with = "results_dir")]
         ipv4_group_prefix: Option<u8>,
@@ -579,6 +632,10 @@ enum ProductionCommand {
         /// Local JSONL third-party reputation opinions used only to enrich displayed IP groups.
         #[arg(long)]
         reputation_dataset: Option<PathBuf>,
+        /// Private append-only analyst disposition store used only to group
+        /// retained findings by analyst-authored review state.
+        #[arg(long)]
+        disposition_store: Option<PathBuf>,
         /// Summarize JA4 TLS client fingerprints from the selected private findings.
         #[arg(long)]
         show_fingerprints: bool,
@@ -869,6 +926,33 @@ fn main() -> Result<()> {
     match cli.command {
         Command::Lab(command) => run_lab_command(command),
         Command::ValidateRules { rules } => validate(&rules),
+        Command::Disposition { command } => match command {
+            DispositionCommand::Set {
+                store,
+                source,
+                template_id,
+                method,
+                path,
+                query,
+                disposition,
+                comment,
+            } => {
+                let result = record_disposition(
+                    &store,
+                    DispositionKey::new(&source, &template_id, &method, &path, query.as_deref()),
+                    disposition.into(),
+                    comment,
+                )?;
+                println!(
+                    "Private analyst disposition store: {}\n  Already recorded: {}\n  Effective pattern dispositions: {}",
+                    store.display(),
+                    result.already_recorded,
+                    result.effective_entries,
+                );
+                println!("{DISPOSITION_SAFETY_NOTE}");
+                Ok(())
+            }
+        },
         Command::Production(command) => match command {
             ProductionCommand::Hunt {
                 input,
@@ -889,6 +973,7 @@ fn main() -> Result<()> {
                 no_nuclei,
                 bot_ranges,
                 observation_store,
+                disposition_store,
                 ipv4_group_prefix,
                 ipv6_group_prefix,
                 asn_dataset,
@@ -993,6 +1078,10 @@ fn main() -> Result<()> {
                     bot_range_database,
                     bot_range_snapshot_path: bot_range_path,
                     template_filter: template_filter.into_options(),
+                    disposition_store: disposition_store
+                        .as_deref()
+                        .map(DispositionStore::load)
+                        .transpose()?,
                 };
                 let resolved_nuclei = nuclei_inputs
                     .as_ref()
@@ -1408,6 +1497,7 @@ fn main() -> Result<()> {
                 show_asn,
                 asn_dataset,
                 reputation_dataset,
+                disposition_store,
                 show_fingerprints,
                 triage_breadth_observations,
                 triage_breadth_templates,
@@ -1427,6 +1517,10 @@ fn main() -> Result<()> {
                     .map(load_reputation_database)
                     .transpose()?;
                 let findings = explain_private_findings(&findings)?;
+                let disposition_store = disposition_store
+                    .as_deref()
+                    .map(DispositionStore::load)
+                    .transpose()?;
                 // Bound the reachable behavior-score maximum by what the source
                 // profiles can express. Union across recorded sources; legacy
                 // findings without a source fall back to the full-capability
@@ -1472,6 +1566,9 @@ fn main() -> Result<()> {
                         .cloned()
                         .collect()
                 };
+                let analyst_dispositions = disposition_store
+                    .as_ref()
+                    .map(|store| disposition_counts(&grouped, store));
                 let display = ExplainDisplay {
                     show_request: show_request || show_evidence,
                     show_evidence,
@@ -1506,6 +1603,7 @@ fn main() -> Result<()> {
                             triage,
                             asn_database.as_ref(),
                             reputation_database.as_ref(),
+                            analyst_dispositions.clone(),
                         );
                         let json = serde_json::to_string_pretty(&report)?;
                         match output {
@@ -1535,6 +1633,7 @@ fn main() -> Result<()> {
                                 hidden_cves.len()
                             );
                         }
+                        print_analyst_dispositions(analyst_dispositions.as_ref());
                         print_explanations(
                             &listed,
                             &grouped,
@@ -2215,6 +2314,7 @@ fn print_hunt(report: &SanitizedHuntReport, sanitized_path: &Path) {
     };
     println!("Read-only production hunt complete.\nPrivate findings:            written under the supplied output directory\nSanitized report:            {}\n\n{}\n\nRequests analyzed:           {}\nFiles analyzed:              {}\nParse errors:                {}\nCVE-related request matches: {}\n  Request-specific:          {}\n  Response-unverified:       {}\nUnique CVEs observed:        {}\nUnique CISA KEVs observed:   {}\nSource clusters:             {}\nJA4 fingerprints:            {}\nDetection-match confidence (template detectability; NOT attack/compromise confidence):\n  HIGH:                      {}\n  MEDIUM:                    {}\n  LOW:                       {}\n\n{}", sanitized_path.display(), time_range, metrics.total_requests_analyzed, metrics.files_analyzed, metrics.parse_errors, metrics.cve_related_request_matches, metrics.request_specific_matches, metrics.response_unverified_matches, metrics.unique_cves_observed, metrics.unique_cisa_kevs_observed, metrics.unique_source_clusters, metrics.unique_ja4_fingerprints, metrics.high_confidence_findings, metrics.medium_confidence_findings, metrics.low_confidence_findings, outcomes);
     println!("\n{}", input_quality_summary(metrics));
+    print_analyst_dispositions(metrics.analyst_dispositions.as_ref());
     println!(
         "\nSigma (generic request-pattern pass; separate from the CVE metrics above):\n  Rules evaluated:           {}\n  Matched requests:          {}\n  Rule matches:              {} (one request can match several rules, so this can exceed matched requests)\n  Distinct rules matched:    {}",
         metrics.sigma_rules_evaluated,
@@ -2304,6 +2404,12 @@ fn print_streaming_hunt_summary(report: &SanitizedHuntReport) {
         metrics.sigma_matched_requests,
     );
     eprintln!("\n{}", input_quality_summary(metrics));
+    if let Some(counts) = &metrics.analyst_dispositions {
+        eprintln!(
+            "Analyst-authored dispositions (private local opinions; findings remain retained and counted): reviewed {}, expected {}, needs-review {}, unclassified {}. These are not Shenron determinations.",
+            counts.reviewed, counts.expected, counts.needs_review, counts.unclassified,
+        );
+    }
     eprintln!(
         "Review signals are observed matches and aggregates, not determinations of attack, exploitation, compromise, or attacker identity."
     );
@@ -3286,6 +3392,44 @@ fn print_template_filter_summary(summary: Option<&shenron::production::TemplateF
     }
 }
 
+fn disposition_counts(
+    findings: &[shenron::production::FindingExplanation],
+    store: &DispositionStore,
+) -> shenron::production::AnalystDispositionCounts {
+    let mut counts = shenron::production::AnalystDispositionCounts::default();
+    for finding in findings {
+        let disposition = finding
+            .method
+            .as_deref()
+            .zip(finding.uri_path.as_deref())
+            .and_then(|(method, path)| {
+                store.get(&DispositionKey::new(
+                    finding.source.label(),
+                    &finding.template_id,
+                    method,
+                    path,
+                    finding.uri_query.as_deref(),
+                ))
+            });
+        match disposition {
+            Some(AnalystDisposition::Reviewed) => counts.reviewed += 1,
+            Some(AnalystDisposition::Expected) => counts.expected += 1,
+            Some(AnalystDisposition::NeedsReview) => counts.needs_review += 1,
+            None => counts.unclassified += 1,
+        }
+    }
+    counts
+}
+
+fn print_analyst_dispositions(counts: Option<&shenron::production::AnalystDispositionCounts>) {
+    if let Some(counts) = counts {
+        println!(
+            "Analyst-authored dispositions (private local opinions; findings remain retained and counted):\n  Reviewed: {}\n  Expected: {}\n  Needs review: {}\n  Unclassified: {}\n  These are analyst opinions, not Shenron determinations of attack, exploitation, compromise, or benignness.",
+            counts.reviewed, counts.expected, counts.needs_review, counts.unclassified,
+        );
+    }
+}
+
 /// Which optional sections `production explain` should print.
 struct ExplainDisplay {
     show_request: bool,
@@ -3315,6 +3459,8 @@ struct ExplainReport {
     total_mappings: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     hidden_low_confidence: Option<HiddenSummaryJson>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    analyst_dispositions: Option<shenron::production::AnalystDispositionCounts>,
     /// Present when a triage section is shown and low-confidence generic matches
     /// are hidden from the listing: the groups below are still computed from all
     /// matching findings, so their counts can exceed the listed rows.
@@ -3573,6 +3719,7 @@ fn build_explain_report(
     triage: TriageContext,
     asn_database: Option<&AsnDatabase>,
     reputation_database: Option<&ReputationDatabase>,
+    analyst_dispositions: Option<shenron::production::AnalystDispositionCounts>,
 ) -> ExplainReport {
     let truncate = |mut rows: Vec<GroupJson>| {
         if limit != 0 {
@@ -3676,6 +3823,7 @@ fn build_explain_report(
         waf_outcome_filter: waf_outcome_filter.map(str::to_owned),
         total_mappings: listed.len(),
         hidden_low_confidence,
+        analyst_dispositions,
         triage_note,
         request_paths,
         connection_ip_groups,

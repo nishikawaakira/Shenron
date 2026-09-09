@@ -7,6 +7,7 @@ pub mod comparison;
 pub mod concentration;
 pub mod consistency;
 pub mod cti_export;
+pub mod disposition;
 pub mod event;
 pub mod kev;
 pub mod lab;

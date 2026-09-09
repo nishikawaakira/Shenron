@@ -438,6 +438,18 @@ serialized, when these options are absent. Product metadata is a catalog
 declaration, not proof that the product is present, vulnerable, attacked,
 exploited, or compromised.
 
+### Remembering analyst dispositions
+
+An optional private append-only store can classify recurring findings by an
+analyst-authored `reviewed`, `expected`, or `needs-review` disposition. Record
+an opinion with `shenron disposition set ...`, then pass
+`--disposition-store <PATH>` to `hunt` or `explain`. Matching and unclassified
+findings are reported in separate aggregate counts, but findings are never
+removed and all CVE/Sigma metrics remain unchanged. The store contains raw
+request-pattern keys and optional comments, so it is private; sanitized output
+contains counts only. These are analyst opinions, not Shenron determinations.
+See [Analyst dispositions](analyst-dispositions.md).
+
 Review the request-to-template mappings locally with `explain`. By default it hides only low-confidence display noise: findings that are both `response-unverified` and on a `generic` path such as `/robots.txt`. Pass `--include-generic` to restore every locally stored finding. This is a **display filter only**: it changes what is *listed* — the per-finding rows and the "Top request paths" summary — but it does **not** affect triage grouping or scoring. Entity grouping (IP/ASN/JA4) and the behavior priority score always see every finding that passed the `--waf-outcome` selection, so a source that mixes one distinctive probe with several generic ones still meets the repeated-pattern (breadth) basis. Because a group's observation and template counts are computed from all matching findings, they can exceed the rows shown; when low-confidence matches are hidden and a triage section is displayed, `explain` states this once in both text and JSON. `--include-generic` therefore changes only what is listed, never a group's score, observation count, or triage basis. Hunt records and sanitized reports always retain every match. The summary groups results by request method and path (up to 20 paths by default), bundling every distinct CVE and template that matched that path into one entry; this keeps paths shared by several CVEs readable. Each entry labels the path as `distinctive` or `generic`, and `--show-request` prints the deterministic path label for each individual matched method/path/query record. Generic paths, especially with response-unverified evidence, may be shared by unrelated applications and deserve closer review; the label is a triage heuristic only, never a precision, attack, exploitation, compromise, or vulnerable-product determination, and it never excludes a match. Add `--show-evidence` for all locally stored evidence, `--show-source-ips` for an IP-group summary, or `--show-fingerprints` for a JA4 client-fingerprint summary. Evidence labels distinguish the observed connection peer from a validated forwarded client IP. IP addresses and JA4 values are shown only from the local private findings file and are never added to the sanitized report. Use `--limit 0` only when intentionally reviewing every request path, IP address, and individual finding.
 
 ```bash

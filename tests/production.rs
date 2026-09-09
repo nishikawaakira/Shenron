@@ -4079,6 +4079,122 @@ fn hunt_records_template_metadata_filter_exclusions_and_file_hash_in_manifest() 
     assert!(hash.chars().all(|character| character.is_ascii_hexdigit()));
 }
 
+#[test]
+fn analyst_dispositions_classify_but_never_remove_or_recount_findings() {
+    let directory = tempdir().unwrap();
+    let store = directory.path().join("dispositions.jsonl");
+    let first_record = Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "disposition",
+            "set",
+            "--store",
+            store.to_str().unwrap(),
+            "--template-id",
+            "synthetic-cve-2024-10001",
+            "--method",
+            "GET",
+            "--path",
+            "/vulnerable/execute",
+            "--query",
+            "cmd=probe&token=secret",
+            "--disposition",
+            "expected",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert!(String::from_utf8(first_record)
+        .unwrap()
+        .contains("Already recorded: false"));
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "disposition",
+            "set",
+            "--store",
+            store.to_str().unwrap(),
+            "--template-id",
+            "synthetic-cve-2024-10001",
+            "--method",
+            "GET",
+            "--path",
+            "/vulnerable/execute",
+            "--query",
+            "cmd=probe&token=secret",
+            "--disposition",
+            "expected",
+        ])
+        .assert()
+        .success()
+        .stdout(contains("Already recorded: true"));
+    assert_eq!(fs::read_to_string(&store).unwrap().lines().count(), 1);
+
+    let plain_output = directory.path().join("plain");
+    let classified_output = directory.path().join("classified");
+    let run = |output: &Path, disposition_store: Option<&Path>| {
+        let mut command = Command::cargo_bin("shenron").unwrap();
+        command.args([
+            "hunt",
+            "--input",
+            "tests/fixtures/production/waf.jsonl",
+            "--format",
+            "aws-waf",
+            "--nuclei-templates",
+            "tests/fixtures/nuclei",
+            "--nuclei-report",
+            "tests/fixtures/production/nuclei-report.json",
+            "--no-sigma",
+            "--output",
+            output.to_str().unwrap(),
+        ]);
+        if let Some(store) = disposition_store {
+            command.args(["--disposition-store", store.to_str().unwrap()]);
+        }
+        command.assert().success();
+    };
+    run(&plain_output, None);
+    run(&classified_output, Some(&store));
+    let plain: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(plain_output.join("sanitized-research.json")).unwrap(),
+    )
+    .unwrap();
+    let classified_text =
+        fs::read_to_string(classified_output.join("sanitized-research.json")).unwrap();
+    let classified: serde_json::Value = serde_json::from_str(&classified_text).unwrap();
+    assert_eq!(
+        plain["metrics"]["cve_related_request_matches"],
+        classified["metrics"]["cve_related_request_matches"]
+    );
+    assert_eq!(classified["metrics"]["analyst_dispositions"]["expected"], 1);
+    assert_eq!(
+        classified["metrics"]["analyst_dispositions"]["unclassified"],
+        1
+    );
+    assert!(!classified_text.contains("/vulnerable/execute"));
+    assert!(!classified_text.contains("cmd=probe&token=secret"));
+
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "explain",
+            "--findings",
+            classified_output
+                .join("private-findings.jsonl")
+                .to_str()
+                .unwrap(),
+            "--disposition-store",
+            store.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(contains("Analyst-authored dispositions"))
+        .stdout(contains("Expected: 1"))
+        .stdout(contains("Unclassified: 1"));
+}
+
 fn parse_utc(value: &str) -> DateTime<Utc> {
     DateTime::parse_from_rfc3339(value)
         .unwrap()

@@ -32,6 +32,7 @@ use crate::{
         compare_declared_with_observed, declared_browser_family, ConsistencyAccumulator,
         ConsistencySummary, PrivateConsistencyReport,
     },
+    disposition::{AnalystDisposition, DispositionKey, DispositionStore},
     event::{HttpHeader, LogSource, RawRetention, TelemetryProfile, TrustedProxySet, WebEvent},
     nuclei::{
         frozen_nuclei_selection, path_distinctiveness, validated_detections, CatalogSeverity,
@@ -174,6 +175,29 @@ pub struct HuntMetrics {
     /// Aggregate request-volume distribution only. This is separate from CVE
     /// metrics and does not determine attack, abuse, or compromise.
     pub request_concentration: Option<RequestConcentrationSummary>,
+    /// Counts of private analyst-authored dispositions applied to findings.
+    /// The store's request-pattern keys and comments never enter this report.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub analyst_dispositions: Option<AnalystDispositionCounts>,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct AnalystDispositionCounts {
+    pub reviewed: usize,
+    pub expected: usize,
+    pub needs_review: usize,
+    pub unclassified: usize,
+}
+
+impl AnalystDispositionCounts {
+    fn record(&mut self, disposition: Option<AnalystDisposition>) {
+        match disposition {
+            Some(AnalystDisposition::Reviewed) => self.reviewed += 1,
+            Some(AnalystDisposition::Expected) => self.expected += 1,
+            Some(AnalystDisposition::NeedsReview) => self.needs_review += 1,
+            None => self.unclassified += 1,
+        }
+    }
 }
 
 /// Inclusive UTC interval applied before matching. Events without a timestamp
@@ -220,6 +244,9 @@ pub struct HuntOptions {
     /// Optional catalog-metadata selection applied after frozen validation.
     /// Unknown metadata remains included unless explicitly excluded.
     pub template_filter: TemplateFilterOptions,
+    /// Optional private analyst-opinion store. It classifies retained findings
+    /// but never removes them or changes CVE/Sigma match metrics.
+    pub disposition_store: Option<DispositionStore>,
 }
 
 /// Explicit, local catalog-metadata filters. Files contain JSON objects with
@@ -636,6 +663,15 @@ pub enum FindingSource {
     Sigma,
 }
 
+impl FindingSource {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Nuclei => "nuclei",
+            Self::Sigma => "sigma",
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 struct PrivateFinding {
     /// Detection engine. Absent in older private findings, which are all Nuclei.
@@ -953,6 +989,7 @@ pub fn hunt(
             bot_range_database: None,
             bot_range_snapshot_path: None,
             template_filter: TemplateFilterOptions::default(),
+            disposition_store: None,
         },
     )
 }
@@ -1042,6 +1079,7 @@ fn hunt_with_destination(
         bot_range_database,
         bot_range_snapshot_path,
         template_filter,
+        disposition_store,
     } = options;
     time_range.validate()?;
     if let Some(output) = output {
@@ -1099,6 +1137,9 @@ fn hunt_with_destination(
         filter_to: time_range.to.map(|time| time.to_rfc3339()),
         ..HuntMetrics::default()
     };
+    if disposition_store.is_some() {
+        metrics.analyst_dispositions = Some(AnalystDispositionCounts::default());
+    }
     let sigma_rules = sigma_ruleset
         .as_ref()
         .map(|ruleset| ruleset.supported.as_slice())
@@ -1190,7 +1231,13 @@ fn hunt_with_destination(
                 return Ok(());
             }
             for detection in &matches {
-                private.write(&private_finding(detection, &event))?;
+                let finding = private_finding(detection, &event);
+                record_finding_disposition(
+                    metrics.analyst_dispositions.as_mut(),
+                    disposition_store.as_ref(),
+                    &finding,
+                );
+                private.write(&finding)?;
             }
             if !sigma_matches.is_empty() {
                 metrics.sigma_matched_requests += 1;
@@ -1207,7 +1254,13 @@ fn hunt_with_destination(
                 }
             }
             for rule in &sigma_matches {
-                private.write(&sigma_finding(rule, &event))?;
+                let finding = sigma_finding(rule, &event);
+                record_finding_disposition(
+                    metrics.analyst_dispositions.as_mut(),
+                    disposition_store.as_ref(),
+                    &finding,
+                );
+                private.write(&finding)?;
                 metrics.sigma_rule_matches += 1;
                 metrics.sigma_matches_by_severity.record(rule.severity);
                 matched_sigma_rules.insert(rule.id.clone());
@@ -2558,6 +2611,30 @@ impl DetectionPathIndex {
             .filter(|detection| template_ids.insert(detection.template_id.as_str()))
             .collect()
     }
+}
+
+fn record_finding_disposition(
+    counts: Option<&mut AnalystDispositionCounts>,
+    store: Option<&DispositionStore>,
+    finding: &PrivateFinding,
+) {
+    let (Some(counts), Some(store)) = (counts, store) else {
+        return;
+    };
+    let disposition = finding
+        .method
+        .as_deref()
+        .zip(finding.uri_path.as_deref())
+        .and_then(|(method, path)| {
+            store.get(&DispositionKey::new(
+                finding.source.label(),
+                &finding.template_id,
+                method,
+                path,
+                finding.uri_query.as_deref(),
+            ))
+        });
+    counts.record(disposition);
 }
 
 fn private_finding(detection: &ValidatedNucleiDetection, event: &WebEvent) -> PrivateFinding {
