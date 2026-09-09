@@ -111,6 +111,7 @@ post-hunt Slack notification).
 | `explain` | Triage a run's private findings by connection/client IP, ASN, or JA4 with behavior-priority scores, request sequences, and windowed rates |
 | `concentration` | Request-volume distribution without CTI; `--path` / `--path-prefix` / `--source-ip` focus |
 | `daily` | Lightweight aggregate request-volume summary; no artifacts by default, JSON available for monitoring |
+| `trend` | Read one explicitly selected private URI path across existing run artifacts without reprocessing logs |
 | `compare` | Diff two run directories (first-seen entities, elevated volume, newly observed CVEs) |
 | `candidate build` / `replay` / `compatibility` / `explain` / `export` | Turn a confirmed finding into a reviewed **COUNT-only** WAF rule |
 | `export` | Convert a run into a sanitized STIX 2.1 or MISP file for sharing (file-only, TLP-marked) |

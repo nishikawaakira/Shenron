@@ -210,6 +210,12 @@ processed in that run, so its total and concentration denominators are not
 cumulative. Use run comparison or the private observation store when a
 multi-run cumulative context is needed.
 
+To follow one private URI path across existing run artifacts without
+reprocessing logs, repeat `--results-dir` with `shenron trend` and supply the
+path through the explicit `--path` privacy opt-in. The command reports counts,
+share, retained source cardinality, requests per source, status classes, and
+rank per run; an absent retained record is distinct from a measured zero.
+
 Use `concentration --path /example/path --show-source-ips` to
 inspect deterministic request counts for observed connection peers on one exact
 normalized path. The path and peer values remain private in

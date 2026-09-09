@@ -338,6 +338,83 @@ fn processed_index_skips_unchanged_files_and_reprocesses_changed_or_forced_input
 }
 
 #[test]
+fn trend_reads_three_existing_artifacts_without_reprocessing_logs() {
+    let directory = tempdir().unwrap();
+    let path = "/private-trend-target";
+    let runs = [
+        ("run-a", vec![(path, 200), ("/other", 404)]),
+        ("run-b", vec![(path, 500), (path, 200), ("/other", 200)]),
+        ("run-c", vec![("/other", 200)]),
+    ];
+    let mut run_dirs = Vec::new();
+    let mut raw_logs = Vec::new();
+    for (index, (name, records)) in runs.into_iter().enumerate() {
+        let input = directory.path().join(format!("source-{index}.log"));
+        let body = records
+            .into_iter()
+            .enumerate()
+            .map(|(record, (uri, status))| {
+                format!(
+                    "198.51.100.{} - - [01/Jan/2026:00:0{}:00 +0000] \"GET {uri} HTTP/1.1\" {status} 10 \"-\" \"fixture-agent\"\n",
+                    record + 1,
+                    record,
+                )
+            })
+            .collect::<String>();
+        fs::write(&input, body).unwrap();
+        let run_dir = directory.path().join(name);
+        concentration(
+            &input,
+            &run_dir,
+            TelemetryProfile::ApacheCombined,
+            HuntTimeRange::default(),
+            None,
+            shenron::concentration::FocusPrefixLengths::default(),
+        )
+        .unwrap();
+        run_dirs.push(run_dir);
+        raw_logs.push(input);
+    }
+    for input in raw_logs {
+        fs::remove_file(input).unwrap();
+    }
+
+    let report = shenron::trend::path_trend(&run_dirs, path).unwrap();
+    assert_eq!(report.runs.len(), 3);
+    let first = report.runs[0].observation.as_ref().unwrap();
+    assert_eq!(first.requests, 1);
+    assert_eq!(first.rank, 2);
+    assert_eq!(first.response_status_classes.success, 1);
+    let second = report.runs[1].observation.as_ref().unwrap();
+    assert_eq!(second.requests, 2);
+    assert_eq!(second.distinct_source_ips, 2);
+    assert_eq!(second.requests_per_source_ip, 1.0);
+    assert!(report.runs[2].observation.is_none());
+    let serialized = serde_json::to_string(&report).unwrap();
+    assert!(serialized.contains("\"observation\":null"));
+
+    let mut command = Command::cargo_bin("shenron").unwrap();
+    command.arg("trend");
+    for run_dir in &run_dirs {
+        command.args(["--results-dir", run_dir.to_str().unwrap()]);
+    }
+    command
+        .args(["--path", path])
+        .assert()
+        .success()
+        .stdout(contains(path))
+        .stdout(contains("No retained record for this path"))
+        .stdout(contains("Requests: 2"));
+
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .args(["trend", "--results-dir", run_dirs[0].to_str().unwrap()])
+        .assert()
+        .failure()
+        .stdout(contains(path).not());
+}
+
+#[test]
 fn concentration_keeps_query_values_private_and_gates_key_names_to_show_paths() {
     let directory = tempdir().unwrap();
     let input = directory.path().join("query-access.log");

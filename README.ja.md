@@ -92,6 +92,7 @@ Shenron は**単一バイナリ**です。準備系コマンドだけが公開�
 | `explain` | run の private findings を 接続元/クライアント IP・ASN・JA4 単位でトリアージ（挙動優先度スコア・リクエスト列・時間窓レート） |
 | `concentration` | CTI なしのリクエスト量分布。`--path` / `--path-prefix` / `--source-ip` でフォーカス |
 | `daily` | 軽量な集計リクエスト量サマリ。既定では成果物なし、監視向け JSON 出力に対応 |
+| `trend` | 明示指定した private URI パスを既存 run 成果物間で追跡（生ログの再処理なし） |
 | `compare` | 2つの run ディレクトリを差分比較（first-seen・volume 上昇・新規 CVE） |
 | `candidate build` / `replay` / `compatibility` / `explain` / `export` | 確定した検出を、レビュー前提の **COUNT のみ** WAF ルールへ |
 | `export` | run を sanitized な STIX 2.1 / MISP ファイルに変換（ファイル出力のみ・TLP 付き） |

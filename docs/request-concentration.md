@@ -75,6 +75,31 @@ When a cumulative multi-run view is required, keep ordinary run artifacts and
 use temporal `compare` or the explicit private `--observation-store` workflow.
 The processed-file index is an I/O optimization, not an aggregate store.
 
+## Private path trend across existing runs
+
+`shenron trend` extracts one explicitly selected URI path from multiple
+existing `request-concentration.json` artifacts without reading raw logs:
+
+```bash
+shenron trend \
+  --results-dir ./private-results/day-1 \
+  --results-dir ./private-results/day-2 \
+  --results-dir ./private-results/day-3 \
+  --path /documents/example.pdf
+```
+
+Supplying `--path` is the explicit privacy opt-in: text and JSON output are
+private and include that path plus local result-directory names. For each run,
+the command reports request count, share, retained distinct observed source
+IPs, requests per source, HTTP status-class counts, and retained-path rank.
+Result directories are sorted and deduplicated for deterministic output.
+
+An absent retained path is emitted as `observation: null` in JSON and "No
+retained record" in text, never as a measured zero. The accompanying path-cap
+count remains visible because a missing record can mean either no observation
+or exclusion after the deterministic tracking cap. These measurements do not
+determine denial of service, attack, abuse, compromise, or attacker identity.
+
 ## Requests per distinct source IP
 
 Each retained path and optional focus reports

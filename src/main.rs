@@ -58,6 +58,7 @@ use shenron::{
         notify_best_effort, SlackComparisonSummary, SlackNotificationConfig,
         SlackNotificationMetrics,
     },
+    trend::{path_trend, PathTrendReport},
     triage::{
         asn_entity_groups, entity_groups, EntityDimension, TriagePolicy,
         DEFAULT_MAX_SEQUENCE_OBSERVATIONS, DEFAULT_SEQUENCE_WINDOW_SECONDS,
@@ -407,6 +408,20 @@ enum ProductionCommand {
         #[arg(long, requires = "processed_index")]
         reprocess_all: bool,
     },
+    /// Read one private URI path across existing concentration run artifacts.
+    /// Raw logs are not opened or reprocessed.
+    Trend {
+        /// Existing run directory. Repeat to compare multiple artifacts; input
+        /// order is normalized for deterministic output.
+        #[arg(long, required = true)]
+        results_dir: Vec<PathBuf>,
+        /// Private URI path to extract. Supplying this value is the explicit
+        /// opt-in to print the path and its retained per-run measurements.
+        #[arg(long)]
+        path: String,
+        #[arg(long, value_enum, default_value_t = TrendOutputFormat::Text)]
+        output_format: TrendOutputFormat,
+    },
     /// Compare aggregate match volume across predicates derived from one validated Nuclei IR. Never writes private findings.
     Ablation {
         #[arg(long)]
@@ -718,6 +733,12 @@ enum OutputFormat {
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum DailyOutputFormat {
+    Text,
+    Json,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum TrendOutputFormat {
     Text,
     Json,
 }
@@ -1191,6 +1212,21 @@ fn main() -> Result<()> {
                     }
                     DailyOutputFormat::Json => {
                         serde_json::to_writer_pretty(io::stdout().lock(), &summary)?;
+                        println!();
+                    }
+                }
+                Ok(())
+            }
+            ProductionCommand::Trend {
+                results_dir,
+                path,
+                output_format,
+            } => {
+                let report = path_trend(&results_dir, &path)?;
+                match output_format {
+                    TrendOutputFormat::Text => print_path_trend(&report),
+                    TrendOutputFormat::Json => {
+                        serde_json::to_writer_pretty(io::stdout().lock(), &report)?;
                         println!();
                     }
                 }
@@ -2698,6 +2734,36 @@ fn print_processed_index_scope(enabled: bool, skipped_files: usize) {
             skipped_files
         );
     }
+}
+
+fn print_path_trend(report: &PathTrendReport) {
+    println!("Private path trend from existing artifacts only:");
+    println!("  URI path: {}", terminal_safe(&report.uri_path));
+    for run in &report.runs {
+        println!("\n{}", terminal_safe(&run.results_dir));
+        match &run.observation {
+            Some(observation) => println!(
+                "  Requests: {} | share: {:.3}% | distinct observed source IPs: {} | requests per source IP: {:.1} | rank: {}\n  Response status classes: {}",
+                observation.requests,
+                observation.request_share * 100.0,
+                observation.distinct_source_ips,
+                observation.requests_per_source_ip,
+                observation.rank,
+                format_status_classes(&observation.response_status_classes),
+            ),
+            None => println!(
+                "  No retained record for this path (distinct from an observed zero). Paths beyond tracking cap: {}.",
+                run.paths_beyond_tracking_cap
+            ),
+        }
+        println!(
+            "  Total requests recorded in this run: {}",
+            run.total_requests_in_run
+        );
+    }
+    println!(
+        "\nThese are observed request-volume measurements from private artifacts, not determinations of denial of service, attack, abuse, compromise, or attacker identity. Source IPs may be CDN/LB/NAT/proxy peers."
+    );
 }
 
 fn print_temporal_comparison(
