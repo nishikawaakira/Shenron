@@ -41,6 +41,33 @@ Replay measures known-threat coverage only by comparing source-finding request I
 
 URI-only `response-unverified` findings do not create candidates by default. Request telemetry cannot reproduce Nuclei response confirmation, so converting URI-only matches directly into blocking conditions creates an elevated over-blocking risk. Include them only after human review or with additional evidence by passing `--include-response-unverified` to `shenron candidate build`; this changes candidate selection only and does not make the finding an attack or compromise determination.
 
+## Opt-in Sigma TTP candidates
+
+Sigma-derived candidates are a separate candidate class from CVE/Nuclei
+candidates. A CVE candidate is anchored to a validated Nuclei request IR and a
+specific CVE mapping. A Sigma TTP candidate instead carries the evidence bar
+that a supported local Sigma rule matched and that its literal request
+conditions can be translated faithfully. It has no CVE/KEV claim, and Shenron
+does not present it as equivalent evidence. `candidate build` therefore keeps
+excluding Sigma findings by default; `--include-sigma-ttp --rules <DIR>` is an
+explicit opt-in.
+
+One Sigma rule produces at most one candidate. Literal alternatives declared
+by the rule are combined with `OR`; no path or value absent from the rule is
+invented. The candidate records its `sigma_ttp` kind and Sigma-specific
+evidence note, while CVE candidates remain `cve_nuclei`. Both classes must be
+replayed against complete local history, pass faithful backend compatibility,
+and export in COUNT mode only. No control is deployed.
+
+Before promoting a COUNT hypothesis outside Shenron, an operator must inspect
+all historical matches, expected application routes, exceptions, and the
+effect of the exact translated condition. Literal substring rules can overlap
+legitimate routes: for example, a rule containing `/.env` can also match
+`/docs/.env-setup`. Replay volume is context for that review, not a false-positive
+rate or proof of attack, exploitation, or compromise. The different evidence
+bar and potential collateral effect are why Sigma TTP and CVE candidates are
+never merged into one class.
+
 `threat_coverage` is `known_threat_findings_matched` divided by `known_threat_findings` — the total source-finding count, not the number of request IDs. So a source finding that carries no request ID, or several findings that share one ID, lowers the ratio: those findings cannot be confirmed individually in the replay input and are reported under `known_threat_findings_missed` rather than matched. Read coverage as a conservative lower bound on how many known findings were re-observed, not as a false-positive rate.
 
 Compatibility, explanation, and export use the candidate's recorded telemetry profile unless `--telemetry` explicitly overrides it. This prevents an AWS WAF candidate from being accidentally evaluated as standard nginx telemetry.

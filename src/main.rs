@@ -17,7 +17,7 @@ use shenron::{
     access_log::{parse_combined_line, AccessLogFormat},
     bot_ranges::load_bot_range_database,
     candidate::{
-        build_batch_from_findings, compatibility as candidate_compatibility,
+        build_batch_from_findings_with_sigma, compatibility as candidate_compatibility,
         export as export_candidate, load as load_candidate, replay as replay_candidate,
         save as save_candidate, save_batch, Backend,
     },
@@ -186,6 +186,12 @@ enum CandidateCommand {
         /// Include URI-only response-unverified findings. Use only after human review or with additional evidence.
         #[arg(long)]
         include_response_unverified: bool,
+        /// Build a separate Sigma TTP candidate class from faithfully translatable literal rules.
+        #[arg(long)]
+        include_sigma_ttp: bool,
+        /// Sigma rules used to interpret matched Sigma finding IDs. Required with --include-sigma-ttp.
+        #[arg(long, requires = "include_sigma_ttp")]
+        rules: Option<PathBuf>,
     },
     /// Evaluate a candidate against local historical telemetry and write a new candidate file.
     Replay {
@@ -1676,20 +1682,40 @@ fn main() -> Result<()> {
                 output,
                 telemetry,
                 include_response_unverified,
+                include_sigma_ttp,
+                rules,
             } => {
                 let findings = explain_private_findings(&from_findings)?;
-                let (candidates, stats) = build_batch_from_findings(
+                let sigma_rules = if include_sigma_ttp {
+                    let rules = rules.as_ref().ok_or_else(|| {
+                        anyhow::anyhow!("--include-sigma-ttp requires --rules <DIR>")
+                    })?;
+                    let ruleset = load_rules(rules);
+                    if ruleset.supported.is_empty() {
+                        anyhow::bail!(
+                            "no supported Sigma rules were found under {}",
+                            rules.display()
+                        );
+                    }
+                    Some(ruleset)
+                } else {
+                    None
+                };
+                let (candidates, stats) = build_batch_from_findings_with_sigma(
                     &findings,
                     telemetry.explicit_telemetry_profile()?,
                     include_response_unverified,
+                    sigma_rules
+                        .as_ref()
+                        .map(|ruleset| ruleset.supported.as_slice()),
                 );
                 if candidates.is_empty() {
                     anyhow::bail!(
-                        "no candidate patterns could be built from the supplied findings; response-unverified findings are excluded by default (pass --include-response-unverified only after human review or with additional evidence)"
+                        "no candidate patterns could be built from the supplied findings; response-unverified and Sigma findings are excluded by default, and Sigma rules must be faithfully translatable"
                     );
                 }
                 save_batch(&candidates, &output)?;
-                println!("Candidates written: {}\nOutput directory: {}\nSigma findings excluded (candidates stay CVE/Nuclei-anchored): {}\nAWS WAF BLOCK findings excluded: {}\nResponse-unverified findings excluded: {}\nFindings skipped for missing method/path: {}\nRecommended initial action: COUNT\nHistorical replay: required before preventive export.", stats.candidates, output.display(), stats.excluded_sigma_findings, stats.excluded_blocked_findings, stats.excluded_response_unverified_findings, stats.skipped_incomplete_findings);
+                println!("Candidates written: {}\nSigma TTP candidates (separate evidence class): {}\nOutput directory: {}\nSigma findings excluded without explicit opt-in: {}\nSigma findings skipped because the source rule was missing or not faithfully translatable: {}\nAWS WAF BLOCK findings excluded: {}\nResponse-unverified findings excluded: {}\nFindings skipped for missing method/path: {}\nRecommended initial action: COUNT\nHistorical replay: required before preventive export.\nSigma TTP candidates represent literal rule matches, not CVE evidence or a determination of attack, exploitation, or compromise.", stats.candidates, stats.sigma_candidates, output.display(), stats.excluded_sigma_findings, stats.skipped_sigma_findings_untranslatable, stats.excluded_blocked_findings, stats.excluded_response_unverified_findings, stats.skipped_incomplete_findings);
                 Ok(())
             }
             CandidateCommand::Replay {
@@ -1750,7 +1776,7 @@ fn main() -> Result<()> {
                     Some(telemetry) => telemetry.explicit_telemetry_profile()?,
                     None => candidate.telemetry_profile,
                 };
-                println!("Candidate ID: {}\nCVEs: {}\nCISA KEV: {}\nRecommended initial action: COUNT\nReplay completed: {}\nHistorical requests evaluated: {}\nKnown threat findings: {}\nKnown threat findings matched: {}\nKnown threat findings missed: {}\nOther historical matches: {}\nThreat coverage: {:?}\nTelemetry source: {:?}\nConditions:\n{:#?}\n\nBackend compatibility:", candidate.id, candidate.cves.join(", "), candidate.kev, candidate.evidence.replay_completed, candidate.evidence.historical_requests_evaluated, candidate.evidence.known_threat_findings, candidate.evidence.known_threat_findings_matched, candidate.evidence.known_threat_findings_missed, candidate.evidence.other_historical_matches, candidate.evidence.threat_coverage, candidate.telemetry_profile, candidate.conditions);
+                println!("Candidate ID: {}\nCandidate kind: {:?}\nEvidence basis: {:?}\nCVEs: {}\nCISA KEV: {}\nRecommended initial action: COUNT\nReplay completed: {}\nHistorical requests evaluated: {}\nKnown threat findings: {}\nKnown threat findings matched: {}\nKnown threat findings missed: {}\nOther historical matches: {}\nThreat coverage: {:?}\nTelemetry source: {:?}\nConditions:\n{:#?}\n\nBackend compatibility:", candidate.id, candidate.candidate_kind, candidate.evidence_basis, candidate.cves.join(", "), candidate.kev, candidate.evidence.replay_completed, candidate.evidence.historical_requests_evaluated, candidate.evidence.known_threat_findings, candidate.evidence.known_threat_findings_matched, candidate.evidence.known_threat_findings_missed, candidate.evidence.other_historical_matches, candidate.evidence.threat_coverage, candidate.telemetry_profile, candidate.conditions);
                 for backend in [
                     Backend::AwsWafJson,
                     Backend::TerraformAwsWaf,

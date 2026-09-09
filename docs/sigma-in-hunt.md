@@ -107,13 +107,19 @@ load balancer, NAT, or proxy and is not attacker attribution.
 
 ## Candidate eligibility
 
-Sigma findings do **not** feed `candidate build`. Defensive candidates stay
-CVE- and Nuclei-IR-anchored: the COUNT-candidate evidence bar depends on the
-validated Nuclei request-specific IR and per-CVE anchoring, which a generic Sigma
-TTP match does not carry. `candidate build` skips `source: "sigma"` findings and
-reports how many it excluded, so a Sigma finding is never silently promoted into a
-WAF rule candidate. Sigma is a visibility and detection layer; turning a generic
-TTP into an enforcement control remains a deliberate, separate human decision.
+Sigma findings do **not** feed `candidate build` by default. The explicit
+`--include-sigma-ttp --rules <DIR>` mode can build a separate `sigma_ttp`
+candidate from a matched rule only when its literal request condition can be
+translated without weakening its boolean or case-matching semantics. Alternatives
+declared by one rule remain one `OR` condition; Shenron does not infer additional
+paths. Missing rules and non-translatable findings are counted and disclosed.
+
+This class never inherits CVE or KEV claims. Its evidence basis is a supported
+Sigma literal request rule, unlike the validated Nuclei request IR and per-CVE
+mapping behind a `cve_nuclei` candidate. Both classes require offline historical
+replay and faithful backend compatibility, and AWS WAF exports remain COUNT-only.
+See [WAF candidate model](waf-candidate-model.md) for the separate evidence bar
+and required collateral-impact review.
 
 ## Non-assertion
 

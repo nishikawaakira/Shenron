@@ -5,12 +5,14 @@ use chrono::Utc;
 use predicates::str::contains;
 use shenron::{
     candidate::{
-        build_batch_from_findings, compatibility, export, replay, Backend, CandidateEvidence,
+        build_batch_from_findings, build_batch_from_findings_with_sigma, compatibility, export,
+        replay, Backend, CandidateEvidence, CandidateEvidenceBasis, CandidateKind,
         CompatibilityStatus, DefensiveCandidate, DefensiveCondition, RecommendedAction,
     },
     event::TelemetryProfile,
     nuclei::{Detectability, RequestSpecificity},
     production::FindingExplanation,
+    sigma::load_rules,
 };
 use tempfile::tempdir;
 
@@ -18,6 +20,8 @@ fn candidate(condition: DefensiveCondition) -> DefensiveCandidate {
     DefensiveCandidate {
         schema_version: 1,
         id: "shenron-cve-2099-0001-demo".to_owned(),
+        candidate_kind: CandidateKind::CveNuclei,
+        evidence_basis: CandidateEvidenceBasis::ValidatedNucleiRequestIr,
         conditions: condition,
         source_findings: Vec::new(),
         cves: vec!["CVE-2099-0001".to_owned()],
@@ -511,4 +515,165 @@ fn batch_build_excludes_response_unverified_unless_explicitly_included() {
         build_batch_from_findings(&findings, TelemetryProfile::NginxCombined, true);
     assert_eq!(candidates.len(), 1);
     assert_eq!(stats.excluded_response_unverified_findings, 0);
+}
+
+#[test]
+fn sigma_ttp_candidates_are_opt_in_separate_and_preserve_literal_or() {
+    let sigma_finding = FindingExplanation {
+        template_id: "shenron-secret-config-file-probe".to_owned(),
+        cves: Vec::new(),
+        detectability: Detectability::Low,
+        request_specificity: RequestSpecificity::ResponseUnverified,
+        timestamp: None,
+        source_ip: None,
+        client_ip: None,
+        host: None,
+        method: Some("GET".to_owned()),
+        uri_path: Some("/.env".to_owned()),
+        uri_query: None,
+        waf_action: None,
+        waf_rule_id: None,
+        waf_rule_type: None,
+        waf_labels: Vec::new(),
+        waf_non_terminating_rule_ids: Vec::new(),
+        headers: Vec::new(),
+        ja3: None,
+        ja4: None,
+        request_id: Some("sigma-request".to_owned()),
+        log_source: None,
+        source: shenron::production::FindingSource::Sigma,
+        rule_title: Some("Secret and Configuration File Path Probe".to_owned()),
+        sigma_level: Some("medium".to_owned()),
+    };
+    let findings = vec![sigma_finding];
+    let (default_candidates, default_stats) =
+        build_batch_from_findings(&findings, TelemetryProfile::AwsWaf, false);
+    assert!(default_candidates.is_empty());
+    assert_eq!(default_stats.excluded_sigma_findings, 1);
+
+    let rules = load_rules(Path::new("sigma-rules"));
+    let (candidates, stats) = build_batch_from_findings_with_sigma(
+        &findings,
+        TelemetryProfile::AwsWaf,
+        false,
+        Some(&rules.supported),
+    );
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(stats.sigma_candidates, 1);
+    assert_eq!(stats.excluded_sigma_findings, 0);
+    let sigma = &candidates[0];
+    assert_eq!(sigma.candidate_kind, CandidateKind::SigmaTtp);
+    assert_eq!(
+        sigma.evidence_basis,
+        CandidateEvidenceBasis::SigmaLiteralRequestRule
+    );
+    assert!(sigma.cves.is_empty());
+    let DefensiveCondition::Or { conditions } = &sigma.conditions else {
+        panic!("the rule's literal alternatives must remain one OR condition");
+    };
+    assert!(conditions.len() > 1);
+    assert!(conditions.iter().any(|condition| {
+        condition
+            == &DefensiveCondition::UriContainsAsciiCaseInsensitive {
+                value: "/.env".to_owned(),
+            }
+    }));
+
+    let mut cve_finding = findings[0].clone();
+    cve_finding.source = shenron::production::FindingSource::Nuclei;
+    cve_finding.template_id = "cve-template".to_owned();
+    cve_finding.cves = vec!["CVE-2099-0001".to_owned()];
+    cve_finding.request_specificity = RequestSpecificity::RequestSpecific;
+    let (mixed, _) = build_batch_from_findings_with_sigma(
+        &[findings[0].clone(), cve_finding],
+        TelemetryProfile::AwsWaf,
+        false,
+        Some(&rules.supported),
+    );
+    assert_eq!(mixed.len(), 2);
+    assert_eq!(mixed[0].candidate_kind, CandidateKind::CveNuclei);
+    assert_eq!(mixed[1].candidate_kind, CandidateKind::SigmaTtp);
+    assert_eq!(mixed[0].cves, ["CVE-2099-0001"]);
+    assert!(mixed[1].cves.is_empty());
+}
+
+#[test]
+fn sigma_ttp_export_requires_replay_remains_count_and_rejects_nonfaithful_backend() {
+    let finding = FindingExplanation {
+        template_id: "shenron-secret-config-file-probe".to_owned(),
+        cves: Vec::new(),
+        detectability: Detectability::Low,
+        request_specificity: RequestSpecificity::ResponseUnverified,
+        timestamp: None,
+        source_ip: None,
+        client_ip: None,
+        host: None,
+        method: Some("GET".to_owned()),
+        uri_path: Some("/.env".to_owned()),
+        uri_query: None,
+        waf_action: None,
+        waf_rule_id: None,
+        waf_rule_type: None,
+        waf_labels: Vec::new(),
+        waf_non_terminating_rule_ids: Vec::new(),
+        headers: Vec::new(),
+        ja3: None,
+        ja4: None,
+        request_id: Some("sigma-request".to_owned()),
+        log_source: None,
+        source: shenron::production::FindingSource::Sigma,
+        rule_title: None,
+        sigma_level: Some("medium".to_owned()),
+    };
+    let rules = load_rules(Path::new("sigma-rules"));
+    let (mut candidates, _) = build_batch_from_findings_with_sigma(
+        &[finding],
+        TelemetryProfile::AwsWaf,
+        false,
+        Some(&rules.supported),
+    );
+    let mut sigma = candidates.pop().unwrap();
+    let directory = tempdir().unwrap();
+    assert!(export(
+        &sigma,
+        Backend::AwsWafJson,
+        TelemetryProfile::AwsWaf,
+        &directory.path().join("before-replay.json"),
+        Some(1),
+        99_001,
+    )
+    .is_err());
+    assert_eq!(
+        compatibility(&sigma, Backend::Ossec, TelemetryProfile::AwsWaf).status,
+        CompatibilityStatus::Unsupported
+    );
+    assert!(export(
+        &sigma,
+        Backend::Ossec,
+        TelemetryProfile::AwsWaf,
+        &directory.path().join("nonfaithful.xml"),
+        None,
+        99_001,
+    )
+    .is_err());
+
+    sigma.evidence.replay_completed = true;
+    let output = directory.path().join("count.json");
+    export(
+        &sigma,
+        Backend::AwsWafJson,
+        TelemetryProfile::AwsWaf,
+        &output,
+        Some(1),
+        99_001,
+    )
+    .unwrap();
+    let exported: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(output).unwrap()).unwrap();
+    assert_eq!(exported["Action"], serde_json::json!({"Count": {}}));
+    assert_eq!(
+        exported["Statement"]["OrStatement"]["Statements"][0]["ByteMatchStatement"]
+            ["TextTransformations"][0]["Type"],
+        "LOWERCASE"
+    );
 }

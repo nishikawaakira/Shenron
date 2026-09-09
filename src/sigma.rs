@@ -32,9 +32,41 @@ pub struct CompiledRule {
     condition: Condition,
 }
 
+/// A source-neutral view of the literal request conditions declared by a
+/// supported Sigma rule. This view is used only to build opt-in defensive
+/// hypotheses; it does not add values that are absent from the source rule.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SigmaLiteralCondition {
+    FieldEquals {
+        field: String,
+        value: String,
+    },
+    FieldContains {
+        field: String,
+        value: String,
+    },
+    And {
+        conditions: Vec<SigmaLiteralCondition>,
+    },
+    Or {
+        conditions: Vec<SigmaLiteralCondition>,
+    },
+    Not {
+        condition: Box<SigmaLiteralCondition>,
+    },
+}
+
 impl CompiledRule {
     pub fn matches(&self, event: &WebEvent) -> bool {
         self.matches_with_keyword_haystack(event, &OnceCell::new())
+    }
+
+    /// Returns the exact boolean structure of field-based literal selections.
+    /// Keyword rules are deliberately rejected because their cross-field raw
+    /// haystack semantics cannot be translated faithfully into a WAF request
+    /// condition.
+    pub fn literal_condition(&self) -> Result<SigmaLiteralCondition, String> {
+        literal_condition(&self.condition, &self.selections)
     }
 
     fn matches_with_keyword_haystack(
@@ -44,6 +76,73 @@ impl CompiledRule {
     ) -> bool {
         source_matches(&self.logsource, event.log_source)
             && evaluate_condition(&self.condition, &self.selections, event, keyword_haystack)
+    }
+}
+
+fn literal_condition(
+    condition: &Condition,
+    selections: &BTreeMap<String, Selection>,
+) -> Result<SigmaLiteralCondition, String> {
+    match condition {
+        Condition::Selection(name) => selection_literal_condition(
+            selections
+                .get(name)
+                .ok_or_else(|| format!("unknown selection `{name}`"))?,
+        ),
+        Condition::And(left, right) => Ok(SigmaLiteralCondition::And {
+            conditions: vec![
+                literal_condition(left, selections)?,
+                literal_condition(right, selections)?,
+            ],
+        }),
+        Condition::Or(left, right) => Ok(SigmaLiteralCondition::Or {
+            conditions: vec![
+                literal_condition(left, selections)?,
+                literal_condition(right, selections)?,
+            ],
+        }),
+        Condition::Not(inner) => Ok(SigmaLiteralCondition::Not {
+            condition: Box::new(literal_condition(inner, selections)?),
+        }),
+    }
+}
+
+fn selection_literal_condition(selection: &Selection) -> Result<SigmaLiteralCondition, String> {
+    let Selection::Fields(matchers) = selection else {
+        return Err("keyword selections cannot be translated faithfully".to_owned());
+    };
+    let mut conditions = Vec::with_capacity(matchers.len());
+    for matcher in matchers {
+        let values = matcher
+            .values
+            .iter()
+            .map(|value| {
+                if matcher.contains {
+                    SigmaLiteralCondition::FieldContains {
+                        field: matcher.field.clone(),
+                        value: value.clone(),
+                    }
+                } else {
+                    SigmaLiteralCondition::FieldEquals {
+                        field: matcher.field.clone(),
+                        value: value.clone(),
+                    }
+                }
+            })
+            .collect::<Vec<_>>();
+        let condition = if values.len() == 1 {
+            values.into_iter().next().expect("one literal value")
+        } else if matcher.all {
+            SigmaLiteralCondition::And { conditions: values }
+        } else {
+            SigmaLiteralCondition::Or { conditions: values }
+        };
+        conditions.push(condition);
+    }
+    match conditions.len() {
+        0 => Err("empty field selection cannot form a candidate".to_owned()),
+        1 => Ok(conditions.into_iter().next().expect("one field condition")),
+        _ => Ok(SigmaLiteralCondition::And { conditions }),
     }
 }
 

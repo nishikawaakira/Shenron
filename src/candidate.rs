@@ -18,6 +18,7 @@ use crate::production::{FindingExplanation, FindingSource};
 use crate::{
     event::{RawRetention, TelemetryProfile, WebEvent},
     nuclei::RequestSpecificity,
+    sigma::{CompiledRule, SigmaLiteralCondition},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -25,6 +26,8 @@ use crate::{
 pub enum DefensiveCondition {
     UriEquals { value: String },
     UriContains { value: String },
+    UriEqualsAsciiCaseInsensitive { value: String },
+    UriContainsAsciiCaseInsensitive { value: String },
     UriStartsWith { value: String },
     QueryEquals { value: String },
     QueryContains { value: String },
@@ -48,6 +51,14 @@ impl DefensiveCondition {
             Self::UriContains { value } => {
                 event.uri_path.as_deref().is_some_and(|v| v.contains(value))
             }
+            Self::UriEqualsAsciiCaseInsensitive { value } => event
+                .uri_path
+                .as_deref()
+                .is_some_and(|v| v.eq_ignore_ascii_case(value)),
+            Self::UriContainsAsciiCaseInsensitive { value } => event
+                .uri_path
+                .as_deref()
+                .is_some_and(|v| v.to_ascii_lowercase().contains(value)),
             Self::UriStartsWith { value } => event
                 .uri_path
                 .as_deref()
@@ -105,10 +116,31 @@ pub struct CandidateEvidence {
 pub enum RecommendedAction {
     Count,
 }
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CandidateKind {
+    #[default]
+    CveNuclei,
+    SigmaTtp,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CandidateEvidenceBasis {
+    #[default]
+    ValidatedNucleiRequestIr,
+    SigmaLiteralRequestRule,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DefensiveCandidate {
     pub schema_version: u8,
     pub id: String,
+    #[serde(default)]
+    pub candidate_kind: CandidateKind,
+    #[serde(default)]
+    pub evidence_basis: CandidateEvidenceBasis,
     pub conditions: DefensiveCondition,
     pub source_findings: Vec<FindingReference>,
     pub cves: Vec<String>,
@@ -158,7 +190,9 @@ pub fn load(path: &Path) -> Result<DefensiveCandidate> {
 #[derive(Debug, Clone, Copy)]
 pub struct BatchBuildStats {
     pub candidates: usize,
+    pub sigma_candidates: usize,
     pub excluded_sigma_findings: usize,
+    pub skipped_sigma_findings_untranslatable: usize,
     pub excluded_blocked_findings: usize,
     pub excluded_response_unverified_findings: usize,
     pub skipped_incomplete_findings: usize,
@@ -173,18 +207,48 @@ pub fn build_batch_from_findings(
     telemetry_profile: TelemetryProfile,
     include_response_unverified: bool,
 ) -> (Vec<DefensiveCandidate>, BatchBuildStats) {
+    build_batch_from_findings_with_sigma(
+        findings,
+        telemetry_profile,
+        include_response_unverified,
+        None,
+    )
+}
+
+/// Builds the normal CVE/Nuclei candidates and, only when a rule slice is
+/// explicitly supplied, a separate Sigma TTP candidate class. Sigma candidates
+/// preserve supported literal boolean structure and never inherit CVE claims.
+pub fn build_batch_from_findings_with_sigma(
+    findings: &[FindingExplanation],
+    telemetry_profile: TelemetryProfile,
+    include_response_unverified: bool,
+    sigma_rules: Option<&[CompiledRule]>,
+) -> (Vec<DefensiveCandidate>, BatchBuildStats) {
     let mut groups =
         BTreeMap::<(String, String, String, Option<String>), Vec<&FindingExplanation>>::new();
+    let mut sigma_groups = BTreeMap::<String, Vec<&FindingExplanation>>::new();
     let mut excluded_sigma_findings = 0;
+    let mut skipped_sigma_findings_untranslatable = 0;
     let mut excluded_blocked_findings = 0;
     let mut excluded_response_unverified_findings = 0;
     let mut skipped_incomplete_findings = 0;
     for finding in findings {
-        // Candidates stay CVE- and Nuclei-IR-anchored. A generic Sigma TTP match
-        // does not carry the per-CVE, request-specific evidence the COUNT
-        // candidate bar requires, so Sigma findings never form a candidate.
         if finding.source == FindingSource::Sigma {
-            excluded_sigma_findings += 1;
+            if sigma_rules.is_none() {
+                excluded_sigma_findings += 1;
+            } else if telemetry_profile == TelemetryProfile::AwsWaf
+                && finding
+                    .waf_action
+                    .as_deref()
+                    .is_some_and(|action| action.eq_ignore_ascii_case("BLOCK"))
+            {
+                excluded_blocked_findings += 1;
+            } else {
+                sigma_groups
+                    .entry(finding.template_id.clone())
+                    .or_default()
+                    .push(finding);
+            }
             continue;
         }
         if telemetry_profile == TelemetryProfile::AwsWaf
@@ -219,7 +283,7 @@ pub fn build_batch_from_findings(
         }
     }
     let mut cve_sequences = BTreeMap::<String, usize>::new();
-    let candidates = groups
+    let mut candidates = groups
         .into_iter()
         .map(|((cve, method, path, query), sources)| {
             let sequence = cve_sequences
@@ -246,6 +310,8 @@ pub fn build_batch_from_findings(
             DefensiveCandidate {
                 schema_version: 1,
                 id: format!("shenron-{}-{:03}", cve.to_ascii_lowercase(), sequence),
+                candidate_kind: CandidateKind::CveNuclei,
+                evidence_basis: CandidateEvidenceBasis::ValidatedNucleiRequestIr,
                 conditions: DefensiveCondition::And { conditions },
                 source_findings: sources
                     .iter()
@@ -274,14 +340,127 @@ pub fn build_batch_from_findings(
             }
         })
         .collect::<Vec<_>>();
+    let cve_candidates = candidates.len();
+    if let Some(rules) = sigma_rules {
+        let rules = rules
+            .iter()
+            .map(|rule| (rule.id.as_str(), rule))
+            .collect::<BTreeMap<_, _>>();
+        for (sequence, (rule_id, sources)) in sigma_groups.into_iter().enumerate() {
+            let Some(rule) = rules.get(rule_id.as_str()) else {
+                skipped_sigma_findings_untranslatable += sources.len();
+                continue;
+            };
+            let Ok(literal) = rule.literal_condition() else {
+                skipped_sigma_findings_untranslatable += sources.len();
+                continue;
+            };
+            let Ok(conditions) = sigma_condition(&literal) else {
+                skipped_sigma_findings_untranslatable += sources.len();
+                continue;
+            };
+            let timestamps = sources
+                .iter()
+                .filter_map(|finding| finding.timestamp.as_deref())
+                .filter_map(|value| {
+                    DateTime::parse_from_rfc3339(value)
+                        .ok()
+                        .map(|value| value.with_timezone(&Utc))
+                })
+                .collect::<Vec<_>>();
+            let known = sources.len() as u64;
+            candidates.push(DefensiveCandidate {
+                schema_version: 1,
+                id: format!(
+                    "shenron-sigma-ttp-{:03}-{}",
+                    sequence + 1,
+                    safe_name(&rule_id)
+                ),
+                candidate_kind: CandidateKind::SigmaTtp,
+                evidence_basis: CandidateEvidenceBasis::SigmaLiteralRequestRule,
+                conditions,
+                source_findings: sources
+                    .iter()
+                    .map(|finding| FindingReference {
+                        template_id: finding.template_id.clone(),
+                        timestamp: finding.timestamp.clone(),
+                        request_id: finding.request_id.clone(),
+                    })
+                    .collect(),
+                cves: Vec::new(),
+                kev: false,
+                evidence: CandidateEvidence {
+                    historical_requests_evaluated: 0,
+                    known_threat_findings: known,
+                    known_threat_findings_matched: 0,
+                    known_threat_findings_missed: known,
+                    other_historical_matches: 0,
+                    threat_coverage: None,
+                    first_seen: timestamps.iter().min().cloned(),
+                    last_seen: timestamps.iter().max().cloned(),
+                    replay_completed: false,
+                },
+                recommended_action: RecommendedAction::Count,
+                telemetry_profile,
+                generation_version: "shenron-candidate-build-sigma-ttp-v1".to_owned(),
+            });
+        }
+    }
+    let sigma_candidates = candidates.len() - cve_candidates;
     let stats = BatchBuildStats {
         candidates: candidates.len(),
+        sigma_candidates,
         excluded_sigma_findings,
+        skipped_sigma_findings_untranslatable,
         excluded_blocked_findings,
         excluded_response_unverified_findings,
         skipped_incomplete_findings,
     };
     (candidates, stats)
+}
+
+fn sigma_condition(condition: &SigmaLiteralCondition) -> Result<DefensiveCondition> {
+    match condition {
+        SigmaLiteralCondition::FieldEquals { field, value } => {
+            sigma_field_condition(field, value, false)
+        }
+        SigmaLiteralCondition::FieldContains { field, value } => {
+            sigma_field_condition(field, value, true)
+        }
+        SigmaLiteralCondition::And { conditions } => Ok(DefensiveCondition::And {
+            conditions: conditions
+                .iter()
+                .map(sigma_condition)
+                .collect::<Result<Vec<_>>>()?,
+        }),
+        SigmaLiteralCondition::Or { conditions } => Ok(DefensiveCondition::Or {
+            conditions: conditions
+                .iter()
+                .map(sigma_condition)
+                .collect::<Result<Vec<_>>>()?,
+        }),
+        SigmaLiteralCondition::Not { condition } => Ok(DefensiveCondition::Not {
+            condition: Box::new(sigma_condition(condition)?),
+        }),
+    }
+}
+
+fn sigma_field_condition(field: &str, value: &str, contains: bool) -> Result<DefensiveCondition> {
+    match (field.to_ascii_lowercase().as_str(), contains) {
+        ("cs-uri-stem" | "uri_path", false) => {
+            Ok(DefensiveCondition::UriEqualsAsciiCaseInsensitive {
+                value: value.to_owned(),
+            })
+        }
+        ("cs-uri-stem" | "uri_path", true) => {
+            Ok(DefensiveCondition::UriContainsAsciiCaseInsensitive {
+                value: value.to_owned(),
+            })
+        }
+        _ => {
+            bail!("Sigma field `{field}` cannot be translated faithfully into the candidate model")
+        }
+    }
 }
 pub fn save_batch(candidates: &[DefensiveCandidate], output: &Path) -> Result<()> {
     if output.exists() && !output.is_dir() {
@@ -494,6 +673,10 @@ fn condition_name(c: &DefensiveCondition) -> &'static str {
         DefensiveCondition::HeaderContains { .. } => "header contains",
         DefensiveCondition::Or { .. } => "OR",
         DefensiveCondition::Not { .. } => "NOT",
+        DefensiveCondition::UriEqualsAsciiCaseInsensitive { .. } => "case-insensitive URI equality",
+        DefensiveCondition::UriContainsAsciiCaseInsensitive { .. } => {
+            "case-insensitive URI contains"
+        }
         _ => "condition",
     }
 }
@@ -513,6 +696,11 @@ pub fn export(
             "export refused: {:?}: {}",
             report.status,
             report.reasons.join("; ")
+        );
+    }
+    if candidate.candidate_kind == CandidateKind::SigmaTtp && !candidate.evidence.replay_completed {
+        bail!(
+            "export refused: Sigma TTP candidate has not been validated against historical traffic"
         );
     }
     if matches!(backend, Backend::AwsWafJson | Backend::TerraformAwsWaf)
@@ -550,11 +738,26 @@ fn aws_statement(c: &DefensiveCondition) -> serde_json::Value {
             serde_json::json!({"NotStatement":{"Statement":aws_statement(condition)}})
         }
         _ => {
+            let transformation = if matches!(
+                c,
+                DefensiveCondition::UriEqualsAsciiCaseInsensitive { .. }
+                    | DefensiveCondition::UriContainsAsciiCaseInsensitive { .. }
+            ) {
+                "LOWERCASE"
+            } else {
+                "NONE"
+            };
             let (value, constraint, field) = match c {
                 DefensiveCondition::UriEquals { value } => {
                     (value, "EXACTLY", serde_json::json!({"UriPath":{}}))
                 }
                 DefensiveCondition::UriContains { value } => {
+                    (value, "CONTAINS", serde_json::json!({"UriPath":{}}))
+                }
+                DefensiveCondition::UriEqualsAsciiCaseInsensitive { value } => {
+                    (value, "EXACTLY", serde_json::json!({"UriPath":{}}))
+                }
+                DefensiveCondition::UriContainsAsciiCaseInsensitive { value } => {
                     (value, "CONTAINS", serde_json::json!({"UriPath":{}}))
                 }
                 DefensiveCondition::UriStartsWith { value } => {
@@ -606,7 +809,7 @@ fn aws_statement(c: &DefensiveCondition) -> serde_json::Value {
                 ),
                 _ => unreachable!(),
             };
-            serde_json::json!({"ByteMatchStatement":{"SearchString":value,"FieldToMatch":field,"TextTransformations":[{"Priority":0,"Type":"NONE"}],"PositionalConstraint":constraint}})
+            serde_json::json!({"ByteMatchStatement":{"SearchString":value,"FieldToMatch":field,"TextTransformations":[{"Priority":0,"Type":transformation}],"PositionalConstraint":constraint}})
         }
     }
 }
@@ -634,11 +837,26 @@ fn terraform_statement(c: &DefensiveCondition, indent: usize) -> String {
             terraform_statement(condition, indent + 4)
         ),
         _ => {
+            let transformation = if matches!(
+                c,
+                DefensiveCondition::UriEqualsAsciiCaseInsensitive { .. }
+                    | DefensiveCondition::UriContainsAsciiCaseInsensitive { .. }
+            ) {
+                "LOWERCASE"
+            } else {
+                "NONE"
+            };
             let (value, constraint, field) = match c {
                 DefensiveCondition::UriEquals { value } => {
                     (value, "EXACTLY", "uri_path {}".to_owned())
                 }
                 DefensiveCondition::UriContains { value } => {
+                    (value, "CONTAINS", "uri_path {}".to_owned())
+                }
+                DefensiveCondition::UriEqualsAsciiCaseInsensitive { value } => {
+                    (value, "EXACTLY", "uri_path {}".to_owned())
+                }
+                DefensiveCondition::UriContainsAsciiCaseInsensitive { value } => {
                     (value, "CONTAINS", "uri_path {}".to_owned())
                 }
                 DefensiveCondition::UriStartsWith { value } => {
@@ -696,7 +914,7 @@ fn terraform_statement(c: &DefensiveCondition, indent: usize) -> String {
                 ),
                 _ => unreachable!(),
             };
-            format!("{pad}statement {{\n{pad}  byte_match_statement {{\n{pad}    search_string         = {}\n{pad}    positional_constraint = \"{constraint}\"\n{pad}    field_to_match {{\n{pad}      {field}\n{pad}    }}\n{pad}    text_transformation {{\n{pad}      priority = 0\n{pad}      type     = \"NONE\"\n{pad}    }}\n{pad}  }}\n{pad}}}", hcl(value))
+            format!("{pad}statement {{\n{pad}  byte_match_statement {{\n{pad}    search_string         = {}\n{pad}    positional_constraint = \"{constraint}\"\n{pad}    field_to_match {{\n{pad}      {field}\n{pad}    }}\n{pad}    text_transformation {{\n{pad}      priority = 0\n{pad}      type     = \"{transformation}\"\n{pad}    }}\n{pad}  }}\n{pad}}}", hcl(value))
         }
     }
 }
@@ -774,7 +992,7 @@ fn write_evidence(
     ensure_new(&sidecar)?;
     serde_json::to_writer_pretty(
         fs::File::create(sidecar)?,
-        &serde_json::json!({"candidate_id":c.id,"cves":c.cves,"kev":c.kev,"evidence":c.evidence,"recommended_initial_action":"COUNT","backend_compatibility":report,"safety_note":"Candidate artifact only. Human review is required; no deployment was performed."}),
+        &serde_json::json!({"candidate_id":c.id,"candidate_kind":c.candidate_kind,"evidence_basis":c.evidence_basis,"cves":c.cves,"kev":c.kev,"evidence":c.evidence,"recommended_initial_action":"COUNT","backend_compatibility":report,"safety_note":"Candidate artifact only. Human review is required; no deployment was performed."}),
     )?;
     Ok(())
 }
@@ -810,6 +1028,8 @@ fn condition_contains_sensitive_value(condition: &DefensiveCondition) -> bool {
         }
         DefensiveCondition::UriEquals { value }
         | DefensiveCondition::UriContains { value }
+        | DefensiveCondition::UriEqualsAsciiCaseInsensitive { value }
+        | DefensiveCondition::UriContainsAsciiCaseInsensitive { value }
         | DefensiveCondition::UriStartsWith { value }
         | DefensiveCondition::QueryEquals { value }
         | DefensiveCondition::QueryContains { value }

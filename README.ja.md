@@ -178,7 +178,7 @@ Shenron はディレクトリツリーと gzip ローテーションを読み、
 
 凍結済み bot-range snapshot がある場合、hunt は自己申告された bot User-Agent と運営者の公開レンジをオフライン照合し、レンジ内外の集計を sanitized 出力へ、レンジ外の観測 peer IP を private `bot-range-observations.json` へ保存します。snapshot が無ければ注記してスキップし、CVE/Sigma 指標は変えません。レンジ外という観測は、レンジの古さ・欠落、中継、自由に設定できる User-Agent の影響を受けるため、なりすまし・攻撃・悪用・帰属の判定ではありません。詳細は [Published bot ranges](docs/published-bot-ranges.md) を参照してください。
 
-`hunt` は CVE 主体の Nuclei パスに加えて、汎用的な **Sigma** 検出パスを**既定で ON**にして同一ストリームで実行します。CVE テンプレートに対応しない汎用 TTP（例：`.env` などの機密ファイル探索）を拾えます。ルールは `--rules <DIR>` か準備済みの `<data-dir>/sigma-rules` から読み込み、`--no-sigma` で無効化できます。`shenron setup` が Shenron 対応の同梱パックをそこへ配置するので、追加設定なしで動きます。さらに `setup --sigma-source <git-url>` で外部ソース（例：SigmaHQ）の `rules/web` も取得できます。Sigma の finding は `source` フィールドを持ち、CVE 指標とは別に集計され、`candidate build` には入りません（候補は CVE / Nuclei-IR 主体のまま）。詳細は [Sigma detection inside hunt](docs/sigma-in-hunt.md) を参照。
+`hunt` は CVE 主体の Nuclei パスに加えて、汎用的な **Sigma** 検出パスを**既定で ON**にして同一ストリームで実行します。CVE テンプレートに対応しない汎用 TTP（例：`.env` などの機密ファイル探索）を拾えます。ルールは `--rules <DIR>` か準備済みの `<data-dir>/sigma-rules` から読み込み、`--no-sigma` で無効化できます。`shenron setup` が Shenron 対応の同梱パックをそこへ配置するので、追加設定なしで動きます。さらに `setup --sigma-source <git-url>` で外部ソース（例：SigmaHQ）の `rules/web` も取得できます。Sigma の finding は `source` フィールドを持ち、CVE 指標とは別に集計されます。`candidate build` では既定で除外され、明示的な `--include-sigma-ttp --rules <DIR>` の場合だけ、忠実に変換できるルール由来リテラルから CVE 候補とは別の replay 必須クラスを生成します。CVE の証拠ではなく、出力は引き続き COUNT のみです。詳細は [Sigma detection inside hunt](docs/sigma-in-hunt.md) を参照。
 
 同梱の秘密・設定ファイル探索ルールでは、記録された応答が 2xx の一致を人手確認の最優先として強調し、private HTML レポートに証跡を一覧表示します。他の一致を除外するものではなく、2xx はファイル内容の開示・攻撃・悪用・侵害を証明しません。ステータスが取得できない場合は確認不可のままで、成功扱いにはしません。
 

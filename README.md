@@ -241,8 +241,11 @@ from `--rules <DIR>` or the prepared `<data-dir>/sigma-rules`; `--no-sigma`
 disables it. `shenron setup` installs a bundled, Shenron-supported Sigma pack
 there so the pass works out of the box, and `setup --sigma-source <git-url>` can
 additionally fetch an external source's `rules/web` (e.g. SigmaHQ). Sigma findings
-carry a `source` field, are counted separately from the CVE metrics, and never
-feed `candidate build`. See [Sigma detection inside hunt](docs/sigma-in-hunt.md).
+carry a `source` field and are counted separately from the CVE metrics. They are
+excluded from `candidate build` by default; explicit
+`--include-sigma-ttp --rules <DIR>` creates a separate replay-required candidate class only from
+faithfully translatable rule literals. It carries no CVE claim and remains
+COUNT-only. See [Sigma detection inside hunt](docs/sigma-in-hunt.md).
 
 For the bundled sensitive/config-file probe rule, `hunt` highlights recorded
 2xx responses as the highest priority for human review and lists their private
