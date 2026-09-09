@@ -63,7 +63,7 @@ Hunt can also label deterministic [declared-versus-observed consistency](docs/de
 
 `shenron count-hypotheses` compares broad-to-narrow per-CVE WAF-condition measurements as offline, non-deploying COUNT simulations and deliberately does not recommend a rung; see [COUNT hypothesis ladder](docs/count-hypotheses.md).
 
-`shenron concentration` measures bounded, aggregate request-volume distribution without CTI inputs and keeps paths/IPs in a separate private artifact. It is not a denial-of-service, attack, abuse, compromise, or attribution determination; see [request concentration](docs/request-concentration.md).
+`shenron concentration` measures bounded, aggregate request-volume distribution without CTI inputs, including requests per distinct observed source IP, and keeps paths/IPs in a separate private artifact. It is not a denial-of-service, attack, abuse, compromise, or attribution determination; see [request concentration](docs/request-concentration.md).
 
 Concentration also measures per-path query attachment and exact retained query/key cardinalities without outputting query strings or values. Its private HTML report shows a stacked 1xx–5xx response-status graph per Top-N observed peer; sanitized output retains only aggregate query counts and no peer IPs. These are request/response-shape measurements for review, not cache-evasion, DoS, attack, exploitation, compromise, or attribution classifications.
 

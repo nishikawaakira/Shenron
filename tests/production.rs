@@ -134,6 +134,7 @@ fn concentration_writes_private_detail_without_leaking_it_to_sanitized_or_defaul
     let top = report.request_concentration.top_path.as_ref().unwrap();
     assert_eq!(top.requests, 3);
     assert_eq!(top.distinct_source_ips, 3);
+    assert_eq!(top.requests_per_source_ip, 1.0);
     assert_eq!(top.request_share, 0.75);
     assert_eq!(top.response_status_classes.client_error, 3);
     assert_eq!(top.response_bytes, Some(30));
@@ -161,7 +162,9 @@ fn concentration_writes_private_detail_without_leaking_it_to_sanitized_or_defaul
         .assert()
         .success()
         .stdout(contains("Request concentration (volume distribution only"))
-        .stdout(contains("75.0% of 4 requests, from 3 distinct source IPs"))
+        .stdout(contains(
+            "75.0% of 4 requests, from 3 distinct source IPs (1.0 requests per distinct source IP)",
+        ))
         .stdout(contains("/private-hot-path").not())
         .stdout(contains("198.51.100.1").not());
     Command::cargo_bin("shenron")

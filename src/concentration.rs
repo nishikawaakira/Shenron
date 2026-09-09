@@ -153,6 +153,10 @@ pub struct PathConcentrationSummary {
     pub request_share: f64,
     /// Exact unless source-IP tracking reached its disclosed cap.
     pub distinct_source_ips: usize,
+    /// Requests divided by retained distinct observed source IPs. Zero when no
+    /// source IP was retained; source-IP cap disclosures still apply.
+    #[serde(default)]
+    pub requests_per_source_ip: f64,
     pub response_status_classes: StatusClassCounts,
     /// `None` when the selected telemetry profile does not expose response bytes.
     pub response_bytes: Option<u64>,
@@ -210,6 +214,10 @@ pub struct SanitizedFocusSummary {
     pub focus_kind: String,
     pub total_requests: u64,
     pub distinct_source_ips: usize,
+    /// Focus requests divided by retained distinct observed source IPs. Zero
+    /// when no source IP was retained; `source_ips_beyond_cap` remains visible.
+    #[serde(default)]
+    pub requests_per_source_ip: f64,
     pub source_ips_beyond_cap: u64,
     /// Distinct URI paths inside the focus (sub-paths of a prefix, or the union
     /// requested by selected source IPs). Zero for an exact-path focus.
@@ -377,6 +385,8 @@ pub struct PrivateFocusSummary {
     pub uri_path: String,
     pub total_requests: u64,
     pub distinct_source_ips: usize,
+    #[serde(default)]
+    pub requests_per_source_ip: f64,
     pub source_ips_beyond_cap: u64,
     /// Retained URI paths inside the focus, most-requested first. Empty for an
     /// exact-path focus (there is only the one path).
@@ -789,6 +799,10 @@ impl RequestConcentration {
                 focus_kind: selector.kind().to_owned(),
                 total_requests: self.focus_total,
                 distinct_source_ips: self.focus_sources.len(),
+                requests_per_source_ip: requests_per_distinct_source(
+                    self.focus_total,
+                    self.focus_sources.len(),
+                ),
                 source_ips_beyond_cap: self.focus_source_ips_beyond_cap,
                 distinct_uri_paths: self.focus_paths.len(),
                 paths_beyond_cap: self.focus_paths_beyond_cap,
@@ -851,6 +865,10 @@ impl RequestConcentration {
                 uri_path: selector_display,
                 total_requests: self.focus_total,
                 distinct_source_ips: self.focus_sources.len(),
+                requests_per_source_ip: requests_per_distinct_source(
+                    self.focus_total,
+                    self.focus_sources.len(),
+                ),
                 source_ips_beyond_cap: self.focus_source_ips_beyond_cap,
                 paths,
                 paths_beyond_cap: self.focus_paths_beyond_cap,
@@ -1017,6 +1035,10 @@ impl RequestConcentration {
             requests: item.requests,
             request_share: self.share(item.requests),
             distinct_source_ips: item.source_ips.len(),
+            requests_per_source_ip: requests_per_distinct_source(
+                item.requests,
+                item.source_ips.len(),
+            ),
             response_status_classes: item.status_classes.clone(),
             response_bytes: self.response_bytes_available.then_some(item.response_bytes),
             requests_with_query: item.query_shape.requests_with_query,
@@ -1347,6 +1369,17 @@ fn query_keys(query: &str) -> impl Iterator<Item = &str> {
     })
 }
 
+/// Ratio of two observed counts. A zero denominator remains zero rather than
+/// producing a non-finite JSON value. This is request-volume context only, not
+/// a determination of automation, denial of service, attack, or abuse.
+fn requests_per_distinct_source(requests: u64, distinct_source_ips: usize) -> f64 {
+    if distinct_source_ips == 0 {
+        0.0
+    } else {
+        requests as f64 / distinct_source_ips as f64
+    }
+}
+
 fn record_status_class(counts: &mut StatusClassCounts, status: Option<u16>) {
     match status {
         Some(100..=199) => counts.informational += 1,
@@ -1436,6 +1469,7 @@ mod tests {
         let top = summary.top_path.unwrap();
         assert_eq!(top.requests, 3);
         assert_eq!(top.distinct_source_ips, 2);
+        assert_eq!(top.requests_per_source_ip, 1.5);
         assert_eq!(top.request_share, 0.75);
         assert_eq!(top.response_status_classes.client_error, 3);
         assert_eq!(top.response_bytes, Some(30));
@@ -1619,12 +1653,21 @@ mod tests {
         let top = concentration.summary().top_path.unwrap();
         assert_eq!(top.requests, 200);
         assert_eq!(top.distinct_source_ips, 200);
+        assert_eq!(top.requests_per_source_ip, 1.0);
         assert_eq!(top.request_share, 0.5);
         assert!(concentration
             .private_report()
             .source_ips
             .iter()
             .all(|source| source.requests * 100 < 400));
+    }
+
+    #[test]
+    fn requests_per_distinct_source_avoids_a_zero_denominator() {
+        assert_eq!(requests_per_distinct_source(12, 3), 4.0);
+        let zero = requests_per_distinct_source(12, 0);
+        assert_eq!(zero, 0.0);
+        assert!(zero.is_finite());
     }
 
     #[test]

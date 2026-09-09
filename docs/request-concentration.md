@@ -30,6 +30,28 @@ generic rule matches a request. Hunt writes the private concentration artifact
 alongside `private-findings.jsonl`; its sanitized concentration summary is
 embedded in `sanitized-research.json`.
 
+## Requests per distinct source IP
+
+Each retained path and optional focus reports
+`requests_per_source_ip`, calculated as `requests / distinct_source_ips`.
+The value is zero when no source IP was retained, so it never produces a
+non-finite JSON number. If source-IP tracking reaches its disclosed cap, the
+ratio uses the retained cardinality and must be read together with the cap
+count. The value appears in both the private detail and the numeric-only
+sanitized summary; neither sanitized location adds an IP address or path.
+
+Requests per distinct source is a ratio of two observed counts. A high ratio
+can equally result from a single client polling a resource, a proxy aggregating
+many users behind one address, an embedded asset fetched repeatedly in one
+session, or automated traffic. It is not a determination of automation, a
+denial-of-service attempt, an attack, or abuse. Shenron applies no threshold or
+classification to this ratio.
+
+In one reviewed 14-day case, ordinary-day leading-path values were 4.2–7.4,
+while two unusually concentrated high-volume days measured 1,456.9 and
+3,107.7. These are case-specific reference observations, not a baseline,
+threshold, or generalizable label.
+
 ## Query-shape measurements per path
 
 Each retained path and each optional focus records three query-shape metrics in

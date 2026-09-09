@@ -652,6 +652,7 @@ mod tests {
                         requests: n,
                         request_share: 0.,
                         distinct_source_ips: 0,
+                        requests_per_source_ip: 0.0,
                         response_status_classes: StatusClassCounts::default(),
                         response_bytes: None,
                         requests_with_query: 0,

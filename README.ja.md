@@ -61,7 +61,7 @@ Shenron は、Web アクセスログを対象にした Rust 製の「受動的�
 - `ablation`：URI-only から Nuclei IR・request-specific IR まで、条件の広さ別に一致件数（ボリューム）を比較
 - `replay`：ローカルの履歴コーパス全体に対し、既知検出の再観測カバレッジとその他の一致を、機微情報を含まない集計として算出
 - `count-hypotheses`：CVE ごとに「広い→狭い」WAF 条件を、ローカルの COUNT シミュレーションとして比較（推奨する条件を自動で選んだり、デプロイしたりはしません）
-- `concentration`：CTI 入力なしで、固定上限と上限超過件数を明示したリクエスト量分布を集計します。パスと観測した接続ピア IP は private artifact の `request-concentration.json` に分離し、sanitized 側には集計だけを残します。これは DoS・攻撃・悪用・侵害・攻撃者特定の判定ではありません。詳細は [Request concentration](docs/request-concentration.md) を参照してください。
+- `concentration`：CTI 入力なしで、異なる観測送信元 IP あたりのリクエスト数を含む、固定上限と上限超過件数を明示したリクエスト量分布を集計します。パスと観測した接続ピア IP は private artifact の `request-concentration.json` に分離し、sanitized 側には集計だけを残します。これは DoS・攻撃・悪用・侵害・攻撃者特定の判定ではありません。詳細は [Request concentration](docs/request-concentration.md) を参照してください。
 - `concentration` は、クエリ文字列や値を出力せず、パスごとのクエリ付与件数と保持したクエリ／キーの distinct 数も測定します。private HTML レポートでは上位の観測接続ピアごとに 1xx〜5xx の応答ステータスを積み上げグラフで表示し、sanitized 側には集計クエリ件数だけを残して IP は含めません。これは人手確認用のリクエスト／応答形状であり、キャッシュ回避・DoS・攻撃・悪用・侵害・帰属の分類ではありません。
 - `concentration` は既定で 1分・10分・1時間・1日の決定論的なリクエスト率を同時に表示し、`--rate-window` で集合を変更できます。`explain` の `--triage-window` も繰り返しまたはカンマ区切りで複数指定できますが、windowed-burst の加点は窓数にかかわらず5点の一度だけです。
 - private な entity triage では、`--sequence-window` で設定可能な bounded な[リクエスト順序](docs/request-sequences.md)と間隔も表示します。これは確認用の観測情報であり、自動化・攻撃・悪用・侵害・主体を判定するものではありません。

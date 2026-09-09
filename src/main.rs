@@ -2242,6 +2242,10 @@ fn print_concentration(
         }
         lines.push(format!("  Peak / median requests per minute: {rate}"));
         lines.push(format!(
+            "  Requests per distinct observed source IP: {:.1}",
+            focus_summary.requests_per_source_ip,
+        ));
+        lines.push(format!(
             "  Query shape: {}",
             format_query_shape(
                 focus_summary.total_requests,
@@ -2270,11 +2274,12 @@ fn print_concentration(
             println!("\nPrivate top request paths:");
             for item in private.paths.iter().take(display_limit(limit)) {
                 println!(
-                    "  {}\n    Requests: {} ({:.1}%)\n    Distinct source IPs: {}\n    Response status classes: {}\n    Response bytes: {}\n    Query shape: {}\n    Query keys (private; names only): {}",
+                    "  {}\n    Requests: {} ({:.1}%)\n    Distinct source IPs: {}\n    Requests per distinct source IP: {:.1}\n    Response status classes: {}\n    Response bytes: {}\n    Query shape: {}\n    Query keys (private; names only): {}",
                     terminal_safe(&item.uri_path),
                     item.summary.requests,
                     item.summary.request_share * 100.0,
                     item.summary.distinct_source_ips,
+                    item.summary.requests_per_source_ip,
                     format_status_classes(&item.summary.response_status_classes),
                     item.summary
                         .response_bytes
@@ -2626,10 +2631,11 @@ fn print_request_concentration_summary(
         .as_ref()
         .map(|top| {
             format!(
-                "{:.1}% of {} requests, from {} distinct source IPs",
+                "{:.1}% of {} requests, from {} distinct source IPs ({:.1} requests per distinct source IP)",
                 top.request_share * 100.0,
                 concentration.total_requests,
                 top.distinct_source_ips,
+                top.requests_per_source_ip,
             )
         })
         .unwrap_or_else(|| "unavailable (no URI paths retained)".to_owned());
@@ -2645,7 +2651,7 @@ fn print_request_concentration_summary(
         _ => "unavailable (no timestamped events)".to_owned(),
     };
     println!(
-        "\nRequest concentration (volume distribution only; separate from the CVE metrics above):\n  This is not a determination of a denial-of-service attempt, attack, abuse, or attacker identity.\n  Distinct URI paths:        {}\n  Distinct source IPs:       {}\n  Top path share:            {}\n  Top 10 paths share:        {:.1}%\n  Top 10 source IPs share:   {:.1}%\n  Requests per minute:       {}\n  Requests without path:     {}\n  Requests without source IP:{}\n  Paths beyond tracking cap: {}\n  Source IPs beyond cap:     {}\n  Source/path pairs beyond cap: {}\n  Undated observations:      {}\n  Detail (paths and source IPs) written to the private artifact: {}",
+        "\nRequest concentration (volume distribution only; separate from the CVE metrics above):\n  This is not a determination of a denial-of-service attempt, attack, abuse, or attacker identity.\n  Requests per distinct source is a ratio of two observed counts; a high ratio can also result from polling, an aggregating proxy, a repeatedly fetched embedded asset, or automated traffic. It is not a determination of automation, denial of service, attack, or abuse.\n  Distinct URI paths:        {}\n  Distinct source IPs:       {}\n  Top path share:            {}\n  Top 10 paths share:        {:.1}%\n  Top 10 source IPs share:   {:.1}%\n  Requests per minute:       {}\n  Requests without path:     {}\n  Requests without source IP:{}\n  Paths beyond tracking cap: {}\n  Source IPs beyond cap:     {}\n  Source/path pairs beyond cap: {}\n  Undated observations:      {}\n  Detail (paths and source IPs) written to the private artifact: {}",
         concentration.distinct_uri_paths,
         concentration.distinct_source_ips,
         top_path,
