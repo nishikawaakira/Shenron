@@ -251,6 +251,93 @@ fn daily_reuses_concentration_metrics_without_writing_default_artifacts() {
 }
 
 #[test]
+fn processed_index_skips_unchanged_files_and_reprocesses_changed_or_forced_inputs() {
+    let directory = tempdir().unwrap();
+    let inputs = directory.path().join("logs");
+    fs::create_dir(&inputs).unwrap();
+    let first = inputs.join("a.log");
+    let second = inputs.join("b.log");
+    let line = |ip: &str, path: &str| {
+        format!(
+            "{ip} - - [01/Jan/2026:00:00:00 +0000] \"GET {path} HTTP/1.1\" 200 10 \"-\" \"fixture-agent\"\n"
+        )
+    };
+    fs::write(&first, line("198.51.100.1", "/private-a")).unwrap();
+    fs::write(&second, line("198.51.100.2", "/private-b")).unwrap();
+    let index = directory.path().join("processed-index.json");
+
+    let run = |extra: &[&str]| {
+        let mut command = Command::cargo_bin("shenron").unwrap();
+        command.args([
+            "daily",
+            "--input",
+            inputs.to_str().unwrap(),
+            "--format",
+            "apache",
+            "--output-format",
+            "json",
+            "--processed-index",
+            index.to_str().unwrap(),
+        ]);
+        command.args(extra).output().unwrap()
+    };
+
+    let initial = run(&[]);
+    assert!(initial.status.success());
+    let initial_json: serde_json::Value = serde_json::from_slice(&initial.stdout).unwrap();
+    assert_eq!(initial_json["total_requests"], 2);
+    assert_eq!(initial_json["files_skipped_as_processed"], 0);
+    let index_json = fs::read_to_string(&index).unwrap();
+    assert!(index_json.contains("PROCESSED_FILE_INDEX"));
+    assert!(index_json.contains("sha256"));
+    assert!(index_json.contains("execution_id"));
+
+    let unchanged = run(&[]);
+    assert!(unchanged.status.success());
+    let unchanged_json: serde_json::Value = serde_json::from_slice(&unchanged.stdout).unwrap();
+    assert_eq!(unchanged_json["total_requests"], 0);
+    assert_eq!(unchanged_json["files_skipped_as_processed"], 2);
+    assert_eq!(unchanged_json["files_analyzed"], 0);
+
+    let mut changed = fs::OpenOptions::new().append(true).open(&first).unwrap();
+    use std::io::Write as _;
+    changed
+        .write_all(line("198.51.100.3", "/private-a").as_bytes())
+        .unwrap();
+    drop(changed);
+    let after_change = run(&[]);
+    assert!(after_change.status.success());
+    let changed_json: serde_json::Value = serde_json::from_slice(&after_change.stdout).unwrap();
+    assert_eq!(changed_json["total_requests"], 2);
+    assert_eq!(changed_json["files_skipped_as_processed"], 1);
+
+    let forced = run(&["--reprocess-all"]);
+    assert!(forced.status.success());
+    let forced_json: serde_json::Value = serde_json::from_slice(&forced.stdout).unwrap();
+    assert_eq!(forced_json["total_requests"], 3);
+    assert_eq!(forced_json["files_skipped_as_processed"], 0);
+
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "concentration",
+            "--input",
+            inputs.to_str().unwrap(),
+            "--format",
+            "apache",
+            "--output",
+            directory.path().join("indexed-output").to_str().unwrap(),
+            "--processed-index",
+            index.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(contains(
+            "These aggregates cover files processed in this run only",
+        ));
+}
+
+#[test]
 fn concentration_keeps_query_values_private_and_gates_key_names_to_show_paths() {
     let directory = tempdir().unwrap();
     let input = directory.path().join("query-access.log");

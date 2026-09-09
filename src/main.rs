@@ -39,7 +39,6 @@ use shenron::{
     },
     production::{
         ablation_with_optional_kev as production_ablation,
-        concentration_with_asn_rate_windows_and_query_keys as production_concentration,
         concentration_with_optional_output as production_daily_concentration,
         count_hypotheses_with_optional_kev as production_count_hypotheses,
         explain_private_findings,
@@ -360,6 +359,13 @@ enum ProductionCommand {
         /// Inclusive UTC end time in RFC 3339 format.
         #[arg(long, value_parser = parse_rfc3339_utc)]
         to: Option<DateTime<Utc>>,
+        /// Private file-level index used to skip unchanged, previously
+        /// processed files. The current report covers only files processed now.
+        #[arg(long)]
+        processed_index: Option<PathBuf>,
+        /// Ignore --processed-index entries and process every discovered file.
+        #[arg(long, requires = "processed_index")]
+        reprocess_all: bool,
         /// Display raw URI paths from the private artifact.
         #[arg(long)]
         show_paths: bool,
@@ -393,6 +399,13 @@ enum ProductionCommand {
         /// Inclusive UTC end time in RFC 3339 format.
         #[arg(long, value_parser = parse_rfc3339_utc)]
         to: Option<DateTime<Utc>>,
+        /// Private file-level index used to skip unchanged, previously
+        /// processed files. The current summary covers only files processed now.
+        #[arg(long)]
+        processed_index: Option<PathBuf>,
+        /// Ignore --processed-index entries and process every discovered file.
+        #[arg(long, requires = "processed_index")]
+        reprocess_all: bool,
     },
     /// Compare aggregate match volume across predicates derived from one validated Nuclei IR. Never writes private findings.
     Ablation {
@@ -727,10 +740,12 @@ struct DailyVolumeSummary {
     paths_beyond_tracking_cap: u64,
     source_ips_beyond_tracking_cap: u64,
     source_path_pairs_beyond_tracking_cap: u64,
+    processed_index_enabled: bool,
+    files_skipped_as_processed: usize,
 }
 
 impl DailyVolumeSummary {
-    fn from_report(report: &SanitizedConcentrationReport) -> Self {
+    fn from_report(report: &SanitizedConcentrationReport, processed_index_enabled: bool) -> Self {
         let concentration = &report.request_concentration;
         Self {
             report_kind: "DAILY_REQUEST_VOLUME_SUMMARY",
@@ -756,6 +771,8 @@ impl DailyVolumeSummary {
             source_ips_beyond_tracking_cap: concentration.source_ips_beyond_tracking_cap,
             source_path_pairs_beyond_tracking_cap: concentration
                 .source_path_pairs_beyond_tracking_cap,
+            processed_index_enabled,
+            files_skipped_as_processed: report.files_skipped_as_processed,
         }
     }
 }
@@ -1065,6 +1082,8 @@ fn main() -> Result<()> {
                 rate_window,
                 from,
                 to,
+                processed_index,
+                reprocess_all,
                 show_paths,
                 show_source_ips,
                 limit,
@@ -1106,20 +1125,10 @@ fn main() -> Result<()> {
                     ipv6: ipv6_group_prefix.unwrap_or(default_prefixes.ipv6),
                 };
                 let asn_database = asn_dataset.as_deref().map(load_asn_database).transpose()?;
-                let rate_window_seconds = if rate_window.is_empty() {
-                    DEFAULT_RATE_WINDOW_SECONDS.to_vec()
-                } else {
-                    let mut values = rate_window
-                        .into_iter()
-                        .map(|window| window.as_secs())
-                        .collect::<Vec<_>>();
-                    values.sort_unstable();
-                    values.dedup();
-                    values
-                };
-                let report = production_concentration(
+                let rate_window_seconds = normalized_rate_windows(rate_window);
+                let report = production_daily_concentration(
                     &input,
-                    &output,
+                    Some(&output),
                     format.telemetry_profile_for_input(&input)?,
                     HuntTimeRange { from, to },
                     focus.clone(),
@@ -1127,6 +1136,8 @@ fn main() -> Result<()> {
                     asn_database.as_ref(),
                     &rate_window_seconds,
                     show_paths,
+                    processed_index.as_deref(),
+                    reprocess_all,
                 )?;
                 let private_path = output.join("request-concentration.json");
                 let private = (show_paths || show_source_ips || focus.is_some())
@@ -1141,6 +1152,10 @@ fn main() -> Result<()> {
                     limit,
                     focus.as_ref(),
                 );
+                print_processed_index_scope(
+                    processed_index.is_some(),
+                    report.files_skipped_as_processed,
+                );
                 Ok(())
             }
             ProductionCommand::Daily {
@@ -1151,6 +1166,8 @@ fn main() -> Result<()> {
                 rate_window,
                 from,
                 to,
+                processed_index,
+                reprocess_all,
             } => {
                 let rate_window_seconds = normalized_rate_windows(rate_window);
                 let telemetry_profile = format.telemetry_profile_for_input(&input)?;
@@ -1164,8 +1181,10 @@ fn main() -> Result<()> {
                     None,
                     &rate_window_seconds,
                     false,
+                    processed_index.as_deref(),
+                    reprocess_all,
                 )?;
-                let summary = DailyVolumeSummary::from_report(&report);
+                let summary = DailyVolumeSummary::from_report(&report, processed_index.is_some());
                 match output_format {
                     DailyOutputFormat::Text => {
                         print_daily_volume_summary(&summary, output.as_deref())
@@ -2650,6 +2669,15 @@ fn print_daily_volume_summary(summary: &DailyVolumeSummary, output: Option<&Path
         summary.source_ips_beyond_tracking_cap,
         summary.source_path_pairs_beyond_tracking_cap,
     );
+    if summary.processed_index_enabled {
+        println!(
+            "  Previously processed files skipped:          {}",
+            summary.files_skipped_as_processed
+        );
+        println!(
+            "  Scope: these aggregates cover files processed in this run only; they are not cumulative."
+        );
+    }
     if let Some(output) = output {
         println!(
             "  Artifacts written:                      {}",
@@ -2661,6 +2689,15 @@ fn print_daily_volume_summary(summary: &DailyVolumeSummary, output: Option<&Path
     println!(
         "These are observed volume measurements, not thresholds, alerts, or determinations of automation, denial of service, attack, abuse, compromise, or attacker identity."
     );
+}
+
+fn print_processed_index_scope(enabled: bool, skipped_files: usize) {
+    if enabled {
+        println!(
+            "\nProcessed-file index: {} unchanged file(s) skipped. These aggregates cover files processed in this run only; they are not cumulative.",
+            skipped_files
+        );
+    }
 }
 
 fn print_temporal_comparison(

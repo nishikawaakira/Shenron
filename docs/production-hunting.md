@@ -202,6 +202,14 @@ artifacts by default and prints only aggregate counts and ratios. Add
 add `--output <DIR>` to retain the normal concentration artifacts. It applies
 no alert threshold or traffic classification.
 
+`daily` and standalone `concentration` also accept the explicit private
+`--processed-index <PATH>` optimization for rotated log sets. Matching whole
+files are skipped and counted; changed files are processed in full, and
+`--reprocess-all` ignores the index. An indexed report covers only files
+processed in that run, so its total and concentration denominators are not
+cumulative. Use run comparison or the private observation store when a
+multi-run cumulative context is needed.
+
 Use `concentration --path /example/path --show-source-ips` to
 inspect deterministic request counts for observed connection peers on one exact
 normalized path. The path and peer values remain private in

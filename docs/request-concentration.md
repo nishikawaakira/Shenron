@@ -54,6 +54,27 @@ traffic. Its values are measurements for downstream review, not alerts or
 determinations of automation, denial of service, attack, abuse, compromise, or
 attacker identity.
 
+### Explicit processed-file index
+
+Recurring `daily` or `concentration` runs may opt into whole-file skipping with
+`--processed-index <PATH>`. The private index records each processed file's
+local path, byte length, modification time, SHA-256, and deterministic
+execution identifier. On a later run an unchanged matching entry is skipped;
+each candidate is hashed so a size-preserving content change is still processed
+in full. Use `--reprocess-all` with the index to ignore every prior entry.
+
+Skipping is never enabled implicitly. Every indexed run reports the number of
+files skipped, including zero, and states that its totals and concentration
+shares cover **only files processed in that run**, not historical cumulative
+traffic. A modified append-only file is processed in full, while unchanged
+rotated files are skipped. The index is private because it contains local file
+paths. Shenron neither estimates omitted traffic nor silently treats current
+totals as cumulative.
+
+When a cumulative multi-run view is required, keep ordinary run artifacts and
+use temporal `compare` or the explicit private `--observation-store` workflow.
+The processed-file index is an I/O optimization, not an aggregate store.
+
 ## Requests per distinct source IP
 
 Each retained path and optional focus reports

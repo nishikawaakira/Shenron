@@ -122,6 +122,7 @@ post-hunt Slack notification).
 
 - **Quick, no setup, findings on stdout** → `shenron hunt --input <logs> --format <fmt> --rules <dir> --no-nuclei`
 - **Full daily hunt + report + baseline diff** → `shenron hunt --input <log-dir> --since 24h --baseline-latest ./private-results --output ./private-results/hunt-<UTC> --report --lang ja`
+- **Lightweight rotated-log measurement** → `shenron daily --input <log-dir> --processed-index <private-index.json>` (current-run totals only; skipped files are counted)
 - **Investigate a run** → `shenron explain …` and `shenron concentration …`
 - **Ship a control** → `shenron candidate build → replay → export`
 - **Share results** → `shenron export` (sanitized STIX/MISP)

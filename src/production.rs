@@ -37,6 +37,7 @@ use crate::{
         frozen_nuclei_selection, path_distinctiveness, validated_detections, CatalogSeverity,
         Detectability, PathDistinctiveness, RequestSpecificity, ValidatedNucleiDetection,
     },
+    processed_index::prepare_processed_files,
     reputation::AsnDatabase,
     waf::{maybe_gzip_reader, WafLines},
 };
@@ -301,7 +302,15 @@ pub struct SanitizedConcentrationReport {
     pub requests_outside_time_range: usize,
     pub requests_without_timestamp_excluded: usize,
     pub parse_errors: usize,
+    /// Whole input files omitted because they matched an explicit private
+    /// processed-file index. Zero is omitted to preserve default artifacts.
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
+    pub files_skipped_as_processed: usize,
     pub request_concentration: RequestConcentrationSummary,
+}
+
+fn is_zero_usize(value: &usize) -> bool {
+    *value == 0
 }
 
 /// Aggregate-only comparison of match volume for predicates derived from one
@@ -1370,6 +1379,8 @@ pub fn concentration_with_asn_rate_windows_and_query_keys(
         asn_database,
         rate_window_seconds,
         include_private_query_keys,
+        None,
+        false,
     )
 }
 
@@ -1388,6 +1399,8 @@ pub fn concentration_with_optional_output(
     asn_database: Option<&AsnDatabase>,
     rate_window_seconds: &[u64],
     include_private_query_keys: bool,
+    processed_index: Option<&Path>,
+    reprocess_all: bool,
 ) -> anyhow::Result<SanitizedConcentrationReport> {
     concentration_run(
         input,
@@ -1399,6 +1412,8 @@ pub fn concentration_with_optional_output(
         asn_database,
         rate_window_seconds,
         include_private_query_keys,
+        processed_index,
+        reprocess_all,
     )
 }
 
@@ -1413,12 +1428,15 @@ fn concentration_run(
     asn_database: Option<&AsnDatabase>,
     rate_window_seconds: &[u64],
     include_private_query_keys: bool,
+    processed_index: Option<&Path>,
+    reprocess_all: bool,
 ) -> anyhow::Result<SanitizedConcentrationReport> {
     time_range.validate()?;
     if let Some(output) = output {
         ensure_separate_output(input, output)?;
     }
     let files = input_files(input, telemetry_profile)?;
+    let plan = prepare_processed_files(files, processed_index, reprocess_all)?;
     if let Some(output) = output {
         fs::create_dir_all(output)
             .with_context(|| format!("creating private output directory {}", output.display()))?;
@@ -1429,11 +1447,12 @@ fn concentration_run(
         telemetry_profile,
         filter_from: time_range.from.map(|time| time.to_rfc3339()),
         filter_to: time_range.to.map(|time| time.to_rfc3339()),
-        files_analyzed: files.len(),
+        files_analyzed: plan.files.len(),
         total_requests_analyzed: 0,
         requests_outside_time_range: 0,
         requests_without_timestamp_excluded: 0,
         parse_errors: 0,
+        files_skipped_as_processed: plan.skipped_files,
         request_concentration: RequestConcentration::new(
             telemetry_profile.capabilities().response_bytes,
         )
@@ -1448,8 +1467,8 @@ fn concentration_run(
         accumulator.focus_on(selector);
     }
     let mut progress = ProgressReporter::new("concentration");
-    for path in files {
-        stream_events_with_raw_retention(&path, telemetry_profile, RawRetention::Drop, |result| {
+    for path in &plan.files {
+        stream_events_with_raw_retention(path, telemetry_profile, RawRetention::Drop, |result| {
             progress.tick();
             let event = match result {
                 Ok(event) => event,
@@ -1490,6 +1509,7 @@ fn concentration_run(
         )?;
         write_concentration_run_manifest(output, telemetry_profile, &time_range)?;
     }
+    plan.commit()?;
     Ok(report)
 }
 

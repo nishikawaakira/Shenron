@@ -103,6 +103,7 @@ Shenron は**単一バイナリ**です。準備系コマンドだけが公開�
 
 - **手早く・setup 不要・stdout に findings** → `shenron hunt --input <logs> --format <fmt> --rules <dir> --no-nuclei`
 - **日次のフル hunt＋レポート＋前回差分** → `shenron hunt --input <log-dir> --since 24h --baseline-latest ./private-results --output ./private-results/hunt-<UTC> --report --lang ja`
+- **ローテーションログの軽量計測** → `shenron daily --input <log-dir> --processed-index <private-index.json>`（集計は今回処理分のみ、スキップ件数を表示）
 - **run を深掘り** → `shenron explain …` / `shenron concentration …`
 - **防御ルールを出す** → `shenron candidate build → replay → export`
 - **結果を共有** → `shenron export`（sanitized な STIX/MISP）
