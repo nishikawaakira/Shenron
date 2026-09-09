@@ -69,6 +69,23 @@ The series contains aggregate counts only and is stored only in the private
 response classes are context, not a determination of attack, exploitation, or
 compromise. Other or unavailable status values are not plotted.
 
+The request-concentration section also renders the sanitized response-outcome
+summary. It shows 2xx, 3xx, ordinary 4xx excluding nginx 499, nginx 499, and 5xx
+shares with their counts. The 499 count remains a subset of the compatible 4xx
+total in the artifact, but the HTML subtracts it from the ordinary 4xx display
+so the two visible rows do not double count. For every configured request-rate
+window, the report shows the minimum 2xx share, maximum 5xx share, the minimum
+request floor, eligible and below-floor bucket counts, undated exclusions, and
+bucket-cap omissions. Older artifacts or telemetry profiles without response
+status are shown as unavailable rather than as zero.
+
+These response shares are counts of what the log recorded. A low success share
+can equally result from redirect-heavy routing, authentication flows, health
+checks, clients that disconnect early, a slow backend, or an unavailable
+origin. The section does not determine an outage, degraded availability,
+denial of service, attack, exploitation, abuse, compromise, or attacker
+identity.
+
 Path rows also display aggregate query-shape counts: requests carrying a query,
 retained distinct query strings, and retained distinct query keys. Query strings
 and values are never placed in the report. Cap-limited cardinalities are shown

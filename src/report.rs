@@ -15,7 +15,8 @@ use serde_json::Value;
 use crate::concentration::{
     MinuteRequestCount, PathConcentrationSummary, PrivateFocusPath, PrivateFocusPrefixGroup,
     PrivateFocusSource, PrivateFocusSummary, PrivateRequestConcentrationReport,
-    PrivateSourceConcentration, StatusClassCounts, StatusClassMinuteCount,
+    PrivateSourceConcentration, RequestConcentrationSummary, ResponseOutcomeSummary,
+    StatusClassCounts, StatusClassMinuteCount, WindowedResponseOutcomeSummary,
 };
 
 pub const PRIVATE_REPORT_WARNING: &str =
@@ -98,6 +99,21 @@ struct Labels {
     concentration: &'static str,
     concentration_note: &'static str,
     concentration_unavailable: &'static str,
+    response_outcomes: &'static str,
+    response_outcomes_note: &'static str,
+    response_outcomes_unavailable: &'static str,
+    response_outcome: &'static str,
+    response_share: &'static str,
+    response_windows: &'static str,
+    response_windows_unavailable: &'static str,
+    bucket_width_seconds: &'static str,
+    minimum_success_share: &'static str,
+    maximum_server_error_share: &'static str,
+    minimum_requests_per_bucket: &'static str,
+    eligible_buckets: &'static str,
+    buckets_below_minimum: &'static str,
+    undated_observations: &'static str,
+    observations_beyond_bucket_cap: &'static str,
     top_paths: &'static str,
     top_request_paths: &'static str,
     top_peers: &'static str,
@@ -113,6 +129,7 @@ struct Labels {
     status_success: &'static str,
     status_redirection: &'static str,
     status_client_error: &'static str,
+    status_client_closed_request: &'static str,
     status_server_error: &'static str,
     focused_path: &'static str,
     focused_source_ip: &'static str,
@@ -222,6 +239,21 @@ const EN_LABELS: Labels = Labels {
     concentration: "Request concentration",
     concentration_note: "These are observed access counts and concentration only, not a denial-of-service, attack, exploitation, abuse, compromise, or attribution determination. Requests per distinct source is a ratio of two observed counts; a high ratio can also result from polling, an aggregating proxy, a repeatedly fetched embedded asset, or automated traffic. Source IPs are observed connection peers and may be a CDN, load balancer, NAT, or proxy; they are not attacker attribution.",
     concentration_unavailable: "Concentration unavailable: request-concentration.json was not found.",
+    response_outcomes: "Response outcomes",
+    response_outcomes_note: "Response outcome shares are counts of what the log recorded. A low success share can equally result from redirect-heavy routing, authentication flows, health checks, clients that disconnect early, a slow backend, or an unavailable origin. It is not a determination of an outage, degraded availability, denial of service, attack, exploitation, abuse, compromise, or attacker identity.",
+    response_outcomes_unavailable: "Response outcomes unavailable: the telemetry profile does not expose status or the artifact predates this aggregate.",
+    response_outcome: "Response outcome",
+    response_share: "Share",
+    response_windows: "Response outcomes by time window",
+    response_windows_unavailable: "Response-outcome window extrema unavailable.",
+    bucket_width_seconds: "Bucket width (seconds)",
+    minimum_success_share: "Minimum 2xx share",
+    maximum_server_error_share: "Maximum 5xx share",
+    minimum_requests_per_bucket: "Minimum requests per bucket",
+    eligible_buckets: "Eligible buckets",
+    buckets_below_minimum: "Buckets below minimum",
+    undated_observations: "Undated observations excluded",
+    observations_beyond_bucket_cap: "Observations beyond bucket cap",
     top_paths: "Top paths",
     top_request_paths: "Top request paths",
     top_peers: "Top observed connection peers",
@@ -237,6 +269,7 @@ const EN_LABELS: Labels = Labels {
     status_success: "Success",
     status_redirection: "Redirection",
     status_client_error: "Client error",
+    status_client_closed_request: "Client closed request",
     status_server_error: "Server error",
     focused_path: "Focused path",
     focused_source_ip: "Focused source IP",
@@ -346,6 +379,21 @@ const JA_LABELS: Labels = Labels {
     concentration: "リクエスト集中度",
     concentration_note: "これは観測されたアクセス件数と集中度の表示であり、DoS・攻撃・悪用・侵害・攻撃者特定の判定ではありません。異なる送信元あたりのリクエスト数は、観測された2つの件数の比率です。高い比率は、ポーリング、複数利用者を集約するプロキシ、繰り返し取得される埋め込みアセット、自動化された通信でも生じ得ます。送信元 IP は観測された接続ピアであり、CDN・ロードバランサ・NAT・プロキシの場合があります。攻撃者帰属を示しません。",
     concentration_unavailable: "集中度を利用できません。request-concentration.json が見つかりません。",
+    response_outcomes: "応答結果",
+    response_outcomes_note: "応答結果のシェアはログに記録された件数です。success のシェアが低い状態は、リダイレクト中心のルーティング、認証フロー、ヘルスチェック、クライアントによる早期切断、遅いバックエンド、到達できないオリジンでも生じ得ます。障害・可用性低下・DoS・攻撃・悪用・侵害・攻撃者特定の判定ではありません。",
+    response_outcomes_unavailable: "応答結果を利用できません。テレメトリプロファイルがステータスを公開しないか、この集計が追加される前の成果物です。",
+    response_outcome: "応答結果",
+    response_share: "シェア",
+    response_windows: "時間窓ごとの応答結果",
+    response_windows_unavailable: "時間窓ごとの応答結果の極値を利用できません。",
+    bucket_width_seconds: "バケット幅（秒）",
+    minimum_success_share: "最小 2xx シェア",
+    maximum_server_error_share: "最大 5xx シェア",
+    minimum_requests_per_bucket: "バケットの最小リクエスト数",
+    eligible_buckets: "対象バケット数",
+    buckets_below_minimum: "最小件数未満のバケット数",
+    undated_observations: "時刻なしで除外した観測数",
+    observations_beyond_bucket_cap: "バケット上限を超えた観測数",
     top_paths: "上位パス",
     top_request_paths: "上位リクエストパス",
     top_peers: "上位の観測接続ピア",
@@ -361,6 +409,7 @@ const JA_LABELS: Labels = Labels {
     status_success: "成功",
     status_redirection: "リダイレクト",
     status_client_error: "クライアントエラー",
+    status_client_closed_request: "クライアントによる切断",
     status_server_error: "サーバーエラー",
     focused_path: "フォーカスパス",
     focused_source_ip: "フォーカス送信元 IP",
@@ -848,6 +897,8 @@ fn render_concentration(
         return;
     };
 
+    render_response_outcomes(html, &concentration.summary, language);
+
     html.push_str(&format!("<h3>{}</h3>", html_escape(labels.top_paths)));
     let path_rows = limited(&concentration.paths, limit)
         .iter()
@@ -1078,6 +1129,141 @@ fn render_concentration(
         );
     }
     html.push_str("</section>");
+}
+
+fn render_response_outcomes(
+    html: &mut String,
+    summary: &RequestConcentrationSummary,
+    language: ReportLanguage,
+) {
+    let labels = language.labels();
+    html.push_str(&format!(
+        "<h3>{}</h3>",
+        html_escape(labels.response_outcomes)
+    ));
+    match &summary.response_outcomes {
+        Some(outcomes) => render_response_outcome_summary(html, outcomes, language),
+        None => html.push_str(&format!(
+            "<p class=\"unavailable\">{}</p>",
+            html_escape(labels.response_outcomes_unavailable)
+        )),
+    }
+
+    html.push_str(&format!(
+        "<h3>{}</h3>",
+        html_escape(labels.response_windows)
+    ));
+    match summary.response_outcome_windows.as_deref() {
+        Some(windows) if !windows.is_empty() => {
+            render_response_outcome_windows(html, windows, language)
+        }
+        _ => html.push_str(&format!(
+            "<p class=\"unavailable\">{}</p>",
+            html_escape(labels.response_windows_unavailable)
+        )),
+    }
+    html.push_str(&format!(
+        "<p class=\"note\">{}</p>",
+        html_escape(labels.response_outcomes_note)
+    ));
+}
+
+fn render_response_outcome_summary(
+    html: &mut String,
+    outcomes: &ResponseOutcomeSummary,
+    language: ReportLanguage,
+) {
+    let labels = language.labels();
+    let rows = [
+        (
+            "2xx",
+            labels.status_success,
+            outcomes.success_share,
+            outcomes.counts.success,
+        ),
+        (
+            "3xx",
+            labels.status_redirection,
+            outcomes.redirection_share,
+            outcomes.counts.redirection,
+        ),
+        (
+            "4xx excl. 499",
+            labels.status_client_error,
+            outcomes.ordinary_client_error_share,
+            outcomes.counts.ordinary_client_error(),
+        ),
+        (
+            "499",
+            labels.status_client_closed_request,
+            outcomes.client_closed_request_499_share,
+            outcomes.counts.client_closed_request_499,
+        ),
+        (
+            "5xx",
+            labels.status_server_error,
+            outcomes.server_error_share,
+            outcomes.counts.server_error,
+        ),
+    ];
+    html.push_str(&format!(
+        "<div class=\"table-scroll\"><table><thead><tr><th>{}</th><th>{}</th><th>{}</th></tr></thead><tbody>",
+        html_escape(labels.response_outcome),
+        html_escape(labels.response_share),
+        html_escape(labels.requests),
+    ));
+    for (status, meaning, share, count) in rows {
+        html.push_str(&format!(
+            "<tr><td>{} — {}</td><td>{:.1}%</td><td>{}</td></tr>",
+            html_escape(status),
+            html_escape(meaning),
+            share * 100.0,
+            group_thousands(count),
+        ));
+    }
+    html.push_str("</tbody></table></div>");
+}
+
+fn render_response_outcome_windows(
+    html: &mut String,
+    windows: &[WindowedResponseOutcomeSummary],
+    language: ReportLanguage,
+) {
+    let labels = language.labels();
+    html.push_str(&format!(
+        "<div class=\"table-scroll\"><table><thead><tr><th>{}</th><th>{}</th><th>{}</th><th>{}</th><th>{}</th><th>{}</th><th>{}</th><th>{}</th></tr></thead><tbody>",
+        html_escape(labels.bucket_width_seconds),
+        html_escape(labels.minimum_success_share),
+        html_escape(labels.maximum_server_error_share),
+        html_escape(labels.minimum_requests_per_bucket),
+        html_escape(labels.eligible_buckets),
+        html_escape(labels.buckets_below_minimum),
+        html_escape(labels.undated_observations),
+        html_escape(labels.observations_beyond_bucket_cap),
+    ));
+    for window in windows {
+        let minimum_success = optional_share(window.minimum_success_share, language);
+        let maximum_server_error = optional_share(window.maximum_server_error_share, language);
+        html.push_str(&format!(
+            "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
+            group_thousands(window.bucket_width_seconds),
+            html_escape(&minimum_success),
+            html_escape(&maximum_server_error),
+            group_thousands(window.minimum_requests_per_bucket),
+            group_thousands(window.eligible_buckets as u64),
+            group_thousands(window.buckets_below_minimum as u64),
+            group_thousands(window.observations_without_timestamp),
+            group_thousands(window.observations_beyond_bucket_cap),
+        ));
+    }
+    html.push_str("</tbody></table></div>");
+}
+
+fn optional_share(value: Option<f64>, language: ReportLanguage) -> String {
+    value.map_or_else(
+        || language.labels().unavailable.to_owned(),
+        |share| format!("{:.1}%", share * 100.0),
+    )
 }
 
 fn render_triage(
@@ -2009,12 +2195,13 @@ fn cap_note(html: &mut String, count: u64, label: &str, language: ReportLanguage
 fn status_details(counts: &StatusClassCounts, language: ReportLanguage) -> String {
     let labels = language.labels();
     format!(
-        "{} 1xx:{} 2xx:{} 3xx:{} 4xx:{} 5xx:{} {}:{} {}:{}",
+        "{} 1xx:{} 2xx:{} 3xx:{} 4xx excl. 499:{} 499:{} 5xx:{} {}:{} {}:{}",
         labels.status,
         group_thousands(counts.informational),
         group_thousands(counts.success),
         group_thousands(counts.redirection),
-        group_thousands(counts.client_error),
+        group_thousands(counts.ordinary_client_error()),
+        group_thousands(counts.client_closed_request_499),
         group_thousands(counts.server_error),
         labels.other,
         group_thousands(counts.other),
@@ -2651,10 +2838,109 @@ mod tests {
 
     #[test]
     fn status_details_is_numeric_and_deterministic() {
-        assert!(
-            status_details(&StatusClassCounts::default(), ReportLanguage::En)
-                .contains("status 1xx:0")
-        );
+        let counts = StatusClassCounts {
+            client_error: 7,
+            client_closed_request_499: 2,
+            ..StatusClassCounts::default()
+        };
+        assert!(status_details(&counts, ReportLanguage::En)
+            .contains("status 1xx:0 2xx:0 3xx:0 4xx excl. 499:5 499:2 5xx:0"));
+    }
+
+    #[test]
+    fn response_outcomes_render_sanitized_counts_shares_and_window_disclosures() {
+        let mut concentration = synthetic_concentration("/private-path");
+        concentration.summary.response_outcomes = Some(ResponseOutcomeSummary {
+            counts: StatusClassCounts {
+                success: 9_000,
+                redirection: 500,
+                client_error: 400,
+                client_closed_request_499: 100,
+                server_error: 100,
+                ..StatusClassCounts::default()
+            },
+            success_share: 0.9,
+            redirection_share: 0.05,
+            ordinary_client_error_share: 0.03,
+            client_closed_request_499_share: 0.01,
+            server_error_share: 0.01,
+        });
+        concentration.summary.response_outcome_windows = Some(vec![
+            WindowedResponseOutcomeSummary {
+                bucket_width_seconds: 60,
+                minimum_requests_per_bucket: 10,
+                eligible_buckets: 1_234,
+                buckets_below_minimum: 2,
+                minimum_success_share: Some(0.0),
+                maximum_server_error_share: Some(1.0),
+                observations_without_timestamp: 3,
+                observations_beyond_bucket_cap: 4,
+            },
+            WindowedResponseOutcomeSummary {
+                bucket_width_seconds: 600,
+                minimum_requests_per_bucket: 10,
+                eligible_buckets: 0,
+                buckets_below_minimum: 1,
+                minimum_success_share: None,
+                maximum_server_error_share: None,
+                observations_without_timestamp: 3,
+                observations_beyond_bucket_cap: 4,
+            },
+        ]);
+
+        let mut html = String::new();
+        render_response_outcomes(&mut html, &concentration.summary, ReportLanguage::En);
+        for expected in [
+            "Response outcomes",
+            "2xx — Success",
+            "90.0%",
+            "9,000",
+            "1,234",
+            "3xx — Redirection",
+            "4xx excl. 499 — Client error",
+            ">10</td>",
+            "499 — Client closed request",
+            "5xx — Server error",
+            "Response outcomes by time window",
+            "Minimum 2xx share",
+            "Maximum 5xx share",
+            "0.0%",
+            "100.0%",
+            "Buckets below minimum",
+            "Undated observations excluded",
+            "Observations beyond bucket cap",
+            "unavailable",
+            "It is not a determination of an outage",
+        ] {
+            assert!(html.contains(expected), "missing {expected}");
+        }
+        assert!(!html.contains("/private-path"));
+        assert!(!html.contains("198.51.100.1"));
+        assert_external_reference_policy(&html);
+
+        let mut japanese = String::new();
+        render_response_outcomes(&mut japanese, &concentration.summary, ReportLanguage::Ja);
+        for expected in [
+            "応答結果",
+            "時間窓ごとの応答結果",
+            "最小 2xx シェア",
+            "最大 5xx シェア",
+            "障害・可用性低下・DoS・攻撃・悪用・侵害・攻撃者特定の判定ではありません",
+        ] {
+            assert!(japanese.contains(expected), "missing {expected}");
+        }
+        assert_external_reference_policy(&japanese);
+    }
+
+    #[test]
+    fn response_outcomes_render_unavailable_for_older_or_statusless_artifacts() {
+        let concentration = synthetic_concentration("/private-path");
+        let mut html = String::new();
+        render_response_outcomes(&mut html, &concentration.summary, ReportLanguage::En);
+        assert!(html.contains("Response outcomes unavailable"));
+        assert!(html.contains("Response-outcome window extrema unavailable"));
+        assert!(!html.contains("/private-path"));
+        assert_external_reference_policy(&html);
     }
 
     #[test]
@@ -2862,7 +3148,7 @@ mod tests {
             assert!(html.contains(&format!("status-fill {class}")));
         }
         assert!(html.contains("198.51.100.1&lt;peer&gt;"));
-        assert!(html.contains("status 1xx:1 2xx:2 3xx:3 4xx:4 5xx:5"));
+        assert!(html.contains("status 1xx:1 2xx:2 3xx:3 4xx excl. 499:4 499:0 5xx:5"));
         assert_external_reference_policy(&html);
     }
 
