@@ -27,7 +27,7 @@ use shenron::{
     concentration::{
         FocusPrefixLengths, FocusSelector, PrivateRequestConcentrationReport,
         ResponseOutcomeSummary, WindowedResponseOutcomeSummary, DEFAULT_RATE_WINDOW_SECONDS,
-        DEFAULT_RESPONSE_BUCKET_MINIMUM_REQUESTS,
+        DEFAULT_RESPONSE_BUCKET_MINIMUM_REQUESTS, DEFAULT_RESPONSE_SUCCESS_SHARE_THRESHOLD_PERCENT,
     },
     cti_export::{export_run as export_cti_run, CtiExportFormat, TlpLevel},
     disposition::{
@@ -456,6 +456,10 @@ enum ProductionCommand {
         /// outcome minima/maxima. This is an inclusion floor, not an alert.
         #[arg(long, default_value_t = DEFAULT_RESPONSE_BUCKET_MINIMUM_REQUESTS, value_parser = clap::value_parser!(u64).range(1..))]
         response_bucket_min_requests: u64,
+        /// Count eligible buckets strictly below this success-share percentage.
+        /// This is a descriptive count, not a classification or alert.
+        #[arg(long, default_value_t = DEFAULT_RESPONSE_SUCCESS_SHARE_THRESHOLD_PERCENT, value_parser = clap::value_parser!(u8).range(0..=100))]
+        response_success_share_threshold_percent: u8,
         /// Inclusive UTC start time in RFC 3339 format.
         #[arg(long, value_parser = parse_rfc3339_utc)]
         from: Option<DateTime<Utc>>,
@@ -500,6 +504,10 @@ enum ProductionCommand {
         /// outcome minima/maxima. This is an inclusion floor, not an alert.
         #[arg(long, default_value_t = DEFAULT_RESPONSE_BUCKET_MINIMUM_REQUESTS, value_parser = clap::value_parser!(u64).range(1..))]
         response_bucket_min_requests: u64,
+        /// Count eligible buckets strictly below this success-share percentage.
+        /// This is a descriptive count, not a classification or alert.
+        #[arg(long, default_value_t = DEFAULT_RESPONSE_SUCCESS_SHARE_THRESHOLD_PERCENT, value_parser = clap::value_parser!(u8).range(0..=100))]
+        response_success_share_threshold_percent: u8,
         /// Inclusive UTC start time in RFC 3339 format.
         #[arg(long, value_parser = parse_rfc3339_utc)]
         from: Option<DateTime<Utc>>,
@@ -881,6 +889,7 @@ struct DailyVolumeSummary {
     files_skipped_as_processed: usize,
     response_outcomes: Option<ResponseOutcomeSummary>,
     response_outcome_windows: Option<Vec<WindowedResponseOutcomeSummary>>,
+    response_status_codes: Option<shenron::concentration::StatusCodeCounts>,
 }
 
 impl DailyVolumeSummary {
@@ -914,6 +923,7 @@ impl DailyVolumeSummary {
             files_skipped_as_processed: report.files_skipped_as_processed,
             response_outcomes: concentration.response_outcomes.clone(),
             response_outcome_windows: concentration.response_outcome_windows.clone(),
+            response_status_codes: concentration.response_status_codes.clone(),
         }
     }
 }
@@ -1261,6 +1271,7 @@ fn main() -> Result<()> {
                 asn_dataset,
                 rate_window,
                 response_bucket_min_requests,
+                response_success_share_threshold_percent,
                 from,
                 to,
                 processed_index,
@@ -1320,6 +1331,7 @@ fn main() -> Result<()> {
                     processed_index.as_deref(),
                     reprocess_all,
                     response_bucket_min_requests,
+                    response_success_share_threshold_percent,
                 )?;
                 let private_path = output.join("request-concentration.json");
                 let private = (show_paths || show_source_ips || focus.is_some())
@@ -1347,6 +1359,7 @@ fn main() -> Result<()> {
                 output_format,
                 rate_window,
                 response_bucket_min_requests,
+                response_success_share_threshold_percent,
                 from,
                 to,
                 processed_index,
@@ -1367,6 +1380,7 @@ fn main() -> Result<()> {
                     processed_index.as_deref(),
                     reprocess_all,
                     response_bucket_min_requests,
+                    response_success_share_threshold_percent,
                 )?;
                 let summary = DailyVolumeSummary::from_report(&report, processed_index.is_some());
                 match output_format {
@@ -2680,6 +2694,10 @@ fn print_concentration(
                             .join(", ")
                     },
                 );
+                println!(
+                    "    {}",
+                    format_status_codes(item.summary.response_status_codes.as_ref())
+                );
             }
             if let Some(focus) = &private.focus {
                 if !focus.paths.is_empty() {
@@ -2696,6 +2714,11 @@ fn print_concentration(
                             "  {}\n    Requests: {}",
                             terminal_safe(&item.uri_path),
                             item.requests,
+                        );
+                        println!(
+                            "    Response status classes: {}\n    {}",
+                            format_status_classes(&item.response_status_classes),
+                            format_status_codes(item.response_status_codes.as_ref())
                         );
                     }
                     if focus.paths.len() > display_limit(limit) {
@@ -2742,6 +2765,10 @@ fn print_concentration(
                             || "unavailable (not retained before tracking cap)".to_owned()
                         ),
                 );
+                print_source_response_details(
+                    item.response_status_codes.as_ref(),
+                    item.response_outcomes.as_ref(),
+                );
             }
             if let Some(focus) = &private.focus {
                 let source_ip_selection_count = focus
@@ -2769,6 +2796,10 @@ fn print_concentration(
                             terminal_safe(&source.source_ip),
                             source.requests,
                             format_status_classes(&source.response_status_classes),
+                        );
+                        print_source_response_details(
+                            source.response_status_codes.as_ref(),
+                            source.response_outcomes.as_ref(),
                         );
                     }
                     if focus.sources.len() > display_limit(limit) {
@@ -2799,6 +2830,14 @@ fn print_concentration(
                             group.requests,
                             group.request_share * 100.0,
                             group.distinct_source_ips,
+                        );
+                        println!(
+                            "    Response status classes: {}",
+                            format_status_classes(&group.response_status_classes)
+                        );
+                        print_source_response_details(
+                            group.response_status_codes.as_ref(),
+                            group.response_outcomes.as_ref(),
                         );
                     }
                     if focus.network_prefix_groups.len() > display_limit(limit) {
@@ -2900,6 +2939,7 @@ fn print_daily_volume_summary(summary: &DailyVolumeSummary, output: Option<&Path
         ),
     }
     for rate in &summary.request_rates {
+        // Rate statistics retain their existing denominators and admission rules.
         println!(
             "  Rate window {}s peak / median / ratio: {} / {} / {} (undated: {}; beyond cap: {})",
             rate.bucket_width_seconds,
@@ -2935,8 +2975,13 @@ fn print_daily_volume_summary(summary: &DailyVolumeSummary, output: Option<&Path
                 window.observations_without_timestamp,
                 window.observations_beyond_bucket_cap,
             );
+            println!("  {}", format_response_window_context(window));
         }
     }
+    println!(
+        "  {}",
+        format_status_codes(summary.response_status_codes.as_ref())
+    );
     println!(
         "  Files / parse errors / outside range / undated excluded: {} / {} / {} / {}",
         summary.files_analyzed,
@@ -3131,6 +3176,41 @@ fn format_status_classes(counts: &shenron::concentration::StatusClassCounts) -> 
     .join(", ")
 }
 
+fn format_status_codes(codes: Option<&shenron::concentration::StatusCodeCounts>) -> String {
+    let Some(codes) = codes else {
+        return "Response status codes: unavailable (not recorded or profile does not expose status)".to_owned();
+    };
+    let values = codes
+        .counts
+        .iter()
+        .map(|(code, count)| format!("{code}: {count}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "Response status codes: {values} (observations beyond {}-code tracking cap: {})",
+        codes.maximum_codes, codes.observations_beyond_cap
+    )
+}
+
+fn print_source_response_details(
+    codes: Option<&shenron::concentration::StatusCodeCounts>,
+    outcomes: Option<&ResponseOutcomeSummary>,
+) {
+    println!("    {}", format_status_codes(codes));
+    if let Some(outcomes) = outcomes {
+        println!("    Response shares: 2xx {:.1}% / 499 {:.1}% / 5xx {:.1}% (observed outcomes only, not a cause or attribution determination)", outcomes.success_share * 100.0, outcomes.client_closed_request_499_share * 100.0, outcomes.server_error_share * 100.0);
+    }
+}
+
+fn format_response_window_context(window: &WindowedResponseOutcomeSummary) -> String {
+    let timestamp = |value: Option<DateTime<Utc>>| {
+        value
+            .map(|value| value.to_rfc3339())
+            .unwrap_or_else(|| "unavailable".to_owned())
+    };
+    format!("Response window {}s bucket starts (UTC), earliest ties: minimum 2xx {}; maximum 5xx {}; eligible buckets with success share strictly below {}%: {} (a descriptive count, not a classification)", window.bucket_width_seconds, timestamp(window.minimum_success_bucket_start), timestamp(window.maximum_server_error_bucket_start), window.success_share_threshold_percent.map(|value| value.to_string()).unwrap_or_else(|| "unavailable".to_owned()), window.buckets_below_success_threshold)
+}
+
 fn format_query_shape(
     total_requests: u64,
     requests_with_query: u64,
@@ -3188,6 +3268,15 @@ fn print_request_concentration_summary(
         })
         .unwrap_or_else(|| "unavailable (no URI paths retained)".to_owned());
     let rate = &concentration.requests_per_minute;
+    println!(
+        "  {}",
+        format_status_codes(concentration.response_status_codes.as_ref())
+    );
+    if let Some(windows) = &concentration.response_outcome_windows {
+        for window in windows {
+            println!("  {}", format_response_window_context(window));
+        }
+    }
     let rate = match (
         rate.peak_requests_per_minute,
         rate.median_requests_per_minute,

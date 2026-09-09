@@ -1,5 +1,15 @@
 # Private offline HTML report
 
+Response-window details include UTC starts for the minimum 2xx and maximum
+5xx shares (earliest bucket wins a tie), together with the configured success
+percentage and the count of eligible buckets strictly below it. This count
+does not identify a continuous interval or classify an incident. Individual
+HTTP code counts and code-cap omissions appear in corpus/path details and
+private peer/focus/prefix chart details; peer details also include 2xx, 499 and
+5xx shares. Missing fields in old artifacts are not inferred. These remain
+observations for human review, not a determination of cause, outage, scraping,
+attack, abuse, compromise, or attribution.
+
 `shenron hunt` can analyze raw logs and render a report in one invocation:
 
 ```bash

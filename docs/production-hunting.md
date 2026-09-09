@@ -1,5 +1,16 @@
 # Production AWS WAF hunting
 
+Concentration response summaries retain individual HTTP codes, including
+separate 502 and 504 counts, without changing the existing status classes or
+CVE metrics. Response windows record the earliest UTC bucket attaining each
+extremum. `daily` and `concentration` accept
+`--response-success-share-threshold-percent` (default 50) to count eligible
+buckets strictly below that share, not to classify or alert. Private peer and
+focus address-block distributions are displayed only with `--show-source-ips`
+or in a private HTML report. See [request concentration](request-concentration.md)
+for denominators, code-tracking limits, omitted-observation counts and the
+limits of causal interpretation.
+
 Production hunting is read-only and local. Shenron never modifies source logs, calls AWS, creates a WAF rule, replays traffic, scans a target, or executes a Nuclei template. Use a local JSON, JSONL, gzip, or directory-tree export.
 
 Prepare public Nuclei templates, CISA KEV, reputation, ASN, and published crawler-range

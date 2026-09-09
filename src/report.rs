@@ -106,6 +106,10 @@ struct Labels {
     response_share: &'static str,
     response_windows: &'static str,
     response_windows_unavailable: &'static str,
+    response_bucket_starts: &'static str,
+    below_success_threshold: &'static str,
+    status_codes: &'static str,
+    status_codes_beyond_cap: &'static str,
     bucket_width_seconds: &'static str,
     minimum_success_share: &'static str,
     maximum_server_error_share: &'static str,
@@ -246,6 +250,10 @@ const EN_LABELS: Labels = Labels {
     response_share: "Share",
     response_windows: "Response outcomes by time window",
     response_windows_unavailable: "Response-outcome window extrema unavailable.",
+    response_bucket_starts: "Bucket starts (UTC), earliest ties: minimum 2xx / maximum 5xx",
+    below_success_threshold: "Eligible buckets strictly below the configured success share (count only, not a classification)",
+    status_codes: "Individual HTTP status codes",
+    status_codes_beyond_cap: "Code-tracking cap / excluded observations",
     bucket_width_seconds: "Bucket width (seconds)",
     minimum_success_share: "Minimum 2xx share",
     maximum_server_error_share: "Maximum 5xx share",
@@ -386,6 +394,10 @@ const JA_LABELS: Labels = Labels {
     response_share: "シェア",
     response_windows: "時間窓ごとの応答結果",
     response_windows_unavailable: "時間窓ごとの応答結果の極値を利用できません。",
+    response_bucket_starts: "バケット開始時刻（UTC、同率は最早）：最小2xx / 最大5xx",
+    below_success_threshold: "設定した成功率を厳密に下回る対象バケット（件数のみ、分類ではありません）",
+    status_codes: "個別HTTPステータスコード",
+    status_codes_beyond_cap: "コード追跡上限 / 超過した観測数",
     bucket_width_seconds: "バケット幅（秒）",
     minimum_success_share: "最小 2xx シェア",
     maximum_server_error_share: "最大 5xx シェア",
@@ -906,7 +918,7 @@ fn render_concentration(
             label: path.uri_path.as_str(),
             value: path.summary.requests,
             details: format!(
-                "{:.1}% · {} {} · {}: {:.1} · {} · {}",
+                "{:.1}% · {} {} · {}: {:.1} · {} · {} · {}",
                 path.summary.request_share * 100.0,
                 group_thousands(path.summary.distinct_source_ips as u64),
                 labels.retained_peers,
@@ -914,6 +926,7 @@ fn render_concentration(
                 path.summary.requests_per_source_ip,
                 status_details(&path.summary.response_status_classes, language),
                 query_shape_details(&path.summary, language),
+                code_details(path.summary.response_status_codes.as_ref(), None, language),
             ),
         })
         .collect::<Vec<_>>();
@@ -1138,6 +1151,14 @@ fn render_response_outcomes(
 ) {
     let labels = language.labels();
     html.push_str(&format!(
+        "<p>{}</p>",
+        html_escape(&code_details(
+            summary.response_status_codes.as_ref(),
+            None,
+            language
+        ))
+    ));
+    html.push_str(&format!(
         "<h3>{}</h3>",
         html_escape(labels.response_outcomes)
     ));
@@ -1255,6 +1276,22 @@ fn render_response_outcome_windows(
             group_thousands(window.observations_without_timestamp),
             group_thousands(window.observations_beyond_bucket_cap),
         ));
+        if let Some(threshold) = window.success_share_threshold_percent {
+            let timestamp = |value: Option<DateTime<Utc>>| {
+                value
+                    .map(|value| value.to_rfc3339())
+                    .unwrap_or_else(|| labels.unavailable.to_owned())
+            };
+            html.push_str(&format!(
+                "<tr><td colspan=\"8\">{}: {} / {}. {} (&lt;{}%): {}</td></tr>",
+                html_escape(labels.response_bucket_starts),
+                html_escape(&timestamp(window.minimum_success_bucket_start)),
+                html_escape(&timestamp(window.maximum_server_error_bucket_start)),
+                html_escape(labels.below_success_threshold),
+                group_thousands(u64::from(threshold)),
+                group_thousands(window.buckets_below_success_threshold as u64)
+            ));
+        }
     }
     html.push_str("</tbody></table></div>");
 }
@@ -2065,6 +2102,39 @@ fn minute_timestamp(minute_epoch: i64) -> Option<String> {
         .map(|timestamp| timestamp.to_rfc3339())
 }
 
+fn code_details(
+    codes: Option<&crate::concentration::StatusCodeCounts>,
+    outcomes: Option<&ResponseOutcomeSummary>,
+    language: ReportLanguage,
+) -> String {
+    let labels = language.labels();
+    let Some(codes) = codes else {
+        return labels.request_count_label.to_owned();
+    };
+    let entries = codes
+        .counts
+        .iter()
+        .map(|(code, count)| format!("{code}:{}", group_thousands(*count)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut details = format!(
+        "{}: {entries} · {}: {} / {}",
+        labels.status_codes,
+        labels.status_codes_beyond_cap,
+        group_thousands(codes.maximum_codes as u64),
+        group_thousands(codes.observations_beyond_cap)
+    );
+    if let Some(outcomes) = outcomes {
+        details.push_str(&format!(
+            " · 2xx {:.1}% / 499 {:.1}% / 5xx {:.1}%",
+            outcomes.success_share * 100.0,
+            outcomes.client_closed_request_499_share * 100.0,
+            outcomes.server_error_share * 100.0
+        ));
+    }
+    details
+}
+
 fn source_rows<'a>(
     sources: &'a [PrivateSourceConcentration],
     limit: usize,
@@ -2075,7 +2145,11 @@ fn source_rows<'a>(
         .map(|source| BarRow {
             label: source.source_ip.as_str(),
             value: source.requests,
-            details: language.labels().request_count_label.to_owned(),
+            details: code_details(
+                source.response_status_codes.as_ref(),
+                source.response_outcomes.as_ref(),
+                language,
+            ),
         })
         .collect()
 }
@@ -2104,7 +2178,11 @@ fn focus_source_rows<'a>(
         .map(|source| BarRow {
             label: source.source_ip.as_str(),
             value: source.requests,
-            details: language.labels().request_count_label.to_owned(),
+            details: code_details(
+                source.response_status_codes.as_ref(),
+                source.response_outcomes.as_ref(),
+                language,
+            ),
         })
         .collect()
 }
@@ -2130,7 +2208,7 @@ fn focus_path_rows<'a>(
         .map(|path| BarRow {
             label: path.uri_path.as_str(),
             value: path.requests,
-            details: language.labels().request_count_label.to_owned(),
+            details: code_details(path.response_status_codes.as_ref(), None, language),
         })
         .collect()
 }
@@ -2146,10 +2224,15 @@ fn prefix_rows<'a>(
             label: group.network_prefix.as_str(),
             value: group.requests,
             details: format!(
-                "{:.1}% · {} {}",
+                "{:.1}% · {} {} · {}",
                 group.request_share * 100.0,
                 group_thousands(group.distinct_source_ips as u64),
                 language.labels().retained_peers,
+                code_details(
+                    group.response_status_codes.as_ref(),
+                    group.response_outcomes.as_ref(),
+                    language
+                ),
             ),
         })
         .collect()
@@ -2458,6 +2541,7 @@ mod tests {
             report_kind: "REQUEST_CONCENTRATION_PRIVATE".to_owned(),
             safety_note: String::new(),
             summary: RequestConcentrationSummary {
+                response_status_codes: None,
                 total_requests: 3,
                 distinct_uri_paths: 1,
                 distinct_source_ips: 1,
@@ -2499,6 +2583,7 @@ mod tests {
             paths: vec![PrivatePathConcentration {
                 uri_path: path.to_owned(),
                 summary: PathConcentrationSummary {
+                    response_status_codes: None,
                     requests: 3,
                     request_share: 1.0,
                     distinct_source_ips: 1,
@@ -2514,12 +2599,15 @@ mod tests {
                 query_keys: Vec::new(),
             }],
             source_ips: vec![PrivateSourceConcentration {
+                response_status_codes: None,
+                response_outcomes: None,
                 source_ip: "198.51.100.1".to_owned(),
                 requests: 3,
                 most_requested_uri_path: Some(path.to_owned()),
                 response_status_classes: status.clone(),
             }],
             focus: Some(PrivateFocusSummary {
+                response_status_codes: None,
                 focus_kind: "exact-path".to_owned(),
                 selector: path.to_owned(),
                 uri_path: path.to_owned(),
@@ -2533,11 +2621,16 @@ mod tests {
                 median_requests_per_minute: Some(1.5),
                 response_status_classes: status.clone(),
                 sources: vec![PrivateFocusSource {
+                    response_status_codes: None,
+                    response_outcomes: None,
                     source_ip: "198.51.100.1".to_owned(),
                     requests: 3,
                     response_status_classes: status.clone(),
                 }],
                 network_prefix_groups: vec![PrivateFocusPrefixGroup {
+                    response_status_classes: Default::default(),
+                    response_status_codes: None,
+                    response_outcomes: None,
                     network_prefix: "198.51.100.0/24".to_owned(),
                     requests: 3,
                     request_share: 1.0,
@@ -2867,6 +2960,10 @@ mod tests {
         });
         concentration.summary.response_outcome_windows = Some(vec![
             WindowedResponseOutcomeSummary {
+                minimum_success_bucket_start: Some(DateTime::from_timestamp(60, 0).unwrap()),
+                maximum_server_error_bucket_start: Some(DateTime::from_timestamp(120, 0).unwrap()),
+                success_share_threshold_percent: Some(50),
+                buckets_below_success_threshold: 123,
                 bucket_width_seconds: 60,
                 minimum_requests_per_bucket: 10,
                 eligible_buckets: 1_234,
@@ -2877,6 +2974,10 @@ mod tests {
                 observations_beyond_bucket_cap: 4,
             },
             WindowedResponseOutcomeSummary {
+                minimum_success_bucket_start: None,
+                maximum_server_error_bucket_start: None,
+                success_share_threshold_percent: None,
+                buckets_below_success_threshold: 0,
                 bucket_width_seconds: 600,
                 minimum_requests_per_bucket: 10,
                 eligible_buckets: 0,
@@ -2911,6 +3012,10 @@ mod tests {
             "Observations beyond bucket cap",
             "unavailable",
             "It is not a determination of an outage",
+            "Bucket starts (UTC), earliest ties",
+            "1970-01-01T00:01:00+00:00",
+            "1970-01-01T00:02:00+00:00",
+            "(&lt;50%): 123",
         ] {
             assert!(html.contains(expected), "missing {expected}");
         }
@@ -3186,10 +3291,14 @@ mod tests {
         focus.uri_path = "198.51.100.7".to_owned();
         focus.paths = vec![
             PrivateFocusPath {
+                response_status_classes: Default::default(),
+                response_status_codes: None,
                 uri_path: "/a".to_owned(),
                 requests: 5,
             },
             PrivateFocusPath {
+                response_status_classes: Default::default(),
+                response_status_codes: None,
                 uri_path: "/b".to_owned(),
                 requests: 2,
             },
@@ -3218,11 +3327,15 @@ mod tests {
         focus.uri_path = focus.selector.clone();
         focus.sources = vec![
             PrivateFocusSource {
+                response_status_codes: None,
+                response_outcomes: None,
                 source_ip: "198.51.100.1".to_owned(),
                 requests: 5,
                 response_status_classes: StatusClassCounts::default(),
             },
             PrivateFocusSource {
+                response_status_codes: None,
+                response_outcomes: None,
                 source_ip: "198.51.100.2".to_owned(),
                 requests: 3,
                 response_status_classes: StatusClassCounts::default(),

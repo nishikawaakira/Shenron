@@ -624,6 +624,7 @@ mod tests {
             report_kind: "REQUEST_CONCENTRATION_PRIVATE".into(),
             safety_note: String::new(),
             summary: RequestConcentrationSummary {
+                response_status_codes: None,
                 total_requests: 100,
                 distinct_uri_paths: 0,
                 distinct_source_ips: 0,
@@ -651,6 +652,7 @@ mod tests {
                 .map(|(p, n)| PrivatePathConcentration {
                     uri_path: p.into(),
                     summary: PathConcentrationSummary {
+                        response_status_codes: None,
                         requests: n,
                         request_share: 0.,
                         distinct_source_ips: 0,
@@ -669,6 +671,8 @@ mod tests {
             source_ips: sources
                 .into_iter()
                 .map(|(ip, n)| PrivateSourceConcentration {
+                    response_status_codes: None,
+                    response_outcomes: None,
                     source_ip: ip.into(),
                     requests: n,
                     most_requested_uri_path: None,

@@ -296,6 +296,15 @@ fn daily_reports_sanitized_response_outcomes_and_window_extrema() {
     assert_eq!(outcomes["ordinary_client_error_share"], 0.25);
     assert_eq!(outcomes["client_closed_request_499_share"], 0.25);
     assert_eq!(outcomes["server_error_share"], 0.25);
+    assert_eq!(report["response_status_codes"]["counts"]["502"], 1);
+    assert_eq!(
+        report["response_outcome_windows"][0]["minimum_success_bucket_start"],
+        "2026-01-01T00:00:00Z"
+    );
+    assert_eq!(
+        report["response_outcome_windows"][0]["buckets_below_success_threshold"],
+        1
+    );
     assert_eq!(
         report["response_outcome_windows"][0]["minimum_success_share"],
         0.25
@@ -329,7 +338,81 @@ fn daily_reports_sanitized_response_outcomes_and_window_extrema() {
         ))
         .stdout(contains(
             "Response window 60s minimum 2xx / maximum 5xx share: 25.0% / 25.0%",
-        ));
+        ))
+        .stdout(contains("minimum 2xx 2026-01-01T00:00:00+00:00"))
+        .stdout(contains("strictly below 50%: 1"));
+
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "daily",
+            "--input",
+            input.to_str().unwrap(),
+            "--format",
+            "nginx",
+            "--response-bucket-min-requests",
+            "1",
+            "--response-success-share-threshold-percent",
+            "25",
+            "--rate-window",
+            "1m",
+        ])
+        .assert()
+        .success()
+        .stdout(contains("strictly below 25%: 0"));
+}
+
+#[test]
+fn concentration_displays_source_status_details_only_with_the_private_gate() {
+    let directory = tempdir().unwrap();
+    let input = directory.path().join("status.log");
+    fs::write(&input, concat!(
+        "198.51.100.1 - - [01/Jan/2026:00:00:00 +0000] \"GET /private-status?secret-token HTTP/1.1\" 499 10 \"-\" \"fixture-agent\"\n",
+        "198.51.100.2 - - [01/Jan/2026:00:00:10 +0000] \"GET /private-status?secret-token HTTP/1.1\" 504 10 \"-\" \"fixture-agent\"\n",
+    )).unwrap();
+    for show in [false, true] {
+        let output = directory.path().join(if show { "shown" } else { "hidden" });
+        let mut command = Command::cargo_bin("shenron").unwrap();
+        command.args([
+            "concentration",
+            "--input",
+            input.to_str().unwrap(),
+            "--format",
+            "apache",
+            "--output",
+            output.to_str().unwrap(),
+            "--path",
+            "/private-status",
+        ]);
+        if show {
+            command.arg("--show-source-ips");
+        }
+        let result = command.assert().success();
+        let stdout = String::from_utf8(result.get_output().stdout.clone()).unwrap();
+        assert_eq!(stdout.contains("198.51.100.1"), show);
+        assert_eq!(stdout.contains("198.51.100.0/24"), show);
+        assert_eq!(stdout.contains("Response shares:"), show);
+        if show {
+            assert!(stdout.contains("Response shares: 2xx 0.0% / 499 100.0% / 5xx 0.0%"));
+            assert!(stdout.contains("Response shares: 2xx 0.0% / 499 50.0% / 5xx 50.0%"));
+        }
+        let private: serde_json::Value =
+            serde_json::from_slice(&fs::read(output.join("request-concentration.json")).unwrap())
+                .unwrap();
+        assert_eq!(
+            private["focus"]["network_prefix_groups"][0]["response_status_codes"]["counts"]["504"],
+            1
+        );
+        let sanitized = fs::read_to_string(output.join("sanitized-research.json")).unwrap();
+        for value in [
+            "198.51.100",
+            "/private-status",
+            "secret-token",
+            "\"source_ip\":",
+        ] {
+            assert!(!sanitized.contains(value));
+        }
+    }
 }
 
 #[test]

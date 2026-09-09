@@ -41,6 +41,9 @@ pub const DEFAULT_RATE_WINDOW_SECONDS: [u64; 4] = [60, 600, 3_600, 86_400];
 /// outcome extrema. This avoids presenting a one-request bucket as a useful
 /// minimum or maximum while making no health or availability classification.
 pub const DEFAULT_RESPONSE_BUCKET_MINIMUM_REQUESTS: u64 = 10;
+/// Descriptive counting threshold only; never a health or attack classification.
+pub const DEFAULT_RESPONSE_SUCCESS_SHARE_THRESHOLD_PERCENT: u8 = 50;
+pub const DEFAULT_MAX_STATUS_CODES_PER_ENTITY: usize = 128;
 
 /// What a `concentration` focus selects. Exact and prefix focuses are keyed on
 /// the normalized URI path; the source-IP focus lists what one or more observed
@@ -123,6 +126,7 @@ pub struct ConcentrationLimits {
     pub max_minute_buckets: usize,
     pub max_query_strings_per_path: usize,
     pub max_query_keys_per_path: usize,
+    pub max_status_codes_per_entity: usize,
 }
 
 impl Default for ConcentrationLimits {
@@ -136,6 +140,7 @@ impl Default for ConcentrationLimits {
             max_minute_buckets: DEFAULT_MAX_MINUTE_BUCKETS,
             max_query_strings_per_path: DEFAULT_MAX_QUERY_STRINGS_PER_PATH,
             max_query_keys_per_path: DEFAULT_MAX_QUERY_KEYS_PER_PATH,
+            max_status_codes_per_entity: DEFAULT_MAX_STATUS_CODES_PER_ENTITY,
         }
     }
 }
@@ -156,6 +161,16 @@ pub struct StatusClassCounts {
 }
 
 impl StatusClassCounts {
+    fn merge(&mut self, other: &Self) {
+        self.informational += other.informational;
+        self.success += other.success;
+        self.redirection += other.redirection;
+        self.client_error += other.client_error;
+        self.client_closed_request_499 += other.client_closed_request_499;
+        self.server_error += other.server_error;
+        self.other += other.other;
+        self.unavailable += other.unavailable;
+    }
     pub fn ordinary_client_error(&self) -> u64 {
         self.client_error
             .saturating_sub(self.client_closed_request_499)
@@ -175,7 +190,7 @@ impl StatusClassCounts {
 /// Aggregate response outcomes from status-capable telemetry. Shares use all
 /// observed requests, including unavailable/other outcomes in the denominator.
 /// They are measurements, not a health, outage, or availability judgment.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct ResponseOutcomeSummary {
     pub counts: StatusClassCounts,
     pub success_share: f64,
@@ -197,6 +212,77 @@ pub struct WindowedResponseOutcomeSummary {
     pub maximum_server_error_share: Option<f64>,
     pub observations_without_timestamp: u64,
     pub observations_beyond_bucket_cap: u64,
+    #[serde(default)]
+    pub minimum_success_bucket_start: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub maximum_server_error_bucket_start: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub success_share_threshold_percent: Option<u8>,
+    /// Eligible buckets strictly below the configured percentage; not an alert.
+    #[serde(default)]
+    pub buckets_below_success_threshold: usize,
+}
+
+/// Exact retained code counts. Admission follows input order. Repeated
+/// observations of an unretained code increment the omission count each time.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct StatusCodeCounts {
+    // JSON object keys are strings. Explicit parsing also supports serde's
+    // buffered `flatten` path in PrivatePathConcentration.
+    #[serde(deserialize_with = "deserialize_status_code_counts")]
+    pub counts: BTreeMap<u16, u64>,
+    pub observations_beyond_cap: u64,
+    pub maximum_codes: usize,
+}
+
+fn deserialize_status_code_counts<'de, D>(deserializer: D) -> Result<BTreeMap<u16, u64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    BTreeMap::<String, u64>::deserialize(deserializer)?
+        .into_iter()
+        .map(|(code, count)| {
+            code.parse::<u16>()
+                .map(|code| (code, count))
+                .map_err(serde::de::Error::custom)
+        })
+        .collect()
+}
+
+impl Default for StatusCodeCounts {
+    fn default() -> Self {
+        Self {
+            counts: BTreeMap::new(),
+            observations_beyond_cap: 0,
+            maximum_codes: DEFAULT_MAX_STATUS_CODES_PER_ENTITY,
+        }
+    }
+}
+
+impl StatusCodeCounts {
+    fn record(&mut self, status: Option<u16>, maximum: usize) {
+        self.maximum_codes = maximum;
+        if let Some(status) = status {
+            self.add(status, 1);
+        }
+    }
+
+    fn add(&mut self, status: u16, count: u64) {
+        if let Some(current) = self.counts.get_mut(&status) {
+            *current += count;
+        } else if self.counts.len() < self.maximum_codes {
+            self.counts.insert(status, count);
+        } else {
+            self.observations_beyond_cap += count;
+        }
+    }
+
+    fn merge(&mut self, other: &Self) {
+        self.observations_beyond_cap += other.observations_beyond_cap;
+        for (&code, &count) in &other.counts {
+            self.add(code, count);
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -210,6 +296,8 @@ pub struct PathConcentrationSummary {
     #[serde(default)]
     pub requests_per_source_ip: f64,
     pub response_status_classes: StatusClassCounts,
+    #[serde(default)]
+    pub response_status_codes: Option<StatusCodeCounts>,
     /// `None` when the selected telemetry profile does not expose response bytes.
     pub response_bytes: Option<u64>,
     /// Requests for this path that carried a query component, including an
@@ -332,6 +420,8 @@ pub struct RequestConcentrationSummary {
     /// telemetry profile cannot expose status.
     #[serde(default)]
     pub response_outcome_windows: Option<Vec<WindowedResponseOutcomeSummary>>,
+    #[serde(default)]
+    pub response_status_codes: Option<StatusCodeCounts>,
     /// Present only when `production concentration --path` selected an exact
     /// URI path. This aggregate is safe for sanitized output.
     #[serde(default)]
@@ -360,14 +450,22 @@ pub struct PrivateSourceConcentration {
     /// an attack, exploitation, compromise, or attribution determination.
     #[serde(default)]
     pub response_status_classes: StatusClassCounts,
+    #[serde(default)]
+    pub response_status_codes: Option<StatusCodeCounts>,
+    #[serde(default)]
+    pub response_outcomes: Option<ResponseOutcomeSummary>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct PrivateFocusSource {
     pub source_ip: String,
     pub requests: u64,
     #[serde(default)]
     pub response_status_classes: StatusClassCounts,
+    #[serde(default)]
+    pub response_status_codes: Option<StatusCodeCounts>,
+    #[serde(default)]
+    pub response_outcomes: Option<ResponseOutcomeSummary>,
 }
 
 /// One retained URI path inside a focus, with its request count. For a
@@ -378,6 +476,10 @@ pub struct PrivateFocusSource {
 pub struct PrivateFocusPath {
     pub uri_path: String,
     pub requests: u64,
+    #[serde(default)]
+    pub response_status_classes: StatusClassCounts,
+    #[serde(default)]
+    pub response_status_codes: Option<StatusCodeCounts>,
 }
 
 /// A private address-block aggregation of retained focus-path peers. A common
@@ -388,6 +490,12 @@ pub struct PrivateFocusPrefixGroup {
     pub requests: u64,
     pub request_share: f64,
     pub distinct_source_ips: usize,
+    #[serde(default)]
+    pub response_status_classes: StatusClassCounts,
+    #[serde(default)]
+    pub response_status_codes: Option<StatusCodeCounts>,
+    #[serde(default)]
+    pub response_outcomes: Option<ResponseOutcomeSummary>,
 }
 
 /// A private routing-level aggregation of retained focus peers. An ASN is not
@@ -434,6 +542,8 @@ pub struct StatusClassMinuteCount {
 /// client/attacker attribution: they can be CDN, LB, NAT, or proxy addresses.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PrivateFocusSummary {
+    #[serde(default)]
+    pub response_status_codes: Option<StatusCodeCounts>,
     /// Focus discriminator: `exact-path`, `path-prefix`, or `source-ip`.
     #[serde(default = "exact_path_kind")]
     pub focus_kind: String,
@@ -516,6 +626,7 @@ struct PathAccumulator {
     requests: u64,
     source_ips: BTreeSet<String>,
     status_classes: StatusClassCounts,
+    status_codes: StatusCodeCounts,
     response_bytes: u64,
     query_shape: QueryShapeAccumulator,
 }
@@ -524,6 +635,7 @@ struct PathAccumulator {
 struct SourceAccumulator {
     requests: u64,
     status_classes: StatusClassCounts,
+    status_codes: StatusCodeCounts,
 }
 
 #[derive(Debug, Default)]
@@ -543,8 +655,10 @@ pub struct RequestConcentration {
     response_bytes_available: bool,
     status_available: bool,
     response_bucket_minimum_requests: u64,
+    response_success_share_threshold_percent: u8,
     total_requests: u64,
     status_classes: StatusClassCounts,
+    status_codes: StatusCodeCounts,
     paths: BTreeMap<String, PathAccumulator>,
     source_ips: BTreeMap<String, SourceAccumulator>,
     source_path_pairs: BTreeMap<String, BTreeMap<String, u64>>,
@@ -566,13 +680,14 @@ pub struct RequestConcentration {
     focus: Option<FocusSelector>,
     focus_total: u64,
     focus_sources: BTreeMap<String, SourceAccumulator>,
-    focus_paths: BTreeMap<String, u64>,
+    focus_paths: BTreeMap<String, SourceAccumulator>,
     focus_minute_buckets: BTreeMap<i64, u64>,
     focus_minute_buckets_beyond_cap: u64,
     focus_observations_without_timestamp: u64,
     focus_rate_buckets: BTreeMap<u64, BTreeMap<i64, u64>>,
     focus_rate_buckets_beyond_cap: BTreeMap<u64, u64>,
     focus_status_classes: StatusClassCounts,
+    focus_status_codes: StatusCodeCounts,
     focus_source_ips_beyond_cap: u64,
     focus_paths_beyond_cap: u64,
     focus_query_shape: QueryShapeAccumulator,
@@ -654,8 +769,14 @@ impl RequestConcentration {
             response_bytes_available,
             status_available,
             response_bucket_minimum_requests: DEFAULT_RESPONSE_BUCKET_MINIMUM_REQUESTS,
+            response_success_share_threshold_percent:
+                DEFAULT_RESPONSE_SUCCESS_SHARE_THRESHOLD_PERCENT,
             total_requests: 0,
             status_classes: StatusClassCounts::default(),
+            status_codes: StatusCodeCounts {
+                maximum_codes: limits.max_status_codes_per_entity,
+                ..StatusCodeCounts::default()
+            },
             paths: BTreeMap::new(),
             source_ips: BTreeMap::new(),
             source_path_pairs: BTreeMap::new(),
@@ -684,6 +805,10 @@ impl RequestConcentration {
             focus_rate_buckets,
             focus_rate_buckets_beyond_cap,
             focus_status_classes: StatusClassCounts::default(),
+            focus_status_codes: StatusCodeCounts {
+                maximum_codes: limits.max_status_codes_per_entity,
+                ..StatusCodeCounts::default()
+            },
             focus_source_ips_beyond_cap: 0,
             focus_paths_beyond_cap: 0,
             focus_query_shape: QueryShapeAccumulator::default(),
@@ -694,6 +819,19 @@ impl RequestConcentration {
     /// This changes reporting only and never classifies a bucket.
     pub fn set_response_bucket_minimum_requests(&mut self, minimum: u64) {
         self.response_bucket_minimum_requests = minimum;
+    }
+
+    /// Counts eligible buckets strictly below this percentage. No classification
+    /// is made. Invalid settings are rejected, never silently clamped.
+    pub fn set_response_success_share_threshold_percent(
+        &mut self,
+        percent: u8,
+    ) -> Result<(), &'static str> {
+        if percent > 100 {
+            return Err("response success share threshold must be 0 through 100 percent");
+        }
+        self.response_success_share_threshold_percent = percent;
+        Ok(())
     }
 
     /// Enable a focus for subsequent observations. It is used only by
@@ -710,6 +848,8 @@ impl RequestConcentration {
     pub fn observe(&mut self, event: &WebEvent) {
         self.total_requests += 1;
         record_status_class(&mut self.status_classes, event.status);
+        self.status_codes
+            .record(event.status, self.limits.max_status_codes_per_entity);
         self.observe_minute(event.timestamp, event.status);
 
         let path = event.uri_path.as_deref();
@@ -780,6 +920,7 @@ impl RequestConcentration {
             response_outcomes: self
                 .status_available
                 .then(|| response_outcome_summary(&self.status_classes)),
+            response_status_codes: self.status_available.then(|| self.status_codes.clone()),
             response_outcome_windows: self.status_available.then(|| {
                 self.windowed_response_outcome_summaries(
                     &self.status_rate_buckets,
@@ -827,6 +968,8 @@ impl RequestConcentration {
                     requests: item.requests,
                     most_requested_uri_path: self.most_requested_path(source_ip),
                     response_status_classes: item.status_classes.clone(),
+                    response_status_codes: self.status_available.then(|| item.status_codes.clone()),
+                    response_outcomes: self.status_available.then(|| response_outcome_summary(&item.status_classes)),
                 })
                 .collect(),
             focus: self.private_focus_summary(include_query_keys),
@@ -874,6 +1017,8 @@ impl RequestConcentration {
             self.focus_observations_without_timestamp += 1;
         }
         record_status_class(&mut self.focus_status_classes, event.status);
+        self.focus_status_codes
+            .record(event.status, self.limits.max_status_codes_per_entity);
         Self::observe_query_shape(
             &mut self.focus_query_shape,
             event.uri_query.as_deref(),
@@ -884,12 +1029,16 @@ impl RequestConcentration {
             if let Some(item) = self.focus_sources.get_mut(source_ip) {
                 item.requests += 1;
                 record_status_class(&mut item.status_classes, event.status);
+                item.status_codes
+                    .record(event.status, self.limits.max_status_codes_per_entity);
             } else if self.focus_sources.len() < self.limits.max_focus_source_ips {
                 let mut item = SourceAccumulator {
                     requests: 1,
                     ..SourceAccumulator::default()
                 };
                 record_status_class(&mut item.status_classes, event.status);
+                item.status_codes
+                    .record(event.status, self.limits.max_status_codes_per_entity);
                 self.focus_sources.insert(source_ip.to_owned(), item);
             } else {
                 self.focus_source_ips_beyond_cap += 1;
@@ -899,7 +1048,11 @@ impl RequestConcentration {
             if self.focus_paths.contains_key(path)
                 || self.focus_paths.len() < self.limits.max_focus_paths
             {
-                *self.focus_paths.entry(path.to_owned()).or_default() += 1;
+                let item = self.focus_paths.entry(path.to_owned()).or_default();
+                item.requests += 1;
+                record_status_class(&mut item.status_classes, event.status);
+                item.status_codes
+                    .record(event.status, self.limits.max_status_codes_per_entity);
             } else {
                 self.focus_paths_beyond_cap += 1;
             }
@@ -951,6 +1104,10 @@ impl RequestConcentration {
                     source_ip: source_ip.clone(),
                     requests: item.requests,
                     response_status_classes: item.status_classes.clone(),
+                    response_status_codes: self.status_available.then(|| item.status_codes.clone()),
+                    response_outcomes: self
+                        .status_available
+                        .then(|| response_outcome_summary(&item.status_classes)),
                 })
                 .collect::<Vec<_>>();
             sources.sort_by(|left, right| {
@@ -962,9 +1119,11 @@ impl RequestConcentration {
             let mut paths = self
                 .focus_paths
                 .iter()
-                .map(|(uri_path, requests)| PrivateFocusPath {
+                .map(|(uri_path, item)| PrivateFocusPath {
                     uri_path: uri_path.clone(),
-                    requests: *requests,
+                    requests: item.requests,
+                    response_status_classes: item.status_classes.clone(),
+                    response_status_codes: self.status_available.then(|| item.status_codes.clone()),
                 })
                 .collect::<Vec<_>>();
             paths.sort_by(|left, right| {
@@ -974,6 +1133,9 @@ impl RequestConcentration {
                     .then_with(|| left.uri_path.cmp(&right.uri_path))
             });
             PrivateFocusSummary {
+                response_status_codes: self
+                    .status_available
+                    .then(|| self.focus_status_codes.clone()),
                 focus_kind: selector.kind().to_owned(),
                 selector: selector_display.clone(),
                 uri_path: selector_display,
@@ -1064,6 +1226,8 @@ impl RequestConcentration {
                 }
             }
             record_status_class(&mut item.status_classes, event.status);
+            item.status_codes
+                .record(event.status, self.limits.max_status_codes_per_entity);
             if self.response_bytes_available {
                 item.response_bytes += event.response_bytes.unwrap_or(0);
             }
@@ -1091,6 +1255,8 @@ impl RequestConcentration {
             );
         }
         record_status_class(&mut item.status_classes, event.status);
+        item.status_codes
+            .record(event.status, self.limits.max_status_codes_per_entity);
         if self.response_bytes_available {
             item.response_bytes += event.response_bytes.unwrap_or(0);
         }
@@ -1108,6 +1274,8 @@ impl RequestConcentration {
         if let Some(item) = self.source_ips.get_mut(source_ip) {
             item.requests += 1;
             record_status_class(&mut item.status_classes, status);
+            item.status_codes
+                .record(status, self.limits.max_status_codes_per_entity);
             return true;
         }
         if self.source_ips.len() >= self.limits.max_source_ips {
@@ -1119,6 +1287,8 @@ impl RequestConcentration {
             ..SourceAccumulator::default()
         };
         record_status_class(&mut item.status_classes, status);
+        item.status_codes
+            .record(status, self.limits.max_status_codes_per_entity);
         self.source_ips.insert(source_ip.to_owned(), item);
         true
     }
@@ -1161,6 +1331,7 @@ impl RequestConcentration {
                 item.source_ips.len(),
             ),
             response_status_classes: item.status_classes.clone(),
+            response_status_codes: self.status_available.then(|| item.status_codes.clone()),
             response_bytes: self.response_bytes_available.then_some(item.response_bytes),
             requests_with_query: item.query_shape.requests_with_query,
             distinct_query_strings: item.query_shape.query_strings.len(),
@@ -1393,7 +1564,14 @@ impl RequestConcentration {
                 let mut maximum_server_error_share: Option<f64> = None;
                 let mut eligible_buckets = 0;
                 let mut buckets_below_minimum = 0;
-                for counts in buckets.values() {
+                let mut minimum_success_bucket_start = None;
+                let mut maximum_server_error_bucket_start = None;
+                let mut minimum_fraction: Option<(u64, u64)> = None;
+                let mut maximum_fraction: Option<(u64, u64)> = None;
+                let mut buckets_below_success_threshold = 0;
+                // BTreeMap order is chronological. Strict rational comparison
+                // retains the earliest tied bucket without floating-point ties.
+                for (&bucket, counts) in buckets {
                     let total = counts.total_observations();
                     if total < self.response_bucket_minimum_requests {
                         buckets_below_minimum += 1;
@@ -1402,12 +1580,31 @@ impl RequestConcentration {
                     eligible_buckets += 1;
                     let success = share(counts.success, total);
                     let server_error = share(counts.server_error, total);
-                    minimum_success_share =
-                        Some(minimum_success_share.map_or(success, |current| current.min(success)));
-                    maximum_server_error_share = Some(
-                        maximum_server_error_share
-                            .map_or(server_error, |current| current.max(server_error)),
-                    );
+                    let start = bucket
+                        .checked_mul(*seconds as i64)
+                        .and_then(|epoch| DateTime::from_timestamp(epoch, 0));
+                    if minimum_fraction.is_none_or(|(n, d)| {
+                        u128::from(counts.success) * u128::from(d)
+                            < u128::from(n) * u128::from(total)
+                    }) {
+                        minimum_fraction = Some((counts.success, total));
+                        minimum_success_share = Some(success);
+                        minimum_success_bucket_start = start;
+                    }
+                    if maximum_fraction.is_none_or(|(n, d)| {
+                        u128::from(counts.server_error) * u128::from(d)
+                            > u128::from(n) * u128::from(total)
+                    }) {
+                        maximum_fraction = Some((counts.server_error, total));
+                        maximum_server_error_share = Some(server_error);
+                        maximum_server_error_bucket_start = start;
+                    }
+                    if u128::from(counts.success) * 100
+                        < u128::from(total)
+                            * u128::from(self.response_success_share_threshold_percent)
+                    {
+                        buckets_below_success_threshold += 1;
+                    }
                 }
                 WindowedResponseOutcomeSummary {
                     bucket_width_seconds: *seconds,
@@ -1416,6 +1613,12 @@ impl RequestConcentration {
                     buckets_below_minimum,
                     minimum_success_share,
                     maximum_server_error_share,
+                    minimum_success_bucket_start,
+                    maximum_server_error_bucket_start,
+                    success_share_threshold_percent: Some(
+                        self.response_success_share_threshold_percent,
+                    ),
+                    buckets_below_success_threshold,
                     observations_without_timestamp,
                     observations_beyond_bucket_cap: *beyond_caps.get(seconds).unwrap_or(&0),
                 }
@@ -1448,7 +1651,15 @@ fn normalize_rate_windows(widths: &[u64]) -> Vec<u64> {
 /// source list, so it adds no streaming state and cannot recover peers omitted
 /// by the disclosed focus source-IP cap.
 pub fn add_focus_prefix_groups(focus: &mut PrivateFocusSummary, prefixes: FocusPrefixLengths) {
-    let mut groups = BTreeMap::<String, (u64, BTreeSet<String>)>::new();
+    let mut groups = BTreeMap::<
+        String,
+        (
+            u64,
+            BTreeSet<String>,
+            StatusClassCounts,
+            Option<StatusCodeCounts>,
+        ),
+    >::new();
     for source in &focus.sources {
         let Ok(address) = source.source_ip.parse::<IpAddr>() else {
             continue;
@@ -1464,14 +1675,23 @@ pub fn add_focus_prefix_groups(focus: &mut PrivateFocusSummary, prefixes: FocusP
             continue;
         };
         let key = format!("{}/{}", network.network(), prefix);
-        let (requests, source_ips) = groups.entry(key).or_default();
+        let (requests, source_ips, classes, codes) = groups.entry(key).or_default();
         *requests += source.requests;
         source_ips.insert(source.source_ip.clone());
+        classes.merge(&source.response_status_classes);
+        if let Some(source_codes) = &source.response_status_codes {
+            codes
+                .get_or_insert_with(|| StatusCodeCounts {
+                    maximum_codes: source_codes.maximum_codes,
+                    ..StatusCodeCounts::default()
+                })
+                .merge(source_codes);
+        }
     }
     let mut prefix_groups = groups
         .into_iter()
         .map(
-            |(network_prefix, (requests, source_ips))| PrivateFocusPrefixGroup {
+            |(network_prefix, (requests, source_ips, classes, codes))| PrivateFocusPrefixGroup {
                 network_prefix,
                 requests,
                 request_share: if focus.total_requests == 0 {
@@ -1480,6 +1700,9 @@ pub fn add_focus_prefix_groups(focus: &mut PrivateFocusSummary, prefixes: FocusP
                     requests as f64 / focus.total_requests as f64
                 },
                 distinct_source_ips: source_ips.len(),
+                response_outcomes: codes.as_ref().map(|_| response_outcome_summary(&classes)),
+                response_status_classes: classes,
+                response_status_codes: codes,
             },
         )
         .collect::<Vec<_>>();
@@ -1902,6 +2125,7 @@ mod tests {
                 max_minute_buckets: 1,
                 max_query_strings_per_path: 1,
                 max_query_keys_per_path: 1,
+                max_status_codes_per_entity: DEFAULT_MAX_STATUS_CODES_PER_ENTITY,
             },
         );
         concentration.observe(&event(Some("/one"), Some("198.51.100.1"), Some(0)));
@@ -1950,6 +2174,7 @@ mod tests {
                 max_minute_buckets: 10,
                 max_query_strings_per_path: 10,
                 max_query_keys_per_path: 10,
+                max_status_codes_per_entity: DEFAULT_MAX_STATUS_CODES_PER_ENTITY,
             },
         );
         concentration.observe(&event(Some("/first"), Some("198.51.100.1"), Some(0)));
@@ -2037,6 +2262,7 @@ mod tests {
                 max_minute_buckets: 10,
                 max_query_strings_per_path: 10,
                 max_query_keys_per_path: 10,
+                max_status_codes_per_entity: DEFAULT_MAX_STATUS_CODES_PER_ENTITY,
             },
         );
         concentration.focus_on_path("/target");
@@ -2556,8 +2782,215 @@ mod tests {
         let object = value.as_object_mut().unwrap();
         object.remove("response_outcomes");
         object.remove("response_outcome_windows");
+        object.remove("response_status_codes");
         let decoded: RequestConcentrationSummary = serde_json::from_value(value).unwrap();
         assert!(decoded.response_outcomes.is_none());
         assert!(decoded.response_outcome_windows.is_none());
+        assert!(decoded.response_status_codes.is_none());
+    }
+
+    #[test]
+    fn response_window_times_use_earliest_ties_and_disclose_threshold_counts() {
+        let mut concentration = RequestConcentration::with_limits_and_rate_windows(
+            true,
+            ConcentrationLimits::default(),
+            &[60],
+        );
+        concentration.set_response_bucket_minimum_requests(2);
+        concentration
+            .set_response_success_share_threshold_percent(50)
+            .unwrap();
+        // Deliberately unordered input: equal extrema must select the earliest UTC bucket.
+        for (minute, statuses) in [
+            (Some(3), [504, 504]),
+            (Some(1), [502, 502]),
+            (Some(2), [200, 499]),
+            (Some(0), [200, 200]),
+            (None, [504, 504]),
+        ] {
+            for status in statuses {
+                let mut observation = event(Some("/private"), Some("198.51.100.1"), minute);
+                observation.status = Some(status);
+                concentration.observe(&observation);
+            }
+        }
+        let window = &concentration.summary().response_outcome_windows.unwrap()[0];
+        assert_eq!(
+            window.minimum_success_bucket_start,
+            Some(Utc.timestamp_opt(60, 0).unwrap())
+        );
+        assert_eq!(
+            window.maximum_server_error_bucket_start,
+            window.minimum_success_bucket_start
+        );
+        assert_eq!(window.minimum_success_share, Some(0.0));
+        assert_eq!(window.maximum_server_error_share, Some(1.0));
+        assert_eq!(window.buckets_below_success_threshold, 2); // 50% itself is not below 50%.
+        assert_eq!(window.observations_without_timestamp, 2);
+        concentration
+            .set_response_success_share_threshold_percent(51)
+            .unwrap();
+        assert_eq!(
+            concentration.summary().response_outcome_windows.unwrap()[0]
+                .buckets_below_success_threshold,
+            3
+        );
+        assert!(concentration
+            .set_response_success_share_threshold_percent(101)
+            .is_err());
+    }
+
+    #[test]
+    fn individual_codes_sources_and_focus_prefixes_preserve_class_totals() {
+        for selector in [
+            FocusSelector::ExactPath("/private-status".to_owned()),
+            FocusSelector::PathPrefix("/private-status".to_owned()),
+            FocusSelector::SourceIp(BTreeSet::from([
+                "198.51.100.1".to_owned(),
+                "198.51.100.2".to_owned(),
+            ])),
+        ] {
+            let mut concentration = RequestConcentration::new(true);
+            concentration.focus_on(selector);
+            for (ip, statuses) in [
+                ("198.51.100.1", vec![499, 499]),
+                ("198.51.100.2", vec![502, 504, 429, 401, 403, 200]),
+            ] {
+                for status in statuses {
+                    let mut observation = event(Some("/private-status"), Some(ip), Some(0));
+                    observation.status = Some(status);
+                    concentration.observe(&observation);
+                }
+            }
+            let summary = concentration.summary();
+            let codes = &summary.response_status_codes.as_ref().unwrap().counts;
+            for code in [502, 504, 429, 401, 403, 200] {
+                assert_eq!(codes[&code], 1);
+            }
+            assert_eq!(codes[&499], 2);
+            let classes = &summary.response_outcomes.as_ref().unwrap().counts;
+            assert_eq!(classes.server_error, codes[&502] + codes[&504]);
+            assert_eq!(classes.client_error, 5); // 499 remains part of the existing 4xx count.
+            assert_eq!(classes.ordinary_client_error(), 3);
+            let private = concentration.private_report();
+            let json = serde_json::to_string(&private).unwrap();
+            let decoded: PrivateRequestConcentrationReport = serde_json::from_str(&json).unwrap();
+            assert_eq!(serde_json::to_string(&decoded).unwrap(), json);
+            assert_eq!(private.paths[0].summary.requests, 8);
+            assert_eq!(private.paths[0].summary.request_share, 1.0);
+            assert_eq!(private.paths[0].summary.distinct_source_ips, 2);
+            assert_eq!(private.paths[0].summary.response_bytes, Some(80));
+            assert_eq!(
+                private.paths[0]
+                    .summary
+                    .response_status_codes
+                    .as_ref()
+                    .unwrap()
+                    .counts,
+                *codes
+            );
+            let source = private
+                .source_ips
+                .iter()
+                .find(|source| source.source_ip == "198.51.100.1")
+                .unwrap();
+            assert_eq!(
+                source
+                    .response_outcomes
+                    .as_ref()
+                    .unwrap()
+                    .client_closed_request_499_share,
+                1.0
+            );
+            assert_eq!(
+                source
+                    .response_outcomes
+                    .as_ref()
+                    .unwrap()
+                    .server_error_share,
+                0.0
+            );
+            let mut focus = private.focus.unwrap();
+            assert_eq!(focus.response_status_codes.as_ref().unwrap().counts, *codes);
+            assert!(focus.sources.iter().any(|source| source
+                .response_status_codes
+                .as_ref()
+                .unwrap()
+                .counts
+                .contains_key(&504)));
+            add_focus_prefix_groups(&mut focus, FocusPrefixLengths::default());
+            let group = &focus.network_prefix_groups[0];
+            assert_eq!(group.response_status_codes.as_ref().unwrap().counts, *codes);
+            assert_eq!(
+                group
+                    .response_outcomes
+                    .as_ref()
+                    .unwrap()
+                    .client_closed_request_499_share,
+                0.25
+            );
+            assert_eq!(
+                group.response_outcomes.as_ref().unwrap().success_share,
+                0.125
+            );
+            let sanitized = serde_json::to_string(&summary).unwrap();
+            for private_value in ["/private-status", "198.51.100", "\"source_ip\":"] {
+                assert!(!sanitized.contains(private_value));
+            }
+        }
+    }
+
+    #[test]
+    fn status_code_caps_bound_each_entity_without_dropping_class_counts() {
+        let mut concentration = RequestConcentration::with_limits(
+            true,
+            ConcentrationLimits {
+                max_status_codes_per_entity: 1,
+                ..ConcentrationLimits::default()
+            },
+        );
+        concentration.focus_on(FocusSelector::PathPrefix("/private".to_owned()));
+        for status in [Some(502), Some(504), Some(504), Some(502), None] {
+            let mut observation = event(Some("/private/status"), Some("198.51.100.1"), Some(0));
+            observation.status = status;
+            concentration.observe(&observation);
+        }
+        let mut private = concentration.private_report();
+        add_focus_prefix_groups(
+            private.focus.as_mut().unwrap(),
+            FocusPrefixLengths::default(),
+        );
+        let focus = private.focus.as_ref().unwrap();
+        for codes in [
+            &private.summary.response_status_codes,
+            &private.paths[0].summary.response_status_codes,
+            &private.source_ips[0].response_status_codes,
+            &focus.response_status_codes,
+            &focus.sources[0].response_status_codes,
+            &focus.paths[0].response_status_codes,
+            &focus.network_prefix_groups[0].response_status_codes,
+        ] {
+            let codes = codes.as_ref().unwrap();
+            assert_eq!(codes.maximum_codes, 1);
+            assert_eq!(codes.counts, BTreeMap::from([(502, 2)]));
+            assert_eq!(codes.observations_beyond_cap, 2);
+        }
+        let classes = &private.summary.response_outcomes.as_ref().unwrap().counts;
+        assert_eq!(classes.server_error, 4);
+        assert_eq!(classes.unavailable, 1);
+        assert_eq!(private.summary.total_requests, 5);
+        // Additive fields are absent in older private artifacts.
+        let mut old_source = serde_json::to_value(&private.source_ips[0]).unwrap();
+        old_source
+            .as_object_mut()
+            .unwrap()
+            .remove("response_status_codes");
+        old_source
+            .as_object_mut()
+            .unwrap()
+            .remove("response_outcomes");
+        let source: PrivateSourceConcentration = serde_json::from_value(old_source).unwrap();
+        assert!(source.response_status_codes.is_none());
+        assert!(source.response_outcomes.is_none());
     }
 }

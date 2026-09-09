@@ -1534,6 +1534,7 @@ pub fn concentration_with_asn_rate_windows_and_query_keys(
         None,
         false,
         crate::concentration::DEFAULT_RESPONSE_BUCKET_MINIMUM_REQUESTS,
+        crate::concentration::DEFAULT_RESPONSE_SUCCESS_SHARE_THRESHOLD_PERCENT,
     )
 }
 
@@ -1555,6 +1556,7 @@ pub fn concentration_with_optional_output(
     processed_index: Option<&Path>,
     reprocess_all: bool,
     response_bucket_minimum_requests: u64,
+    response_success_share_threshold_percent: u8,
 ) -> anyhow::Result<SanitizedConcentrationReport> {
     concentration_run(
         input,
@@ -1569,6 +1571,7 @@ pub fn concentration_with_optional_output(
         processed_index,
         reprocess_all,
         response_bucket_minimum_requests,
+        response_success_share_threshold_percent,
     )
 }
 
@@ -1586,6 +1589,7 @@ fn concentration_run(
     processed_index: Option<&Path>,
     reprocess_all: bool,
     response_bucket_minimum_requests: u64,
+    response_success_share_threshold_percent: u8,
 ) -> anyhow::Result<SanitizedConcentrationReport> {
     time_range.validate()?;
     if let Some(output) = output {
@@ -1622,6 +1626,9 @@ fn concentration_run(
         rate_window_seconds,
     );
     accumulator.set_response_bucket_minimum_requests(response_bucket_minimum_requests);
+    accumulator
+        .set_response_success_share_threshold_percent(response_success_share_threshold_percent)
+        .map_err(anyhow::Error::msg)?;
     if let Some(selector) = focus {
         accumulator.focus_on(selector);
     }

@@ -72,6 +72,65 @@ bucket cap remain separately disclosed. This inclusion floor is configurable
 for corpus scale, but it is not an alert threshold and produces no label or
 special exit status.
 
+### Locating response windows and separating individual codes
+
+Each response window also records `minimum_success_bucket_start` and
+`maximum_server_error_bucket_start` in UTC. Equal shares select the earliest
+retained bucket, independently of event arrival order. The existing bucket
+admission cap still follows input order. Missing timestamps are excluded and
+counted, and sparse buckets remain excluded by `--response-bucket-min-requests`
+(default 10). No eligible bucket means unavailable extrema and start times.
+
+`daily` and `concentration` accept
+`--response-success-share-threshold-percent <0..100>` (default **50**).
+`buckets_below_success_threshold` counts eligible buckets with a success share
+strictly below that percentage; equality is not included. This is a descriptive
+count, not a label, alert, or special exit status. A count does not establish
+that the buckets are consecutive or identify a continuous incident interval.
+The configured percentage is recorded alongside the count. Older artifacts
+without these additive fields remain readable; their start times and configured
+percentage are unavailable rather than inferred.
+
+`response_status_codes` contains the observed individual numeric HTTP codes,
+including 401, 403, 429, 499, 502 and 504 when present, not a fixed list of codes.
+The corpus, each retained path, each retained peer, and focus details have
+separate maps. The default cap is **128 retained codes per aggregate/entity**,
+configurable through `ConcentrationLimits.max_status_codes_per_entity` for
+library callers. Maps admit the first observed codes and serialize in numeric
+order. `maximum_codes` records the limit and `observations_beyond_cap` counts
+every observation of an unretained code, including repeats. Retained codes
+continue to accumulate; missing status remains `unavailable` in the existing
+class counts, never a fabricated status code. With a nonzero omission count,
+the code map is incomplete, even though the existing class totals stay exact
+within that entity's retained scope. Statusless profiles use `null` code maps.
+
+Private peer and focus-peer records include `response_outcomes` shares (all
+requests for that peer in scope, including unavailable statuses, form the
+denominator). Existing `client_error` still includes 499; ordinary 4xx subtracts
+that subset, so reporting 499 separately does not double-count it. Focus
+address blocks combine retained peers' class and code counts without new
+streaming state. Block code admission follows the deterministic private source
+order (requests descending, then IP ascending), then numeric code order, and
+discloses both upstream omissions and its own code-cap omissions. Blocks cannot
+recover peers omitted by the existing focus-source cap. A shared prefix does
+not imply a shared operator, owner, or actor.
+
+Use `--show-source-ips` to display peer/block distributions and shares;
+`--show-paths` displays private per-path code detail. The private HTML report
+shows code counts and response shares in chart details and UTC window starts.
+Sanitized artifacts contain only numeric aggregate code counts, shares and
+UTC window metadata, never a source-IP/status mapping or raw path/query value.
+
+A rise in client-closed responses (499) alone does not identify a cause. The
+same increase can result from a slow backend, an origin that stopped responding,
+a client that abandons requests early, or automated collection that does not
+wait for the full response. The presence or absence of gateway timeouts, the
+individual status codes, and how the sources are distributed are separate
+observations that a human can use to distinguish them. None of these is a
+determination of an outage, degraded availability, automated collection, an
+attack, or abuse. Standard combined logs suffice; no response time is inferred
+and no additional log fields or network lookups are required.
+
 Response outcome shares are counts of what the log recorded. A low success
 share can equally result from redirect-heavy routing, authentication flows,
 health checks, clients that disconnect early, a slow backend, or an unavailable
