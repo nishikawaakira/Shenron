@@ -44,6 +44,7 @@ pub const DEFAULT_RESPONSE_BUCKET_MINIMUM_REQUESTS: u64 = 10;
 /// Descriptive counting threshold only; never a health or attack classification.
 pub const DEFAULT_RESPONSE_SUCCESS_SHARE_THRESHOLD_PERCENT: u8 = 50;
 pub const DEFAULT_MAX_STATUS_CODES_PER_ENTITY: usize = 128;
+pub const DEFAULT_MAX_SOURCE_SEGMENTS: usize = 256;
 
 /// What a `concentration` focus selects. Exact and prefix focuses are keyed on
 /// the normalized URI path; the source-IP focus lists what one or more observed
@@ -118,6 +119,7 @@ pub const DEFAULT_MAX_TRACKED_SOURCE_PATH_PAIRS: usize = 2_000_000;
 
 #[derive(Debug, Clone, Copy)]
 pub struct ConcentrationLimits {
+    pub max_source_segments: usize,
     pub max_paths: usize,
     pub max_source_ips: usize,
     pub max_focus_source_ips: usize,
@@ -133,6 +135,7 @@ impl Default for ConcentrationLimits {
     fn default() -> Self {
         Self {
             max_paths: DEFAULT_MAX_TRACKED_PATHS,
+            max_source_segments: DEFAULT_MAX_SOURCE_SEGMENTS,
             max_source_ips: DEFAULT_MAX_TRACKED_SOURCE_IPS,
             max_focus_source_ips: DEFAULT_MAX_FOCUS_SOURCE_IPS,
             max_focus_paths: DEFAULT_MAX_FOCUS_PATHS,
@@ -392,6 +395,8 @@ fn exact_path_kind() -> String {
 /// no URI paths, IP addresses, hosts, headers, or other raw request values.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RequestConcentrationSummary {
+    #[serde(default)]
+    pub source_segment_diversity: Option<SourceSegmentDiversitySummary>,
     pub total_requests: u64,
     /// Exact unless `paths_beyond_tracking_cap` is non-zero.
     pub distinct_uri_paths: usize,
@@ -441,6 +446,8 @@ pub struct PrivatePathConcentration {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PrivateSourceConcentration {
+    #[serde(default)]
+    pub path_segment_diversity: Option<SourceSegmentDiversity>,
     pub source_ip: String,
     pub requests: u64,
     /// The exact most-requested retained path for this IP. It is unavailable
@@ -633,9 +640,89 @@ struct PathAccumulator {
 
 #[derive(Debug, Default)]
 struct SourceAccumulator {
+    segments: BTreeSet<String>,
+    segments_404: BTreeSet<String>,
+    segments_beyond_cap: u64,
+    segments_404_beyond_cap: u64,
+    paths_unavailable: u64,
     requests: u64,
     status_classes: StatusClassCounts,
     status_codes: StatusCodeCounts,
+}
+
+/// Counts only: segment strings never enter any artifact. Capped counts are
+/// retained lower bounds; omissions count observations, not distinct segments.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SourceSegmentDiversity {
+    pub distinct_segments: usize,
+    pub distinct_404_segments: Option<usize>,
+    pub observations_beyond_cap: u64,
+    pub observations_404_beyond_cap: Option<u64>,
+    pub observations_without_path: u64,
+    pub maximum_segments: usize,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SourceSegmentDiversitySummary {
+    pub maximum_404_segments: Option<usize>,
+    pub median_404_segments: Option<f64>,
+    pub sources_beyond_cap: usize,
+    pub sources_404_beyond_cap: Option<usize>,
+    pub observations_beyond_cap: u64,
+    pub observations_404_beyond_cap: Option<u64>,
+    pub observations_without_path: u64,
+    pub retained_sources: usize,
+    pub maximum_segments_per_source: usize,
+}
+
+impl SourceAccumulator {
+    fn record_segments(&mut self, path: Option<&str>, status: Option<u16>, limit: usize) {
+        let Some(path) = path else {
+            self.paths_unavailable += 1;
+            return;
+        };
+        // Preserve spelling and empty segments: no decoding or case folding.
+        let segment = path
+            .strip_prefix('/')
+            .unwrap_or(path)
+            .split('/')
+            .next()
+            .unwrap_or("");
+        fn retain(set: &mut BTreeSet<String>, omitted: &mut u64, segment: &str, limit: usize) {
+            if !set.contains(segment) {
+                if set.len() < limit {
+                    set.insert(segment.to_owned());
+                } else {
+                    *omitted += 1;
+                }
+            }
+        }
+        retain(
+            &mut self.segments,
+            &mut self.segments_beyond_cap,
+            segment,
+            limit,
+        );
+        if status == Some(404) {
+            retain(
+                &mut self.segments_404,
+                &mut self.segments_404_beyond_cap,
+                segment,
+                limit,
+            );
+        }
+    }
+
+    fn segment_summary(&self, status_available: bool, limit: usize) -> SourceSegmentDiversity {
+        SourceSegmentDiversity {
+            distinct_segments: self.segments.len(),
+            distinct_404_segments: status_available.then_some(self.segments_404.len()),
+            observations_beyond_cap: self.segments_beyond_cap,
+            observations_404_beyond_cap: status_available.then_some(self.segments_404_beyond_cap),
+            observations_without_path: self.paths_unavailable,
+            maximum_segments: limit,
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -856,7 +943,7 @@ impl RequestConcentration {
         let source_ip = event.source_ip.as_deref();
         let path_tracked = path.is_some_and(|path| self.track_path(path, event));
         let source_tracked =
-            source_ip.is_some_and(|source_ip| self.track_source_ip(source_ip, event.status));
+            source_ip.is_some_and(|source_ip| self.track_source_ip(source_ip, event.status, path));
 
         if path.is_none() {
             self.requests_without_uri_path += 1;
@@ -895,6 +982,7 @@ impl RequestConcentration {
         );
         let (peak, median, ratio) = self.request_rate();
         RequestConcentrationSummary {
+            source_segment_diversity: Some(self.source_segment_summary()),
             total_requests: self.total_requests,
             distinct_uri_paths: self.paths.len(),
             distinct_source_ips: self.source_ips.len(),
@@ -964,6 +1052,7 @@ impl RequestConcentration {
                 .sorted_sources()
                 .into_iter()
                 .map(|(source_ip, item)| PrivateSourceConcentration {
+                    path_segment_diversity: Some(item.segment_summary(self.status_available, self.limits.max_source_segments)),
                     source_ip: source_ip.clone(),
                     requests: item.requests,
                     most_requested_uri_path: self.most_requested_path(source_ip),
@@ -1270,8 +1359,14 @@ impl RequestConcentration {
         true
     }
 
-    fn track_source_ip(&mut self, source_ip: &str, status: Option<u16>) -> bool {
+    fn track_source_ip(
+        &mut self,
+        source_ip: &str,
+        status: Option<u16>,
+        path: Option<&str>,
+    ) -> bool {
         if let Some(item) = self.source_ips.get_mut(source_ip) {
+            item.record_segments(path, status, self.limits.max_source_segments);
             item.requests += 1;
             record_status_class(&mut item.status_classes, status);
             item.status_codes
@@ -1286,6 +1381,7 @@ impl RequestConcentration {
             requests: 1,
             ..SourceAccumulator::default()
         };
+        item.record_segments(path, status, self.limits.max_source_segments);
         record_status_class(&mut item.status_classes, status);
         item.status_codes
             .record(status, self.limits.max_status_codes_per_entity);
@@ -1379,6 +1475,56 @@ impl RequestConcentration {
                 .then_with(|| left_path.cmp(right_path))
         });
         values
+    }
+
+    fn source_segment_summary(&self) -> SourceSegmentDiversitySummary {
+        let mut counts = self
+            .source_ips
+            .values()
+            .map(|item| item.segments_404.len())
+            .collect::<Vec<_>>();
+        counts.sort_unstable();
+        let median = if counts.is_empty() {
+            None
+        } else {
+            Some((counts[(counts.len() - 1) / 2] as f64 + counts[counts.len() / 2] as f64) / 2.0)
+        };
+        SourceSegmentDiversitySummary {
+            maximum_404_segments: self
+                .status_available
+                .then(|| counts.last().copied())
+                .flatten(),
+            median_404_segments: self.status_available.then_some(median).flatten(),
+            sources_beyond_cap: self
+                .source_ips
+                .values()
+                .filter(|item| item.segments_beyond_cap > 0)
+                .count(),
+            sources_404_beyond_cap: self.status_available.then(|| {
+                self.source_ips
+                    .values()
+                    .filter(|item| item.segments_404_beyond_cap > 0)
+                    .count()
+            }),
+            observations_beyond_cap: self
+                .source_ips
+                .values()
+                .map(|item| item.segments_beyond_cap)
+                .sum(),
+            observations_404_beyond_cap: self.status_available.then(|| {
+                self.source_ips
+                    .values()
+                    .map(|item| item.segments_404_beyond_cap)
+                    .sum()
+            }),
+            observations_without_path: self
+                .source_ips
+                .values()
+                .map(|item| item.paths_unavailable)
+                .sum(),
+            retained_sources: counts.len(),
+            maximum_segments_per_source: self.limits.max_source_segments,
+        }
     }
 
     fn sorted_sources(&self) -> Vec<(&String, &SourceAccumulator)> {
@@ -2126,6 +2272,7 @@ mod tests {
                 max_query_strings_per_path: 1,
                 max_query_keys_per_path: 1,
                 max_status_codes_per_entity: DEFAULT_MAX_STATUS_CODES_PER_ENTITY,
+                max_source_segments: DEFAULT_MAX_SOURCE_SEGMENTS,
             },
         );
         concentration.observe(&event(Some("/one"), Some("198.51.100.1"), Some(0)));
@@ -2175,6 +2322,7 @@ mod tests {
                 max_query_strings_per_path: 10,
                 max_query_keys_per_path: 10,
                 max_status_codes_per_entity: DEFAULT_MAX_STATUS_CODES_PER_ENTITY,
+                max_source_segments: DEFAULT_MAX_SOURCE_SEGMENTS,
             },
         );
         concentration.observe(&event(Some("/first"), Some("198.51.100.1"), Some(0)));
@@ -2263,6 +2411,7 @@ mod tests {
                 max_query_strings_per_path: 10,
                 max_query_keys_per_path: 10,
                 max_status_codes_per_entity: DEFAULT_MAX_STATUS_CODES_PER_ENTITY,
+                max_source_segments: DEFAULT_MAX_SOURCE_SEGMENTS,
             },
         );
         concentration.focus_on_path("/target");
@@ -2783,10 +2932,111 @@ mod tests {
         object.remove("response_outcomes");
         object.remove("response_outcome_windows");
         object.remove("response_status_codes");
+        object.remove("source_segment_diversity");
         let decoded: RequestConcentrationSummary = serde_json::from_value(value).unwrap();
         assert!(decoded.response_outcomes.is_none());
         assert!(decoded.response_outcome_windows.is_none());
         assert!(decoded.response_status_codes.is_none());
+        assert!(decoded.source_segment_diversity.is_none());
+    }
+
+    #[test]
+    fn first_segments_measure_breadth_without_normalizing_or_exposing_values() {
+        let mut accumulator = RequestConcentration::new(true);
+        for path in ["/images/a", "/images/b", "/images/c"] {
+            let mut e = event(Some(path), Some("198.51.100.1"), Some(0));
+            e.status = Some(404);
+            accumulator.observe(&e);
+        }
+        for path in ["/", "/Images/a", "/images/a", "/%69mages/a"] {
+            let mut e = event(Some(path), Some("198.51.100.2"), Some(0));
+            e.status = Some(404);
+            accumulator.observe(&e);
+        }
+        let private = accumulator.private_report();
+        assert_eq!(
+            private.source_ips[0]
+                .path_segment_diversity
+                .as_ref()
+                .unwrap()
+                .distinct_404_segments,
+            Some(4)
+        );
+        assert_eq!(
+            private.source_ips[1]
+                .path_segment_diversity
+                .as_ref()
+                .unwrap()
+                .distinct_404_segments,
+            Some(1)
+        );
+        let stats = private.summary.source_segment_diversity.as_ref().unwrap();
+        assert_eq!(stats.maximum_404_segments, Some(4));
+        assert_eq!(stats.median_404_segments, Some(2.5));
+        assert_eq!(private.summary.total_requests, 7);
+        assert_eq!(
+            private
+                .summary
+                .response_outcomes
+                .as_ref()
+                .unwrap()
+                .counts
+                .client_error,
+            7
+        );
+        assert_eq!(
+            private.summary.requests_per_minute.peak_requests_per_minute,
+            Some(7)
+        );
+        let safe = serde_json::to_string(&private.summary).unwrap();
+        for raw in ["198.51.100", "images", "Images", "%69mages"] {
+            assert!(!safe.contains(raw));
+        }
+    }
+
+    #[test]
+    fn first_segment_caps_and_missing_capabilities_remain_explicit() {
+        let mut accumulator = RequestConcentration::with_limits(
+            true,
+            ConcentrationLimits {
+                max_source_segments: 1,
+                ..ConcentrationLimits::default()
+            },
+        );
+        for path in [Some("/"), Some("/a"), Some("/a"), None] {
+            let mut e = event(path, Some("198.51.100.1"), None);
+            e.status = Some(404);
+            accumulator.observe(&e);
+        }
+        let summary = accumulator.summary().source_segment_diversity.unwrap();
+        assert_eq!(summary.maximum_404_segments, Some(1));
+        assert_eq!(summary.sources_beyond_cap, 1);
+        assert_eq!(summary.sources_404_beyond_cap, Some(1));
+        assert_eq!(summary.observations_404_beyond_cap, Some(2));
+        assert_eq!(summary.observations_without_path, 1);
+        let mut unavailable = RequestConcentration::with_capabilities(true, false);
+        unavailable.observe(&event(Some("/"), Some("198.51.100.1"), None));
+        let private = unavailable.private_report();
+        assert_eq!(
+            private.source_ips[0]
+                .path_segment_diversity
+                .as_ref()
+                .unwrap()
+                .distinct_segments,
+            1
+        );
+        assert!(private.source_ips[0]
+            .path_segment_diversity
+            .as_ref()
+            .unwrap()
+            .distinct_404_segments
+            .is_none());
+        assert!(private
+            .summary
+            .source_segment_diversity
+            .unwrap()
+            .maximum_404_segments
+            .is_none());
     }
 
     #[test]

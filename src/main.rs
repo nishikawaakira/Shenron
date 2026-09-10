@@ -869,6 +869,7 @@ enum TrendOutputFormat {
 
 #[derive(Debug, Serialize)]
 struct DailyVolumeSummary {
+    source_segment_diversity: Option<shenron::concentration::SourceSegmentDiversitySummary>,
     report_kind: &'static str,
     safety_note: &'static str,
     telemetry_profile: TelemetryProfile,
@@ -897,6 +898,7 @@ impl DailyVolumeSummary {
         let concentration = &report.request_concentration;
         Self {
             report_kind: "DAILY_REQUEST_VOLUME_SUMMARY",
+            source_segment_diversity: concentration.source_segment_diversity.clone(),
             safety_note: "Aggregate request-volume and response-outcome measurements only. Response shares are counts of what the log recorded: low success can also result from redirects, authentication, health checks, early client disconnects, a slow backend, or an unavailable origin. These values are not thresholds, alerts, or determinations of outage, degraded availability, automation, denial of service, attack, abuse, compromise, or attacker identity. Source IP counts describe observed connection peers and may include CDN, load-balancer, NAT, or proxy addresses.",
             telemetry_profile: report.telemetry_profile,
             files_analyzed: report.files_analyzed,
@@ -2898,6 +2900,12 @@ fn normalized_rate_windows(rate_window: Vec<Duration>) -> Vec<u64> {
 }
 
 fn print_daily_volume_summary(summary: &DailyVolumeSummary, output: Option<&Path>) {
+    if let Some(segments) = &summary.source_segment_diversity {
+        println!("Distinct first path segments per source (404): max {}, median {} (retained sources: {}; segment cap/source: {}; sources beyond cap all/404: {}/{}; observations beyond cap all/404: {}/{}; missing path: {}; capped counts are lower bounds, not classifications)",
+            segments.maximum_404_segments.map(|v| v.to_string()).unwrap_or_else(|| "unavailable".to_owned()),
+            segments.median_404_segments.map(|v| format!("{v:.1}")).unwrap_or_else(|| "unavailable".to_owned()), segments.retained_sources, segments.maximum_segments_per_source,
+            segments.sources_beyond_cap, segments.sources_404_beyond_cap.map(|v| v.to_string()).unwrap_or_else(|| "unavailable".to_owned()), segments.observations_beyond_cap, segments.observations_404_beyond_cap.map(|v| v.to_string()).unwrap_or_else(|| "unavailable".to_owned()), segments.observations_without_path);
+    }
     println!("Daily request-volume summary (aggregate counts only):");
     println!(
         "  Total requests:                         {}",

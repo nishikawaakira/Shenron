@@ -2541,6 +2541,7 @@ mod tests {
             report_kind: "REQUEST_CONCENTRATION_PRIVATE".to_owned(),
             safety_note: String::new(),
             summary: RequestConcentrationSummary {
+                source_segment_diversity: None,
                 response_status_codes: None,
                 total_requests: 3,
                 distinct_uri_paths: 1,
@@ -2599,6 +2600,7 @@ mod tests {
                 query_keys: Vec::new(),
             }],
             source_ips: vec![PrivateSourceConcentration {
+                path_segment_diversity: None,
                 response_status_codes: None,
                 response_outcomes: None,
                 source_ip: "198.51.100.1".to_owned(),

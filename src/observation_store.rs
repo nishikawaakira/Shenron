@@ -392,6 +392,7 @@ mod tests {
             report_kind: "REQUEST_CONCENTRATION_PRIVATE".to_owned(),
             safety_note: "private".to_owned(),
             summary: RequestConcentrationSummary {
+                source_segment_diversity: None,
                 response_status_codes: None,
                 total_requests: ips.len() as u64,
                 distinct_uri_paths: 0,
@@ -419,6 +420,7 @@ mod tests {
             source_ips: ips
                 .iter()
                 .map(|ip| PrivateSourceConcentration {
+                    path_segment_diversity: None,
                     response_status_codes: None,
                     response_outcomes: None,
                     source_ip: (*ip).to_owned(),

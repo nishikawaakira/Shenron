@@ -1,5 +1,34 @@
 # Request concentration
 
+## First path-segment diversity per observed source
+
+Each retained source reports distinct first path segments across all requests
+and across responses with status 404. The first segment is the text between
+the initial slash and the next slash in `uri_path` (queries are excluded).
+`/` contributes one empty segment. No percent-decoding, case folding, or other
+normalization occurs: `/Images`, `/images`, and `/%69mages` differ. Missing
+paths are excluded and counted. Missing status cannot contribute to the 404
+set; profiles without status report the 404 metrics as unavailable.
+
+The default is 256 retained segments **per source per set**, independently for
+all requests and 404 responses (`ConcentrationLimits.max_source_segments`).
+First-observed segments are retained; each observation of an unretained segment
+beyond the cap is counted, including repeats. Sources with such omissions are
+also counted. A capped cardinality is a lower bound, not an exact cardinality.
+Source tracking itself still uses the existing source cap and disclosures.
+Segment strings never enter artifacts. Private source records contain counts
+and omissions; sanitized output contains only numeric summaries. `daily` adds
+one summary line: maximum and median 404-segment count across all retained
+sources, including zero counts. For an even number of sources the median is
+the arithmetic mean of the two central sorted values. No retained sources
+means unavailable maximum/median. When a source is capped, these aggregate
+statistics describe retained lower bounds as well.
+
+The number of distinct first path segments a source requested is a count of
+what the log recorded. A high count can equally result from a crawler, a broken
+link tree, a security scanner, an inventory tool, or a person browsing widely.
+It is not a determination of probing, scanning, enumeration, an attack, or abuse.
+
 `shenron concentration` measures the distribution of requests in a
 local historical corpus without requiring Nuclei templates, KEV data, or any
 network access:
