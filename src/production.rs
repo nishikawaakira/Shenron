@@ -228,6 +228,8 @@ impl HuntTimeRange {
 /// client resolution remains disabled unless trusted proxies are supplied.
 #[derive(Debug, Clone, Default)]
 pub struct HuntOptions {
+    /// Verbatim analyst annotation, recorded only in the private run manifest.
+    pub corpus_label: Option<String>,
     pub time_range: HuntTimeRange,
     pub trusted_proxies: TrustedProxySet,
     pub triage_policy: HuntTriagePolicy,
@@ -305,7 +307,7 @@ fn normalize_filter_values(values: &mut BTreeSet<String>) {
         .collect();
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct TemplateFilterSummary {
     pub allowlist: Option<PathProvenance>,
     pub denylist: Option<PathProvenance>,
@@ -605,6 +607,8 @@ struct HypothesisRungAccumulator {
 
 #[derive(Serialize)]
 struct RunManifest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    corpus_label: Option<String>,
     report_kind: &'static str,
     safety_note: &'static str,
     shenron_version: &'static str,
@@ -619,8 +623,10 @@ struct RunManifest {
     exclusions: RunManifestExclusions,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 struct RunManifestInputs {
+    #[serde(default)]
+    corpus: Vec<PathProvenance>,
     nuclei_templates: Option<PathProvenance>,
     nuclei_report: Option<PathProvenance>,
     kev_report: Option<PathProvenance>,
@@ -630,7 +636,7 @@ struct RunManifestInputs {
     template_filter: Option<TemplateFilterSummary>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PathProvenance {
     pub path: String,
     pub byte_length: Option<u64>,
@@ -982,6 +988,7 @@ pub fn hunt(
         output,
         telemetry_profile,
         HuntOptions {
+            corpus_label: None,
             time_range,
             trusted_proxies: TrustedProxySet::default(),
             triage_policy: HuntTriagePolicy::default(),
@@ -1072,6 +1079,7 @@ fn hunt_with_destination(
     options: HuntOptions,
 ) -> anyhow::Result<SanitizedHuntReport> {
     let HuntOptions {
+        corpus_label,
         time_range,
         trusted_proxies,
         triage_policy,
@@ -1162,194 +1170,208 @@ fn hunt_with_destination(
     let capabilities = telemetry_profile.capabilities();
     let mut consistency = ConsistencyAccumulator::default();
     let mut progress = ProgressReporter::new("hunt");
+    let mut corpus = Vec::new();
     for path in files {
-        stream_events_with_trusted_proxies(&path, telemetry_profile, &trusted_proxies, |result| {
-            progress.tick();
-            let event = match result {
-                Ok(event) => event,
-                Err(_) => {
-                    metrics.parse_errors += 1;
+        let provenance = stream_events_with_trusted_proxies(
+            &path,
+            telemetry_profile,
+            &trusted_proxies,
+            |result| {
+                progress.tick();
+                let event = match result {
+                    Ok(event) => event,
+                    Err(_) => {
+                        metrics.parse_errors += 1;
+                        return Ok(());
+                    }
+                };
+                if !time_range.includes(event.timestamp) {
+                    if event.timestamp.is_some() {
+                        metrics.requests_outside_time_range += 1;
+                    } else {
+                        metrics.requests_without_timestamp_excluded += 1;
+                    }
                     return Ok(());
                 }
-            };
-            if !time_range.includes(event.timestamp) {
-                if event.timestamp.is_some() {
-                    metrics.requests_outside_time_range += 1;
+                metrics.total_requests_analyzed += 1;
+                record_availability(&mut metrics.fields_available, &event);
+                concentration.observe(&event);
+                if let Some(database) = &bot_range_database {
+                    database.observe_with_consistency(
+                        &event,
+                        capabilities,
+                        &mut bot_ranges,
+                        &mut consistency,
+                    );
                 } else {
-                    metrics.requests_without_timestamp_excluded += 1;
+                    observe_without_range_snapshot(
+                        &bot_catalog,
+                        &event,
+                        capabilities,
+                        &mut consistency,
+                    );
                 }
-                return Ok(());
-            }
-            metrics.total_requests_analyzed += 1;
-            record_availability(&mut metrics.fields_available, &event);
-            concentration.observe(&event);
-            if let Some(database) = &bot_range_database {
-                database.observe_with_consistency(
-                    &event,
-                    capabilities,
-                    &mut bot_ranges,
-                    &mut consistency,
-                );
-            } else {
-                observe_without_range_snapshot(
-                    &bot_catalog,
-                    &event,
-                    capabilities,
-                    &mut consistency,
-                );
-            }
-            if let Some(browser_family) = declared_browser_family(event.user_agent.as_deref()) {
-                let result = compare_declared_with_observed(
-                    capabilities.tls_cipher,
-                    event.tls_cipher.as_deref(),
-                    None,
-                );
-                consistency.record(
-                    "declared-browser-tls-cipher",
-                    "user-agent-browser-family",
-                    browser_family,
-                    "tls-cipher-suite",
-                    event.tls_cipher.as_deref(),
-                    result,
-                );
-            }
-            update_time_range(
-                &mut metrics.earliest_timestamp,
-                &mut metrics.latest_timestamp,
-                event.timestamp,
-            );
-            let matches = detection_index.matching_templates(&detections, &event);
-            // The Sigma pass is independent of the CVE pass: it must run even
-            // when no Nuclei template matched, since its whole purpose is to
-            // surface generic TTPs that no CVE template covers.
-            let sigma_matcher = crate::sigma::EventMatcher::new(&event);
-            let sigma_matches = sigma_rules
-                .iter()
-                .filter(|rule| sigma_matcher.matches(rule))
-                .collect::<Vec<_>>();
-            if matches.is_empty() && sigma_matches.is_empty() {
-                return Ok(());
-            }
-            for detection in &matches {
-                let finding = private_finding(detection, &event);
-                record_finding_disposition(
-                    metrics.analyst_dispositions.as_mut(),
-                    disposition_store.as_ref(),
-                    &finding,
-                );
-                private.write(&finding)?;
-            }
-            if !sigma_matches.is_empty() {
-                metrics.sigma_matched_requests += 1;
-            }
-            if sigma_matches
-                .iter()
-                .any(|rule| rule.id == SENSITIVE_CONFIG_PROBE_RULE_ID)
-            {
-                metrics.sensitive_config_probe_matches += 1;
-                match event.status {
-                    Some(200..=299) => metrics.sensitive_config_probe_success_responses += 1,
-                    None => metrics.sensitive_config_probe_status_unavailable += 1,
-                    Some(_) => {}
+                if let Some(browser_family) = declared_browser_family(event.user_agent.as_deref()) {
+                    let result = compare_declared_with_observed(
+                        capabilities.tls_cipher,
+                        event.tls_cipher.as_deref(),
+                        None,
+                    );
+                    consistency.record(
+                        "declared-browser-tls-cipher",
+                        "user-agent-browser-family",
+                        browser_family,
+                        "tls-cipher-suite",
+                        event.tls_cipher.as_deref(),
+                        result,
+                    );
                 }
-            }
-            for rule in &sigma_matches {
-                let finding = sigma_finding(rule, &event);
-                record_finding_disposition(
-                    metrics.analyst_dispositions.as_mut(),
-                    disposition_store.as_ref(),
-                    &finding,
+                update_time_range(
+                    &mut metrics.earliest_timestamp,
+                    &mut metrics.latest_timestamp,
+                    event.timestamp,
                 );
-                private.write(&finding)?;
-                metrics.sigma_rule_matches += 1;
-                metrics.sigma_matches_by_severity.record(rule.severity);
-                matched_sigma_rules.insert(rule.id.clone());
-            }
-            let mut observed_cves = BTreeMap::<
-                String,
-                (
-                    Detectability,
-                    RequestSpecificity,
-                    CatalogSeverity,
-                    BTreeSet<String>,
-                ),
-            >::new();
-            for detection in &matches {
-                for cve in &detection.cves {
-                    observed_cves
-                        .entry(cve.clone())
-                        .and_modify(|current| {
-                            current.0 = strongest(current.0, detection.detectability);
-                            current.1 =
-                                strongest_specificity(current.1, detection.request_specificity());
-                            current.2 = current.2.max(detection.severity);
-                            current.3.insert(detection.template_id.clone());
-                        })
-                        .or_insert_with(|| {
-                            (
-                                detection.detectability,
-                                detection.request_specificity(),
-                                detection.severity,
-                                BTreeSet::from([detection.template_id.clone()]),
-                            )
-                        });
+                let matches = detection_index.matching_templates(&detections, &event);
+                // The Sigma pass is independent of the CVE pass: it must run even
+                // when no Nuclei template matched, since its whole purpose is to
+                // surface generic TTPs that no CVE template covers.
+                let sigma_matcher = crate::sigma::EventMatcher::new(&event);
+                let sigma_matches = sigma_rules
+                    .iter()
+                    .filter(|rule| sigma_matcher.matches(rule))
+                    .collect::<Vec<_>>();
+                if matches.is_empty() && sigma_matches.is_empty() {
+                    return Ok(());
                 }
-            }
-            let path_distinctiveness =
-                path_distinctiveness(event.uri_path.as_deref().unwrap_or_default());
-            for (cve, (detectability, request_specificity, severity, template_ids)) in observed_cves
-            {
-                metrics.cve_related_request_matches += 1;
-                match request_specificity {
-                    RequestSpecificity::RequestSpecific => metrics.request_specific_matches += 1,
-                    RequestSpecificity::ResponseUnverified => {
-                        metrics.response_unverified_matches += 1
+                for detection in &matches {
+                    let finding = private_finding(detection, &event);
+                    record_finding_disposition(
+                        metrics.analyst_dispositions.as_mut(),
+                        disposition_store.as_ref(),
+                        &finding,
+                    );
+                    private.write(&finding)?;
+                }
+                if !sigma_matches.is_empty() {
+                    metrics.sigma_matched_requests += 1;
+                }
+                if sigma_matches
+                    .iter()
+                    .any(|rule| rule.id == SENSITIVE_CONFIG_PROBE_RULE_ID)
+                {
+                    metrics.sensitive_config_probe_matches += 1;
+                    match event.status {
+                        Some(200..=299) => metrics.sensitive_config_probe_success_responses += 1,
+                        None => metrics.sensitive_config_probe_status_unavailable += 1,
+                        Some(_) => {}
                     }
                 }
-                match path_distinctiveness {
-                    PathDistinctiveness::Distinctive => metrics.distinctive_path_matches += 1,
-                    PathDistinctiveness::Generic => metrics.generic_path_matches += 1,
+                for rule in &sigma_matches {
+                    let finding = sigma_finding(rule, &event);
+                    record_finding_disposition(
+                        metrics.analyst_dispositions.as_mut(),
+                        disposition_store.as_ref(),
+                        &finding,
+                    );
+                    private.write(&finding)?;
+                    metrics.sigma_rule_matches += 1;
+                    metrics.sigma_matches_by_severity.record(rule.severity);
+                    matched_sigma_rules.insert(rule.id.clone());
                 }
-                match detectability {
-                    Detectability::High => metrics.high_confidence_findings += 1,
-                    Detectability::Medium => metrics.medium_confidence_findings += 1,
-                    Detectability::Low => metrics.low_confidence_findings += 1,
-                    Detectability::Undetectable | Detectability::Unknown => {}
+                let mut observed_cves = BTreeMap::<
+                    String,
+                    (
+                        Detectability,
+                        RequestSpecificity,
+                        CatalogSeverity,
+                        BTreeSet<String>,
+                    ),
+                >::new();
+                for detection in &matches {
+                    for cve in &detection.cves {
+                        observed_cves
+                            .entry(cve.clone())
+                            .and_modify(|current| {
+                                current.0 = strongest(current.0, detection.detectability);
+                                current.1 = strongest_specificity(
+                                    current.1,
+                                    detection.request_specificity(),
+                                );
+                                current.2 = current.2.max(detection.severity);
+                                current.3.insert(detection.template_id.clone());
+                            })
+                            .or_insert_with(|| {
+                                (
+                                    detection.detectability,
+                                    detection.request_specificity(),
+                                    detection.severity,
+                                    BTreeSet::from([detection.template_id.clone()]),
+                                )
+                            });
+                    }
                 }
-                let accumulator = cves.entry(cve.clone()).or_default();
-                accumulator.kev = kev_cves.contains(&cve);
-                accumulator.detectability = strongest(accumulator.detectability, detectability);
-                accumulator.severity = accumulator.severity.max(severity);
-                accumulator.requests += 1;
-                accumulator.template_ids.extend(template_ids);
-                match path_distinctiveness {
-                    PathDistinctiveness::Distinctive => accumulator.distinctive_path_matches += 1,
-                    PathDistinctiveness::Generic => accumulator.generic_path_matches += 1,
+                let path_distinctiveness =
+                    path_distinctiveness(event.uri_path.as_deref().unwrap_or_default());
+                for (cve, (detectability, request_specificity, severity, template_ids)) in
+                    observed_cves
+                {
+                    metrics.cve_related_request_matches += 1;
+                    match request_specificity {
+                        RequestSpecificity::RequestSpecific => {
+                            metrics.request_specific_matches += 1
+                        }
+                        RequestSpecificity::ResponseUnverified => {
+                            metrics.response_unverified_matches += 1
+                        }
+                    }
+                    match path_distinctiveness {
+                        PathDistinctiveness::Distinctive => metrics.distinctive_path_matches += 1,
+                        PathDistinctiveness::Generic => metrics.generic_path_matches += 1,
+                    }
+                    match detectability {
+                        Detectability::High => metrics.high_confidence_findings += 1,
+                        Detectability::Medium => metrics.medium_confidence_findings += 1,
+                        Detectability::Low => metrics.low_confidence_findings += 1,
+                        Detectability::Undetectable | Detectability::Unknown => {}
+                    }
+                    let accumulator = cves.entry(cve.clone()).or_default();
+                    accumulator.kev = kev_cves.contains(&cve);
+                    accumulator.detectability = strongest(accumulator.detectability, detectability);
+                    accumulator.severity = accumulator.severity.max(severity);
+                    accumulator.requests += 1;
+                    accumulator.template_ids.extend(template_ids);
+                    match path_distinctiveness {
+                        PathDistinctiveness::Distinctive => {
+                            accumulator.distinctive_path_matches += 1
+                        }
+                        PathDistinctiveness::Generic => accumulator.generic_path_matches += 1,
+                    }
+                    update_accumulator_time(accumulator, event.timestamp);
+                    if let Some(value) = &event.source_ip {
+                        all_sources.insert(value.clone());
+                        accumulator.source_ips.insert(value.clone());
+                    }
+                    if let Some(value) = &event.ja4 {
+                        all_ja4s.insert(value.clone());
+                        accumulator.ja4s.insert(value.clone());
+                    }
+                    if let Some(value) = &event.host {
+                        accumulator.hosts.insert(value.clone());
+                    }
+                    if let Some(status) = event.status {
+                        *accumulator
+                            .response_status_counts
+                            .entry(status)
+                            .or_default() += 1;
+                    }
+                    if metrics.waf_outcome_available {
+                        record_outcome(&mut accumulator.outcomes, &event);
+                    }
                 }
-                update_accumulator_time(accumulator, event.timestamp);
-                if let Some(value) = &event.source_ip {
-                    all_sources.insert(value.clone());
-                    accumulator.source_ips.insert(value.clone());
-                }
-                if let Some(value) = &event.ja4 {
-                    all_ja4s.insert(value.clone());
-                    accumulator.ja4s.insert(value.clone());
-                }
-                if let Some(value) = &event.host {
-                    accumulator.hosts.insert(value.clone());
-                }
-                if let Some(status) = event.status {
-                    *accumulator
-                        .response_status_counts
-                        .entry(status)
-                        .or_default() += 1;
-                }
-                if metrics.waf_outcome_available {
-                    record_outcome(&mut accumulator.outcomes, &event);
-                }
-            }
-            Ok(())
-        })?;
+                Ok(())
+            },
+        )?;
+        corpus.push(provenance);
     }
     private.flush()?;
     let private_concentration = concentration.private_report();
@@ -1428,6 +1450,8 @@ fn hunt_with_destination(
             &trusted_proxies,
             triage_policy,
             &report.metrics,
+            corpus,
+            corpus_label,
         )?;
     }
     Ok(report)
@@ -2479,15 +2503,20 @@ fn write_run_manifest(
     trusted_proxies: &TrustedProxySet,
     triage_policy: HuntTriagePolicy,
     metrics: &HuntMetrics,
+    mut corpus: Vec<PathProvenance>,
+    corpus_label: Option<String>,
 ) -> anyhow::Result<()> {
+    corpus.sort_by(|left, right| left.path.cmp(&right.path));
     let manifest = RunManifest {
+        corpus_label,
         report_kind: "RUN_MANIFEST",
-        safety_note: "Contains only run configuration, provenance, and aggregate exclusion counts. SHA-256 values support frozen research-input integrity checks and do not contain raw request values, IP addresses, hostnames, JA3/JA4, queries, or headers.",
+        safety_note: "PRIVATE run provenance: corpus paths and verbatim analyst labels may contain private information. Do not share without review. No log record values are copied. SHA-256 values identify the stored input bytes for reproducibility; labels are analyst annotations, not Shenron determinations.",
         shenron_version: env!("CARGO_PKG_VERSION"),
         generated_at: Utc::now().to_rfc3339(),
         telemetry_profile,
         nuclei_revision,
         inputs: RunManifestInputs {
+            corpus,
             nuclei_templates: nuclei_templates.map(path_provenance),
             nuclei_report: nuclei_report.map(path_provenance),
             kev_report: kev_report.map(path_provenance),
@@ -2848,6 +2877,55 @@ fn is_input_file(path: &Path, telemetry_profile: TelemetryProfile) -> bool {
     }
 }
 
+#[cfg(test)]
+mod corpus_provenance_tests {
+    use super::*;
+
+    #[test]
+    fn fingerprint_consumes_each_stored_byte_once_without_a_second_reader() {
+        struct Counted {
+            inner: std::io::Cursor<Vec<u8>>,
+            bytes: std::rc::Rc<std::cell::Cell<usize>>,
+        }
+        impl Read for Counted {
+            fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+                let n = self.inner.read(buffer)?;
+                self.bytes.set(self.bytes.get() + n);
+                Ok(n)
+            }
+        }
+        let input = b"198.51.100.1 - - [01/Jan/2026:00:00:00 +0000] \"GET / HTTP/1.1\" 200 10 \"-\" \"agent\"\n";
+        let bytes = std::rc::Rc::new(std::cell::Cell::new(0));
+        let reader = Counted {
+            inner: std::io::Cursor::new(input.to_vec()),
+            bytes: bytes.clone(),
+        };
+        let mut events = 0;
+        let (length, hash) = stream_fingerprinted_events(
+            reader,
+            false,
+            TelemetryProfile::ApacheCombined,
+            &TrustedProxySet::default(),
+            |event| {
+                assert!(event.is_ok());
+                events += 1;
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(events, 1);
+        assert_eq!(bytes.get(), input.len());
+        assert_eq!(length, input.len() as u64);
+        assert_eq!(hash, format!("{:x}", Sha256::digest(input)));
+    }
+
+    #[test]
+    fn old_manifest_inputs_without_corpus_remain_readable() {
+        let inputs: RunManifestInputs = serde_json::from_value(serde_json::json!({"nuclei_templates":null,"nuclei_report":null,"kev_report":null,"bot_range_snapshot":null,"approved_validated_template_count":0})).unwrap();
+        assert!(inputs.corpus.is_empty());
+    }
+}
+
 fn is_gzip(path: &Path) -> bool {
     path.extension()
         .and_then(|extension| extension.to_str())
@@ -2911,21 +2989,93 @@ pub(crate) fn stream_events_with_trusted_proxies<F>(
     telemetry_profile: TelemetryProfile,
     trusted_proxies: &TrustedProxySet,
     callback: F,
-) -> anyhow::Result<()>
+) -> anyhow::Result<PathProvenance>
 where
     F: FnMut(Result<WebEvent, String>) -> anyhow::Result<()>,
 {
-    stream_events_with_trusted_proxies_and_raw_retention(
-        path,
+    let file = File::open(path).with_context(|| format!("opening {}", path.display()))?;
+    let (byte_length, sha256) = stream_fingerprinted_events(
+        file,
+        is_gzip(path),
         telemetry_profile,
         trusted_proxies,
-        RawRetention::Keep,
         callback,
-    )
+    )?;
+    Ok(PathProvenance {
+        path: path.display().to_string(),
+        byte_length: Some(byte_length),
+        sha256: Some(sha256),
+    })
+}
+
+struct FingerprintReader<R> {
+    reader: R,
+    hash: Sha256,
+    bytes: u64,
+}
+
+struct SharedFingerprintReader<R>(std::rc::Rc<std::cell::RefCell<FingerprintReader<R>>>);
+
+impl<R: Read> Read for SharedFingerprintReader<R> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        let mut state = self.0.borrow_mut();
+        let length = state.reader.read(buffer)?;
+        state.hash.update(&buffer[..length]);
+        state.bytes += length as u64;
+        Ok(length)
+    }
+}
+
+/// Hash stored bytes beneath decompression in the parsing pass. There is no
+/// seek or reopen; any unread compressed suffix is drained from the same
+/// reader so provenance covers the whole file, not only the decoded member.
+fn stream_fingerprinted_events<R: Read + 'static, F>(
+    reader: R,
+    compressed: bool,
+    profile: TelemetryProfile,
+    proxies: &TrustedProxySet,
+    callback: F,
+) -> anyhow::Result<(u64, String)>
+where
+    F: FnMut(Result<WebEvent, String>) -> anyhow::Result<()>,
+{
+    let state = std::rc::Rc::new(std::cell::RefCell::new(FingerprintReader {
+        reader,
+        hash: Sha256::new(),
+        bytes: 0,
+    }));
+    let decoded = maybe_gzip_reader(SharedFingerprintReader(state.clone()), compressed);
+    stream_reader_events(decoded, profile, proxies, RawRetention::Keep, callback)?;
+    std::io::copy(
+        &mut SharedFingerprintReader(state.clone()),
+        &mut std::io::sink(),
+    )?;
+    let state = state.borrow();
+    Ok((state.bytes, format!("{:x}", state.hash.clone().finalize())))
 }
 
 fn stream_events_with_trusted_proxies_and_raw_retention<F>(
     path: &Path,
+    telemetry_profile: TelemetryProfile,
+    trusted_proxies: &TrustedProxySet,
+    raw_retention: RawRetention,
+    callback: F,
+) -> anyhow::Result<()>
+where
+    F: FnMut(Result<WebEvent, String>) -> anyhow::Result<()>,
+{
+    let reader = event_reader(path)?;
+    stream_reader_events(
+        reader,
+        telemetry_profile,
+        trusted_proxies,
+        raw_retention,
+        callback,
+    )
+}
+
+fn stream_reader_events<F>(
+    reader: Box<dyn Read>,
     telemetry_profile: TelemetryProfile,
     trusted_proxies: &TrustedProxySet,
     raw_retention: RawRetention,
@@ -2934,7 +3084,6 @@ fn stream_events_with_trusted_proxies_and_raw_retention<F>(
 where
     F: FnMut(Result<WebEvent, String>) -> anyhow::Result<()>,
 {
-    let reader = event_reader(path)?;
     match telemetry_profile {
         TelemetryProfile::AwsWaf => {
             for item in WafLines::with_raw_retention(reader, raw_retention) {

@@ -278,6 +278,9 @@ impl TemplateFilterArgs {
 enum ProductionCommand {
     /// Hunt web logs with Nuclei and/or Sigma. Without --output, private findings are written only to stdout.
     Hunt {
+        /// Verbatim private analyst label recorded in the run manifest, not an inferred identity.
+        #[arg(long, requires = "output", conflicts_with = "results_dir")]
+        corpus_label: Option<String>,
         /// Raw web telemetry to analyze. Mutually exclusive with --results-dir.
         #[arg(
             long,
@@ -973,6 +976,7 @@ fn main() -> Result<()> {
         },
         Command::Production(command) => match command {
             ProductionCommand::Hunt {
+                corpus_label,
                 input,
                 results_dir,
                 format,
@@ -1089,6 +1093,7 @@ fn main() -> Result<()> {
                     HuntTimeRange { from, to }
                 };
                 let options = HuntOptions {
+                    corpus_label,
                     time_range,
                     trusted_proxies: TrustedProxySet::new(trusted_proxy),
                     triage_policy: HuntTriagePolicy::default(),

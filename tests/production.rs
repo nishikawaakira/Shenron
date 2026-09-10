@@ -19,6 +19,63 @@ use walkdir::WalkDir;
 const GITHUB_TEMPLATE_SEARCH_PREFIX: &str =
     "https://github.com/search?q=repo:projectdiscovery/nuclei-templates";
 
+#[test]
+fn hunt_manifest_records_sorted_stored_corpus_bytes_and_verbatim_private_label() {
+    use sha2::{Digest, Sha256};
+    use std::io::Write;
+    let directory = tempdir().unwrap();
+    let logs = directory.path().join("logs");
+    fs::create_dir(&logs).unwrap();
+    let line = b"198.51.100.1 - - [01/Jan/2026:00:00:00 +0000] \"GET / HTTP/1.1\" 200 10 \"-\" \"agent\"\n";
+    let mut gzip = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    gzip.write_all(line).unwrap();
+    let compressed = gzip.finish().unwrap();
+    fs::write(logs.join("b.log"), line).unwrap();
+    fs::write(logs.join("a.log.gz"), &compressed).unwrap();
+    for label in [None, Some("  Private corpus / Mixed CASE  ")] {
+        let output = directory.path().join(if label.is_some() {
+            "labeled"
+        } else {
+            "unlabeled"
+        });
+        let mut command = Command::cargo_bin("shenron").unwrap();
+        command.env_remove("SHENRON_SLACK_WEBHOOK").args([
+            "hunt",
+            "--input",
+            logs.to_str().unwrap(),
+            "--format",
+            "apache",
+            "--no-nuclei",
+            "--output",
+            output.to_str().unwrap(),
+        ]);
+        if let Some(label) = label {
+            command.args(["--corpus-label", label]);
+        }
+        command.assert().success();
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(output.join("run-manifest.json")).unwrap()).unwrap();
+        assert_eq!(manifest.get("corpus_label").and_then(|v| v.as_str()), label);
+        assert!(manifest["safety_note"]
+            .as_str()
+            .unwrap()
+            .contains("PRIVATE"));
+        let corpus = manifest["inputs"]["corpus"].as_array().unwrap();
+        assert_eq!(corpus.len(), 2);
+        for (entry, name, data) in [
+            (&corpus[0], "a.log.gz", compressed.as_slice()),
+            (&corpus[1], "b.log", line.as_slice()),
+        ] {
+            assert_eq!(entry["path"], logs.join(name).to_str().unwrap());
+            assert_eq!(entry["byte_length"], data.len() as u64);
+            assert_eq!(entry["sha256"], format!("{:x}", Sha256::digest(data)));
+        }
+        let sanitized = fs::read_to_string(output.join("sanitized-research.json")).unwrap();
+        assert!(!sanitized.contains("Private corpus"));
+        assert!(!sanitized.contains(logs.to_str().unwrap()));
+    }
+}
+
 fn assert_report_external_reference_policy(html: &str) {
     for forbidden in [
         "http://",

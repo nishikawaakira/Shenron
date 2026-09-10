@@ -426,7 +426,28 @@ Long streaming commands (`hunt`, `ablation`, `replay`, `count-hypotheses`) emit 
 
 `--output` must be outside the raw-input tree. When supplied, the command writes `private-findings.jsonl` locally with investigation evidence, including fields that may be sensitive. `sanitized-research.json` has aggregate CVE/KEV counts, time ranges, WAF outcomes, cardinalities, and the sorted matching Nuclei `template_ids` for each observed CVE. Template IDs are public CTI metadata rather than customer data; no raw request values, IPs, hostnames, JA3/JA4 values, queries, or headers are included. Without `--output`, neither of these files nor a run directory is created; private findings are streamed to stdout only.
 
-Every hunt also writes `run-manifest.json` beside the sanitized report. It records the Shenron version, generated time, telemetry profile, Nuclei report revision and provenance, optional KEV/Nuclei report byte lengths, trusted-proxy configuration, fixed triage baseline, time filters, and aggregate exclusion counts. The Nuclei report and, when supplied, the KEV report receive streaming SHA-256 values so reviewers can verify that frozen research inputs are identical; the templates directory remains identified by its pinned Nuclei revision rather than a directory-wide hash. This makes a run reviewable and reproducible without placing raw telemetry in the artifact: the manifest never contains raw request values, client or peer IP addresses, hosts, URI/query values, headers, or JA3/JA4 values.
+Every artifact-producing hunt also writes a **private** `run-manifest.json`
+beside the sanitized report. It records the Shenron version, generated time,
+telemetry profile, Nuclei revision and input provenance, proxy configuration,
+time filters, and aggregate exclusions. `inputs.corpus` lists analyzed files
+in path order using the existing path/byte-length/SHA-256 provenance structure.
+The byte length and SHA-256 are computed as the stored file bytes flow through
+the parsing reader, without reopening or seeking for another hashing pass.
+For gzip this identifies the compressed file bytes, not the decompressed text;
+an unread compressed suffix is drained through that same reader. Malformed
+records and records outside the time window still belong to the hashed corpus.
+Nuclei/KEV reports retain their existing fingerprints; template directories
+remain identified by the pinned Nuclei revision.
+
+`hunt --output <run-dir> --corpus-label <TEXT>` optionally records the analyst's
+label verbatim, without normalization or inference. Omission means the field
+is absent. This is an analyst annotation, not a Shenron determination of site,
+organization, cause, or identity. Corpus paths and labels may themselves be
+sensitive, so the manifest must not be treated as sanitized. No raw log record
+values are copied into it, and neither corpus paths nor labels enter the
+sanitized report or notification aggregates. New provenance changes the hash
+used as the observation-store run ID. Historical manifests and their opaque
+run IDs remain valid; old entries are not rewritten or retroactively labeled.
 
 ### Optional template metadata filtering
 
