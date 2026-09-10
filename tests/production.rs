@@ -20,6 +20,75 @@ const GITHUB_TEMPLATE_SEARCH_PREFIX: &str =
     "https://github.com/search?q=repo:projectdiscovery/nuclei-templates";
 
 #[test]
+fn concentration_manifest_fingerprints_sorted_stored_inputs_without_sanitized_paths() {
+    use sha2::{Digest, Sha256};
+    use std::io::Write;
+
+    let directory = tempdir().unwrap();
+    let logs = directory.path().join("private-inputs");
+    fs::create_dir(&logs).unwrap();
+    let line = b"198.51.100.1 - - [01/Jan/2026:00:00:00 +0000] \"GET /private-path?secret-token=1 HTTP/1.1\" 200 10 \"-\" \"agent\"\n";
+    let mut gzip = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    gzip.write_all(line).unwrap();
+    let compressed = gzip.finish().unwrap();
+    fs::write(logs.join("b.log"), line).unwrap();
+    fs::write(logs.join("a.log.gz"), &compressed).unwrap();
+    let mut previous = None;
+    for run in ["first", "second"] {
+        let output = directory.path().join(run);
+        Command::cargo_bin("shenron")
+            .unwrap()
+            .args([
+                "concentration",
+                "--input",
+                logs.to_str().unwrap(),
+                "--format",
+                "apache",
+                "--output",
+                output.to_str().unwrap(),
+            ])
+            .assert()
+            .success();
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(output.join("run-manifest.json")).unwrap()).unwrap();
+        let corpus = manifest["corpus"].as_array().unwrap();
+        assert_eq!(corpus.len(), 2);
+        for (entry, name, data) in [
+            (&corpus[0], "a.log.gz", compressed.as_slice()),
+            (&corpus[1], "b.log", line.as_slice()),
+        ] {
+            assert_eq!(entry["path"], logs.join(name).to_str().unwrap());
+            assert_eq!(entry["byte_length"], data.len() as u64);
+            assert_eq!(entry["sha256"], format!("{:x}", Sha256::digest(data)));
+        }
+        assert!(manifest["safety_note"]
+            .as_str()
+            .unwrap()
+            .contains("PRIVATE"));
+        let sanitized = fs::read_to_string(output.join("sanitized-research.json")).unwrap();
+        for private_value in [
+            logs.to_str().unwrap(),
+            "198.51.100.1",
+            "/private-path",
+            "secret-token",
+            "\"corpus\"",
+            "\"sha256\"",
+        ] {
+            assert!(!sanitized.contains(private_value));
+        }
+        let artifacts = (
+            manifest["corpus"].clone(),
+            sanitized,
+            fs::read(output.join("request-concentration.json")).unwrap(),
+        );
+        if let Some(previous) = &previous {
+            assert_eq!(previous, &artifacts);
+        }
+        previous = Some(artifacts);
+    }
+}
+
+#[test]
 fn hunt_manifest_records_sorted_stored_corpus_bytes_and_verbatim_private_label() {
     use sha2::{Digest, Sha256};
     use std::io::Write;

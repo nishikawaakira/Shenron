@@ -446,6 +446,18 @@ records and records outside the time window still belong to the hashed corpus.
 Nuclei/KEV reports retain their existing fingerprints; template directories
 remain identified by the pinned Nuclei revision.
 
+Artifact-producing concentration runs also record a sorted `corpus` array at
+the root of `run-manifest.json`, with each processed input file's path, byte
+length, and SHA-256. They use the same single-pass fingerprinting mechanism,
+including stored gzip bytes and unread suffixes, without retaining raw log
+lines. Files skipped by the processed index are not part of this run's corpus.
+This manifest is **private, not sanitized**: input file paths may be sensitive;
+review it before sharing. It contains no log request values, IPs, hostnames,
+JA3/JA4, queries, or headers. SHA-256 identifies input bytes for reproducibility,
+not a determination by Shenron. Neither corpus paths nor hashes are added to
+`sanitized-research.json`. Older concentration manifests without `corpus`
+remain readable.
+
 `hunt --output <run-dir> --corpus-label <TEXT>` optionally records the analyst's
 label verbatim, without normalization or inference. Omission means the field
 is absent. This is an analyst annotation, not a Shenron determination of site,

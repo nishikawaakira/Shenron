@@ -1657,28 +1657,35 @@ fn concentration_run(
         accumulator.focus_on(selector);
     }
     let mut progress = ProgressReporter::new("concentration");
+    let mut corpus = Vec::new();
     for path in &plan.files {
-        stream_events_with_raw_retention(path, telemetry_profile, RawRetention::Drop, |result| {
-            progress.tick();
-            let event = match result {
-                Ok(event) => event,
-                Err(_) => {
-                    report.parse_errors += 1;
+        corpus.push(stream_events_with_fingerprint(
+            path,
+            telemetry_profile,
+            &TrustedProxySet::default(),
+            RawRetention::Drop,
+            |result| {
+                progress.tick();
+                let event = match result {
+                    Ok(event) => event,
+                    Err(_) => {
+                        report.parse_errors += 1;
+                        return Ok(());
+                    }
+                };
+                if !time_range.includes(event.timestamp) {
+                    if event.timestamp.is_some() {
+                        report.requests_outside_time_range += 1;
+                    } else {
+                        report.requests_without_timestamp_excluded += 1;
+                    }
                     return Ok(());
                 }
-            };
-            if !time_range.includes(event.timestamp) {
-                if event.timestamp.is_some() {
-                    report.requests_outside_time_range += 1;
-                } else {
-                    report.requests_without_timestamp_excluded += 1;
-                }
-                return Ok(());
-            }
-            report.total_requests_analyzed += 1;
-            accumulator.observe(&event);
-            Ok(())
-        })?;
+                report.total_requests_analyzed += 1;
+                accumulator.observe(&event);
+                Ok(())
+            },
+        )?);
     }
     report.request_concentration = accumulator.summary();
     if let Some(output) = output {
@@ -1697,7 +1704,7 @@ fn concentration_run(
                 .with_context(|| format!("creating {}", sanitized_path.display()))?,
             &report,
         )?;
-        write_concentration_run_manifest(output, telemetry_profile, &time_range)?;
+        write_concentration_run_manifest(output, telemetry_profile, &time_range, corpus)?;
     }
     plan.commit()?;
     Ok(report)
@@ -1708,18 +1715,20 @@ fn concentration_run(
 /// writes, so the HTML report reads provenance the same way for both. Nuclei is
 /// not part of a concentration run, so `nuclei_revision` is always absent. It is
 /// not a sanitized research artifact and contains no raw request values.
-#[derive(Serialize)]
+#[derive(Deserialize, Serialize)]
 struct ConcentrationRunManifest {
-    report_kind: &'static str,
-    safety_note: &'static str,
-    shenron_version: &'static str,
+    report_kind: String,
+    safety_note: String,
+    shenron_version: String,
     generated_at: String,
     telemetry_profile: TelemetryProfile,
     nuclei_revision: Option<String>,
     hunt_parameters: ConcentrationManifestParameters,
+    #[serde(default)]
+    corpus: Vec<PathProvenance>,
 }
 
-#[derive(Serialize)]
+#[derive(Deserialize, Serialize)]
 struct ConcentrationManifestParameters {
     filter_from: Option<String>,
     filter_to: Option<String>,
@@ -1729,11 +1738,13 @@ fn write_concentration_run_manifest(
     output: &Path,
     telemetry_profile: TelemetryProfile,
     time_range: &HuntTimeRange,
+    mut corpus: Vec<PathProvenance>,
 ) -> anyhow::Result<()> {
+    corpus.sort_by(|left, right| left.path.cmp(&right.path));
     let manifest = ConcentrationRunManifest {
-        report_kind: "RUN_MANIFEST",
-        safety_note: "Contains only run configuration and provenance for a request-concentration run. No raw request values, IP addresses, hostnames, JA3/JA4, queries, or headers are included.",
-        shenron_version: env!("CARGO_PKG_VERSION"),
+        report_kind: "RUN_MANIFEST".to_owned(),
+        safety_note: "PRIVATE run provenance containing input file paths and SHA-256. Do not share before review. No log request values, IP addresses, hostnames, JA3/JA4, queries, or headers are included. SHA-256 identifies input bytes for reproducibility, not a determination by Shenron.".to_owned(),
+        shenron_version: env!("CARGO_PKG_VERSION").to_owned(),
         generated_at: Utc::now().to_rfc3339(),
         telemetry_profile,
         nuclei_revision: None,
@@ -1741,6 +1752,7 @@ fn write_concentration_run_manifest(
             filter_from: time_range.from.map(|time| time.to_rfc3339()),
             filter_to: time_range.to.map(|time| time.to_rfc3339()),
         },
+        corpus,
     };
     let path = output.join("run-manifest.json");
     serde_json::to_writer_pretty(
@@ -2895,28 +2907,65 @@ mod corpus_provenance_tests {
             }
         }
         let input = b"198.51.100.1 - - [01/Jan/2026:00:00:00 +0000] \"GET / HTTP/1.1\" 200 10 \"-\" \"agent\"\n";
-        let bytes = std::rc::Rc::new(std::cell::Cell::new(0));
-        let reader = Counted {
-            inner: std::io::Cursor::new(input.to_vec()),
-            bytes: bytes.clone(),
-        };
-        let mut events = 0;
-        let (length, hash) = stream_fingerprinted_events(
-            reader,
-            false,
-            TelemetryProfile::ApacheCombined,
-            &TrustedProxySet::default(),
-            |event| {
-                assert!(event.is_ok());
-                events += 1;
-                Ok(())
-            },
-        )
+        for compressed in [false, true] {
+            let stored = if compressed {
+                let mut gzip =
+                    flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+                gzip.write_all(input).unwrap();
+                let mut stored = gzip.finish().unwrap();
+                // The parser decodes one gzip member; provenance must also drain
+                // the unread suffix, even when it exceeds the decoder's buffer.
+                stored.extend(vec![0; 100_000]);
+                stored
+            } else {
+                input.to_vec()
+            };
+            for retention in [RawRetention::Keep, RawRetention::Drop] {
+                let bytes = std::rc::Rc::new(std::cell::Cell::new(0));
+                let reader = Counted {
+                    inner: std::io::Cursor::new(stored.clone()),
+                    bytes: bytes.clone(),
+                };
+                let mut events = 0;
+                let (length, hash) = stream_fingerprinted_events(
+                    reader,
+                    compressed,
+                    TelemetryProfile::ApacheCombined,
+                    &TrustedProxySet::default(),
+                    retention,
+                    |event| {
+                        let event = event.unwrap();
+                        match retention {
+                            RawRetention::Keep => assert!(!event.raw.is_empty()),
+                            RawRetention::Drop => assert!(event.raw.is_empty()),
+                        }
+                        assert_eq!(event.uri_path.as_deref(), Some("/"));
+                        events += 1;
+                        Ok(())
+                    },
+                )
+                .unwrap();
+                assert_eq!(events, 1);
+                assert_eq!(bytes.get(), stored.len());
+                assert_eq!(length, stored.len() as u64);
+                assert_eq!(hash, format!("{:x}", Sha256::digest(&stored)));
+            }
+        }
+    }
+
+    #[test]
+    fn old_concentration_manifest_without_corpus_remains_readable() {
+        let manifest: ConcentrationRunManifest = serde_json::from_value(serde_json::json!({
+            "report_kind": "RUN_MANIFEST",
+            "safety_note": "Legacy provenance",
+            "shenron_version": "0.1.0",
+            "generated_at": "2026-01-01T00:00:00+00:00",
+            "telemetry_profile": TelemetryProfile::ApacheCombined,
+            "nuclei_revision": null,
+            "hunt_parameters": {"filter_from": null, "filter_to": null}
+        }))
         .unwrap();
-        assert_eq!(events, 1);
-        assert_eq!(bytes.get(), input.len());
-        assert_eq!(length, input.len() as u64);
-        assert_eq!(hash, format!("{:x}", Sha256::digest(input)));
+        assert!(manifest.corpus.is_empty());
     }
 
     #[test]
@@ -2993,12 +3042,34 @@ pub(crate) fn stream_events_with_trusted_proxies<F>(
 where
     F: FnMut(Result<WebEvent, String>) -> anyhow::Result<()>,
 {
+    stream_events_with_fingerprint(
+        path,
+        telemetry_profile,
+        trusted_proxies,
+        RawRetention::Keep,
+        callback,
+    )
+}
+
+/// Fingerprint the stored input in the parsing pass, retaining raw lines only
+/// for callers that need them (for example, hunt's Sigma keyword matching).
+fn stream_events_with_fingerprint<F>(
+    path: &Path,
+    telemetry_profile: TelemetryProfile,
+    trusted_proxies: &TrustedProxySet,
+    raw_retention: RawRetention,
+    callback: F,
+) -> anyhow::Result<PathProvenance>
+where
+    F: FnMut(Result<WebEvent, String>) -> anyhow::Result<()>,
+{
     let file = File::open(path).with_context(|| format!("opening {}", path.display()))?;
     let (byte_length, sha256) = stream_fingerprinted_events(
         file,
         is_gzip(path),
         telemetry_profile,
         trusted_proxies,
+        raw_retention,
         callback,
     )?;
     Ok(PathProvenance {
@@ -3034,6 +3105,7 @@ fn stream_fingerprinted_events<R: Read + 'static, F>(
     compressed: bool,
     profile: TelemetryProfile,
     proxies: &TrustedProxySet,
+    raw_retention: RawRetention,
     callback: F,
 ) -> anyhow::Result<(u64, String)>
 where
@@ -3045,7 +3117,7 @@ where
         bytes: 0,
     }));
     let decoded = maybe_gzip_reader(SharedFingerprintReader(state.clone()), compressed);
-    stream_reader_events(decoded, profile, proxies, RawRetention::Keep, callback)?;
+    stream_reader_events(decoded, profile, proxies, raw_retention, callback)?;
     std::io::copy(
         &mut SharedFingerprintReader(state.clone()),
         &mut std::io::sink(),

@@ -53,6 +53,14 @@ artifact containing URI paths and observed connection-peer IPs. The default
 stdout never displays either private value; use `--show-paths` or
 `--show-source-ips` deliberately when reviewing the private artifact.
 
+`run-manifest.json` is also private, not sanitized: its path-sorted `corpus`
+records each processed input file's path, byte length, and SHA-256. Hashing uses
+the parsing reader once, covering stored bytes (compressed bytes for gzip),
+including malformed and time-filtered records. It does not retain raw lines.
+Input paths may be sensitive; review the manifest before sharing. Fingerprints
+identify input bytes for reproducibility, not a determination by Shenron.
+Corpus paths and hashes never enter `sanitized-research.json`.
+
 The same aggregate runs as part of every `hunt`, independently of
 Nuclei and Sigma matching. It therefore exposes volume shapes even if no CVE or
 generic rule matches a request. Hunt writes the private concentration artifact
