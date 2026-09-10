@@ -453,6 +453,9 @@ enum ProductionCommand {
         /// Directory for the private detail and sanitized aggregate artifacts.
         #[arg(long)]
         output: PathBuf,
+        /// Verbatim analyst annotation stored only in the private run manifest.
+        #[arg(long)]
+        corpus_label: Option<String>,
         /// Focus the private source-IP breakdown on this exact URI path.
         #[arg(long, conflicts_with_all = ["path_prefix", "source_ip"])]
         path: Option<String>,
@@ -520,6 +523,9 @@ enum ProductionCommand {
         /// Write the normal private and sanitized concentration artifacts.
         #[arg(long)]
         output: Option<PathBuf>,
+        /// Verbatim analyst annotation stored only in the private run manifest.
+        #[arg(long, requires = "output")]
+        corpus_label: Option<String>,
         /// Machine-readable aggregate-only output.
         #[arg(long, value_enum, default_value_t = DailyOutputFormat::Text)]
         output_format: DailyOutputFormat,
@@ -1310,6 +1316,7 @@ fn main() -> Result<()> {
                 input,
                 format,
                 output,
+                corpus_label,
                 path,
                 path_prefix,
                 source_ip,
@@ -1379,6 +1386,7 @@ fn main() -> Result<()> {
                     reprocess_all,
                     response_bucket_min_requests,
                     response_success_share_threshold_percent,
+                    corpus_label,
                 )?;
                 let private_path = output.join("request-concentration.json");
                 let private = (show_paths || show_source_ips || focus.is_some())
@@ -1403,6 +1411,7 @@ fn main() -> Result<()> {
                 input,
                 format,
                 output,
+                corpus_label,
                 output_format,
                 rate_window,
                 response_bucket_min_requests,
@@ -1428,6 +1437,7 @@ fn main() -> Result<()> {
                     reprocess_all,
                     response_bucket_min_requests,
                     response_success_share_threshold_percent,
+                    corpus_label,
                 )?;
                 let summary = DailyVolumeSummary::from_report(&report, processed_index.is_some());
                 match output_format {

@@ -61,13 +61,22 @@ artifact containing URI paths and observed connection-peer IPs. The default
 stdout never displays either private value; use `--show-paths` or
 `--show-source-ips` deliberately when reviewing the private artifact.
 
-`run-manifest.json` is also private, not sanitized: its path-sorted `corpus`
+For both `concentration --output` and `daily --output`, `run-manifest.json`
+is also private, not sanitized: its path-sorted `corpus`
 records each processed input file's path, byte length, and SHA-256. Hashing uses
 the parsing reader once, covering stored bytes (compressed bytes for gzip),
 including malformed and time-filtered records. It does not retain raw lines.
 Input paths may be sensitive; review the manifest before sharing. Fingerprints
 identify input bytes for reproducibility, not a determination by Shenron.
 Corpus paths and hashes never enter `sanitized-research.json`.
+
+Both commands accept `--corpus-label <TEXT>` to preserve an analyst annotation
+verbatim in that private manifest, including whitespace and case. It is not a
+Shenron determination or a basis for correlating hosts. Omission leaves the
+label field absent; old manifests without corpus or label fields remain
+readable. `daily --corpus-label` requires `--output` so the annotation is never
+silently discarded. Labels never enter sanitized output or the daily summary.
+Corpus paths and labels may contain private information; review before sharing.
 
 The same aggregate runs as part of every `hunt`, independently of
 Nuclei and Sigma matching. It therefore exposes volume shapes even if no CVE or

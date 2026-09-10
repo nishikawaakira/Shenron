@@ -20,42 +20,69 @@ const GITHUB_TEMPLATE_SEARCH_PREFIX: &str =
     "https://github.com/search?q=repo:projectdiscovery/nuclei-templates";
 
 #[test]
-fn concentration_manifest_fingerprints_sorted_stored_inputs_without_sanitized_paths() {
+fn concentration_and_daily_manifest_preserve_corpus_and_private_analyst_labels() {
     use sha2::{Digest, Sha256};
     use std::io::Write;
 
     let directory = tempdir().unwrap();
     let logs = directory.path().join("private-inputs");
     fs::create_dir(&logs).unwrap();
-    let line = b"198.51.100.1 - - [01/Jan/2026:00:00:00 +0000] \"GET /private-path?secret-token=1 HTTP/1.1\" 200 10 \"-\" \"agent\"\n";
+    let line = concat!(
+        "198.51.100.1 - - [01/Jan/2026:00:00:00 +0000] \"GET /private-path?secret-token=1 HTTP/1.1\" 200 10 \"-\" \"agent\"\n",
+        "malformed input remains part of the corpus\n",
+        "198.51.100.2 - - [02/Jan/2026:00:00:00 +0000] \"GET /outside-window HTTP/1.1\" 404 10 \"-\" \"agent\"\n",
+    ).as_bytes();
     let mut gzip = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
     gzip.write_all(line).unwrap();
     let compressed = gzip.finish().unwrap();
     fs::write(logs.join("b.log"), line).unwrap();
     fs::write(logs.join("a.log.gz"), &compressed).unwrap();
     let mut previous = None;
-    for run in ["first", "second"] {
-        let output = directory.path().join(run);
-        Command::cargo_bin("shenron")
-            .unwrap()
-            .args([
-                "concentration",
-                "--input",
-                logs.to_str().unwrap(),
-                "--format",
-                "apache",
-                "--output",
-                output.to_str().unwrap(),
-            ])
-            .assert()
-            .success();
+    for (index, (subcommand, label)) in [
+        ("concentration", None),
+        ("concentration", Some("  Private corpus / Mixed CASE  ")),
+        ("daily", None),
+        ("daily", Some("  Private corpus / Mixed CASE  ")),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let output = directory.path().join(format!("run-{index}"));
+        let mut command = Command::cargo_bin("shenron").unwrap();
+        command.args([
+            subcommand,
+            "--input",
+            logs.to_str().unwrap(),
+            "--format",
+            "apache",
+            "--from",
+            "2026-01-01T00:00:00Z",
+            "--to",
+            "2026-01-01T00:01:00Z",
+            "--output",
+            output.to_str().unwrap(),
+        ]);
+        if let Some(label) = label {
+            command.args(["--corpus-label", label]);
+        }
+        let result = command.assert().success();
+        assert!(!String::from_utf8_lossy(&result.get_output().stdout).contains("Private corpus"));
         let manifest: serde_json::Value =
             serde_json::from_slice(&fs::read(output.join("run-manifest.json")).unwrap()).unwrap();
         let corpus = manifest["corpus"].as_array().unwrap();
+        assert_eq!(
+            manifest
+                .get("corpus_label")
+                .and_then(|value| value.as_str()),
+            label
+        );
+        if label.is_none() {
+            assert!(manifest.get("corpus_label").is_none());
+        }
         assert_eq!(corpus.len(), 2);
         for (entry, name, data) in [
             (&corpus[0], "a.log.gz", compressed.as_slice()),
-            (&corpus[1], "b.log", line.as_slice()),
+            (&corpus[1], "b.log", line),
         ] {
             assert_eq!(entry["path"], logs.join(name).to_str().unwrap());
             assert_eq!(entry["byte_length"], data.len() as u64);
@@ -66,11 +93,16 @@ fn concentration_manifest_fingerprints_sorted_stored_inputs_without_sanitized_pa
             .unwrap()
             .contains("PRIVATE"));
         let sanitized = fs::read_to_string(output.join("sanitized-research.json")).unwrap();
+        let aggregate: serde_json::Value = serde_json::from_str(&sanitized).unwrap();
+        assert_eq!(aggregate["total_requests_analyzed"], 2);
+        assert_eq!(aggregate["parse_errors"], 2);
+        assert_eq!(aggregate["requests_outside_time_range"], 2);
         for private_value in [
             logs.to_str().unwrap(),
             "198.51.100.1",
             "/private-path",
             "secret-token",
+            "Private corpus",
             "\"corpus\"",
             "\"sha256\"",
         ] {
@@ -86,6 +118,22 @@ fn concentration_manifest_fingerprints_sorted_stored_inputs_without_sanitized_pa
         }
         previous = Some(artifacts);
     }
+}
+
+#[test]
+fn daily_corpus_label_requires_a_private_artifact_destination() {
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "daily",
+            "--input",
+            "tests/fixtures/production/waf.jsonl",
+            "--corpus-label",
+            "Analyst note",
+        ])
+        .assert()
+        .failure()
+        .stderr(contains("--output"));
 }
 
 #[test]

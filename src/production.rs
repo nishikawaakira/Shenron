@@ -1559,6 +1559,7 @@ pub fn concentration_with_asn_rate_windows_and_query_keys(
         false,
         crate::concentration::DEFAULT_RESPONSE_BUCKET_MINIMUM_REQUESTS,
         crate::concentration::DEFAULT_RESPONSE_SUCCESS_SHARE_THRESHOLD_PERCENT,
+        None,
     )
 }
 
@@ -1581,6 +1582,7 @@ pub fn concentration_with_optional_output(
     reprocess_all: bool,
     response_bucket_minimum_requests: u64,
     response_success_share_threshold_percent: u8,
+    corpus_label: Option<String>,
 ) -> anyhow::Result<SanitizedConcentrationReport> {
     concentration_run(
         input,
@@ -1596,6 +1598,7 @@ pub fn concentration_with_optional_output(
         reprocess_all,
         response_bucket_minimum_requests,
         response_success_share_threshold_percent,
+        corpus_label,
     )
 }
 
@@ -1614,7 +1617,11 @@ fn concentration_run(
     reprocess_all: bool,
     response_bucket_minimum_requests: u64,
     response_success_share_threshold_percent: u8,
+    corpus_label: Option<String>,
 ) -> anyhow::Result<SanitizedConcentrationReport> {
+    if corpus_label.is_some() && output.is_none() {
+        anyhow::bail!("--corpus-label requires --output to record the private analyst annotation");
+    }
     time_range.validate()?;
     if let Some(output) = output {
         ensure_separate_output(input, output)?;
@@ -1704,7 +1711,13 @@ fn concentration_run(
                 .with_context(|| format!("creating {}", sanitized_path.display()))?,
             &report,
         )?;
-        write_concentration_run_manifest(output, telemetry_profile, &time_range, corpus)?;
+        write_concentration_run_manifest(
+            output,
+            telemetry_profile,
+            &time_range,
+            corpus,
+            corpus_label,
+        )?;
     }
     plan.commit()?;
     Ok(report)
@@ -1726,6 +1739,8 @@ struct ConcentrationRunManifest {
     hunt_parameters: ConcentrationManifestParameters,
     #[serde(default)]
     corpus: Vec<PathProvenance>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    corpus_label: Option<String>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -1739,11 +1754,12 @@ fn write_concentration_run_manifest(
     telemetry_profile: TelemetryProfile,
     time_range: &HuntTimeRange,
     mut corpus: Vec<PathProvenance>,
+    corpus_label: Option<String>,
 ) -> anyhow::Result<()> {
     corpus.sort_by(|left, right| left.path.cmp(&right.path));
     let manifest = ConcentrationRunManifest {
         report_kind: "RUN_MANIFEST".to_owned(),
-        safety_note: "PRIVATE run provenance containing input file paths and SHA-256. Do not share before review. No log request values, IP addresses, hostnames, JA3/JA4, queries, or headers are included. SHA-256 identifies input bytes for reproducibility, not a determination by Shenron.".to_owned(),
+        safety_note: "PRIVATE run provenance: corpus paths and verbatim analyst labels may contain private information. Do not share without review. No log record values are copied. SHA-256 values identify the stored input bytes for reproducibility; labels are analyst annotations, not Shenron determinations.".to_owned(),
         shenron_version: env!("CARGO_PKG_VERSION").to_owned(),
         generated_at: Utc::now().to_rfc3339(),
         telemetry_profile,
@@ -1753,6 +1769,7 @@ fn write_concentration_run_manifest(
             filter_to: time_range.to.map(|time| time.to_rfc3339()),
         },
         corpus,
+        corpus_label,
     };
     let path = output.join("run-manifest.json");
     serde_json::to_writer_pretty(
@@ -2966,6 +2983,7 @@ mod corpus_provenance_tests {
         }))
         .unwrap();
         assert!(manifest.corpus.is_empty());
+        assert!(manifest.corpus_label.is_none());
     }
 
     #[test]
