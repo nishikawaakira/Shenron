@@ -2945,12 +2945,6 @@ fn normalized_rate_windows(rate_window: Vec<Duration>) -> Vec<u64> {
 }
 
 fn print_daily_volume_summary(summary: &DailyVolumeSummary, output: Option<&Path>) {
-    if let Some(segments) = &summary.source_segment_diversity {
-        println!("Distinct first path segments per source (404): max {}, median {} (retained sources: {}; segment cap/source: {}; sources beyond cap all/404: {}/{}; observations beyond cap all/404: {}/{}; missing path: {}; capped counts are lower bounds, not classifications)",
-            segments.maximum_404_segments.map(|v| v.to_string()).unwrap_or_else(|| "unavailable".to_owned()),
-            segments.median_404_segments.map(|v| format!("{v:.1}")).unwrap_or_else(|| "unavailable".to_owned()), segments.retained_sources, segments.maximum_segments_per_source,
-            segments.sources_beyond_cap, segments.sources_404_beyond_cap.map(|v| v.to_string()).unwrap_or_else(|| "unavailable".to_owned()), segments.observations_beyond_cap, segments.observations_404_beyond_cap.map(|v| v.to_string()).unwrap_or_else(|| "unavailable".to_owned()), segments.observations_without_path);
-    }
     println!("Daily request-volume summary (aggregate counts only):");
     println!(
         "  Total requests:                         {}",
@@ -3048,6 +3042,16 @@ fn print_daily_volume_summary(summary: &DailyVolumeSummary, output: Option<&Path
         summary.source_ips_beyond_tracking_cap,
         summary.source_path_pairs_beyond_tracking_cap,
     );
+    if let Some(segments) = &summary.source_segment_diversity {
+        println!("  First path segments (404) max / median: {} / {} (sources with >= 1 retained 404 segment: {} / {} retained)",
+            segments.maximum_404_segments.map(|v| v.to_string()).unwrap_or_else(|| "unavailable".to_owned()),
+            segments.median_404_segments_among_sources_with_404_segments.map(|v| format!("{v:.1}")).unwrap_or_else(|| "unavailable".to_owned()),
+            segments.sources_with_404_segments.map(|v| v.to_string()).unwrap_or_else(|| "unavailable".to_owned()), segments.retained_sources);
+        println!("  Segment tracking (cap/source: {}; sources capped all/404: {}/{}; observations omitted all/404: {}/{}; missing path: {}; capped counts are lower bounds, not classifications)",
+            segments.maximum_segments_per_source, segments.sources_beyond_cap,
+            segments.sources_404_beyond_cap.map(|v| v.to_string()).unwrap_or_else(|| "unavailable".to_owned()),
+            segments.observations_beyond_cap, segments.observations_404_beyond_cap.map(|v| v.to_string()).unwrap_or_else(|| "unavailable".to_owned()), segments.observations_without_path);
+    }
     if summary.processed_index_enabled {
         println!(
             "  Previously processed files skipped:          {}",

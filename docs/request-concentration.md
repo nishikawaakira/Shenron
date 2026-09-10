@@ -18,10 +18,18 @@ also counted. A capped cardinality is a lower bound, not an exact cardinality.
 Source tracking itself still uses the existing source cap and disclosures.
 Segment strings never enter artifacts. Private source records contain counts
 and omissions; sanitized output contains only numeric summaries. `daily` adds
-one summary line: maximum and median 404-segment count across all retained
-sources, including zero counts. For an even number of sources the median is
-the arithmetic mean of the two central sorted values. No retained sources
-means unavailable maximum/median. When a source is capped, these aggregate
+two indented lines within its summary: maximum and median 404-segment count
+among sources with at least one retained 404 segment, followed by tracking
+disclosures. The participating and total retained source counts are displayed.
+This subset defines the denominator, not a threshold-based classification.
+`sources_with_404_segments` and
+`median_404_segments_among_sources_with_404_segments` record the new counts;
+the existing `median_404_segments` still includes all retained sources,
+including zero counts. For an even number of sources either median is the
+arithmetic mean of the two central sorted values. An empty subset has an
+unavailable median, not zero. Without status telemetry both medians and the
+subset count are unavailable. No retained sources means unavailable maximum.
+When a source is capped, these aggregate
 statistics describe retained lower bounds as well.
 
 The number of distinct first path segments a source requested is a count of

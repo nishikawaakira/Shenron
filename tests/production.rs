@@ -350,13 +350,25 @@ fn daily_reuses_concentration_metrics_without_writing_default_artifacts() {
     assert_eq!(summary["top_path_request_share"], 0.75);
     assert_eq!(summary["top_path_distinct_source_ips"], 3);
     assert_eq!(summary["top_path_requests_per_source_ip"], 1.0);
+    assert_eq!(
+        summary["source_segment_diversity"]["median_404_segments"],
+        0.0
+    );
+    assert_eq!(
+        summary["source_segment_diversity"]["sources_with_404_segments"],
+        1
+    );
+    assert_eq!(
+        summary["source_segment_diversity"]["median_404_segments_among_sources_with_404_segments"],
+        1.0
+    );
     assert!(!stdout.contains("/private-hot-path"));
     assert!(!stdout.contains("198.51.100.1"));
     assert!(!directory.path().join("request-concentration.json").exists());
     assert!(!directory.path().join("sanitized-research.json").exists());
 
     let artifact_output = directory.path().join("daily-artifacts");
-    Command::cargo_bin("shenron")
+    let assertion = Command::cargo_bin("shenron")
         .unwrap()
         .args([
             "daily",
@@ -372,6 +384,12 @@ fn daily_reuses_concentration_metrics_without_writing_default_artifacts() {
         .stdout(contains(
             "Top path share / sources / requests per source: 75.0% / 3 / 1.0",
         ));
+    let text = String::from_utf8_lossy(&assertion.get_output().stdout);
+    assert!(text.starts_with("Daily request-volume summary (aggregate counts only):\n"));
+    assert!(text.lines().any(|line| line.starts_with("  First path segments (404) max / median: 1 / 1.0 (sources with >= 1 retained 404 segment: 1 / 4 retained)")));
+    assert!(text
+        .lines()
+        .any(|line| line.starts_with("  Segment tracking (")));
     assert!(artifact_output.join("request-concentration.json").is_file());
     assert!(artifact_output.join("sanitized-research.json").is_file());
 }

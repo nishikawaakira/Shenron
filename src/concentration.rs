@@ -666,6 +666,11 @@ pub struct SourceSegmentDiversity {
 pub struct SourceSegmentDiversitySummary {
     pub maximum_404_segments: Option<usize>,
     pub median_404_segments: Option<f64>,
+    /// Retained sources with at least one retained 404 segment, not a classification.
+    #[serde(default)]
+    pub sources_with_404_segments: Option<usize>,
+    #[serde(default)]
+    pub median_404_segments_among_sources_with_404_segments: Option<f64>,
     pub sources_beyond_cap: usize,
     pub sources_404_beyond_cap: Option<usize>,
     pub observations_beyond_cap: u64,
@@ -1484,6 +1489,16 @@ impl RequestConcentration {
             .map(|item| item.segments_404.len())
             .collect::<Vec<_>>();
         counts.sort_unstable();
+        let positive_counts = &counts[counts.partition_point(|count| *count == 0)..];
+        let positive_median = if positive_counts.is_empty() {
+            None
+        } else {
+            Some(
+                (positive_counts[(positive_counts.len() - 1) / 2] as f64
+                    + positive_counts[positive_counts.len() / 2] as f64)
+                    / 2.0,
+            )
+        };
         let median = if counts.is_empty() {
             None
         } else {
@@ -1495,6 +1510,11 @@ impl RequestConcentration {
                 .then(|| counts.last().copied())
                 .flatten(),
             median_404_segments: self.status_available.then_some(median).flatten(),
+            sources_with_404_segments: self.status_available.then_some(positive_counts.len()),
+            median_404_segments_among_sources_with_404_segments: self
+                .status_available
+                .then_some(positive_median)
+                .flatten(),
             sources_beyond_cap: self
                 .source_ips
                 .values()
@@ -2938,6 +2958,73 @@ mod tests {
         assert!(decoded.response_outcome_windows.is_none());
         assert!(decoded.response_status_codes.is_none());
         assert!(decoded.source_segment_diversity.is_none());
+    }
+
+    #[test]
+    fn segment_medians_disclose_their_distinct_denominators() {
+        let mut accumulator = RequestConcentration::new(true);
+        for (ip, segments, status) in [
+            ("198.51.100.1", 2, 404),
+            ("198.51.100.2", 5, 404),
+            ("198.51.100.3", 1, 200),
+            ("198.51.100.4", 1, 200),
+            ("198.51.100.5", 1, 200),
+        ] {
+            for segment in 0..segments {
+                let mut e = event(
+                    Some(&format!("/private-segment-{segment}/x")),
+                    Some(ip),
+                    None,
+                );
+                e.status = Some(status);
+                accumulator.observe(&e);
+            }
+        }
+        let summary = accumulator.summary();
+        let stats = summary.source_segment_diversity.as_ref().unwrap();
+        assert_eq!(stats.median_404_segments, Some(0.0));
+        assert_eq!(stats.sources_with_404_segments, Some(2));
+        assert_eq!(
+            stats.median_404_segments_among_sources_with_404_segments,
+            Some(3.5)
+        );
+        assert_eq!(stats.maximum_404_segments, Some(5));
+        assert_eq!(stats.retained_sources, 5);
+        let serialized = serde_json::to_string(&summary).unwrap();
+        assert!(!serialized.contains("198.51.100"));
+        assert!(!serialized.contains("private-segment"));
+        let mut legacy = serde_json::to_value(stats).unwrap();
+        legacy
+            .as_object_mut()
+            .unwrap()
+            .remove("sources_with_404_segments");
+        legacy
+            .as_object_mut()
+            .unwrap()
+            .remove("median_404_segments_among_sources_with_404_segments");
+        let legacy: SourceSegmentDiversitySummary = serde_json::from_value(legacy).unwrap();
+        assert_eq!(legacy.median_404_segments, Some(0.0));
+        assert_eq!(legacy.sources_with_404_segments, None);
+    }
+
+    #[test]
+    fn empty_404_subset_and_missing_status_remain_distinct() {
+        for status_available in [true, false] {
+            let mut accumulator = RequestConcentration::with_capabilities(true, status_available);
+            let mut e = event(Some("/private"), Some("198.51.100.1"), None);
+            e.status = Some(200);
+            accumulator.observe(&e);
+            let stats = accumulator.summary().source_segment_diversity.unwrap();
+            assert_eq!(stats.median_404_segments, status_available.then_some(0.0));
+            assert_eq!(
+                stats.sources_with_404_segments,
+                status_available.then_some(0)
+            );
+            assert_eq!(
+                stats.median_404_segments_among_sources_with_404_segments,
+                None
+            );
+        }
     }
 
     #[test]
