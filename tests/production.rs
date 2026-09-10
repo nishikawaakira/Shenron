@@ -1174,6 +1174,63 @@ fn hunt_updates_only_an_explicit_private_observation_store() {
     assert!(memory.contains("PRIVATE append-only observation memory"));
     assert!(memory.contains("198.51.100.0/24"));
     assert!(!memory.contains("198.51.100.1\""));
+    let read = Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "observation-store",
+            "read",
+            "--store",
+            store.to_str().unwrap(),
+            "--limit",
+            "1",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let read: serde_json::Value = serde_json::from_slice(&read).unwrap();
+    assert_eq!(read["report_kind"], "PRIVATE_OBSERVATION_STORE_READ");
+    assert!(read["safety_note"]
+        .as_str()
+        .unwrap()
+        .contains("not attribution"));
+    assert_eq!(read["entries"][0]["runs_observed"], 1);
+    assert_eq!(fs::read_to_string(&store).unwrap(), memory);
+    let compact = directory.path().join("compact.jsonl");
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "observation-store",
+            "compact",
+            "--store",
+            store.to_str().unwrap(),
+            "--output",
+            compact.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(contains("records_before"));
+    let compact_read = Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "observation-store",
+            "read",
+            "--store",
+            compact.to_str().unwrap(),
+            "--limit",
+            "1",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&compact_read).unwrap(),
+        read
+    );
+    assert_eq!(fs::read_to_string(&store).unwrap(), memory);
     let sanitized = fs::read_to_string(output.join("sanitized-research.json")).unwrap();
     assert!(!sanitized.contains("198.51.100.0/24"));
 

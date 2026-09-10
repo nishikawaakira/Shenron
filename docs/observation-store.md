@@ -10,6 +10,8 @@ upload occurs.
 shenron hunt \
   --input ./logs \
   --format apache \
+  --output ./private-results/today \
+  --corpus-label 'Analyst corpus label' \
   --observation-store ./private-results/observation-memory.jsonl
 ```
 
@@ -33,3 +35,49 @@ across several runs is a recurring observation of address space, not evidence
 that one operator, owner, or actor is responsible. Address space is reassigned,
 shared across tenants, and reused. This is not attribution or a determination
 of a campaign.
+
+## Read recurrence without reprocessing logs
+
+```bash
+shenron observation-store read --store ./private-results/observation-memory.jsonl --limit 20
+```
+
+This prints **private JSON** with a safety note. It reads only the selected
+store, never changes it, and performs no log parsing or network access. Entries
+are ordered by `runs_observed` descending, then `entity_kind` and `value`
+ascending. `--limit 0` includes all entries; other limits disclose
+`entries_omitted_by_limit`. Recorded cap exclusions and invalid-address
+exclusions are carried forward as counts. Recurrence remains an observation,
+not an inference about probing, scanning, coordination, attack, or abuse.
+
+New RUN records copy the optional `corpus_label` from the private run manifest
+verbatim. Readout associates each entry's opaque run IDs with available labels
+and counts runs without labels. Historical unlabeled stores remain readable;
+no label is inferred or backfilled. Labels are analyst annotations, not Shenron
+determinations, and can contain private information. Keep both the store and
+its readout private. No labels or prefixes are added to sanitized artifacts.
+
+## Explicit non-destructive compaction
+
+```bash
+shenron observation-store compact \
+  --store ./private-results/observation-memory.jsonl \
+  --output ./private-results/observation-memory.compacted.jsonl
+```
+
+The destination must not exist. The source is never overwritten, and
+compaction never runs implicitly during updates. The last appended snapshot
+of each entity is cumulative and retains its full `run_ids`, `runs_observed`,
+first/last observation times, and first/last run IDs. Compaction keeps that
+snapshot, the store header/cap settings and all run metadata (including labels
+and exclusion counts). Output order is header, entities sorted by kind/value,
+then runs sorted by run index and ID. It adds no current time or randomness;
+repeating compaction from the same source produces identical bytes. The
+summary discloses total records and entry snapshots before/after compaction.
+
+Readout is identical before and after compaction. Review the compacted file
+before explicitly selecting it for future `--observation-store` updates; the
+old file remains available. Compaction reduces historical snapshot records,
+not the number of distinct entities or their run histories. Updates and
+compaction still read the store, and run-ID lists still grow with recurrence;
+this is not an unbounded-memory or constant-time storage design.

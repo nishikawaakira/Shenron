@@ -7,7 +7,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::{self, File, OpenOptions},
-    io::{BufRead, BufReader, Write},
+    io::{BufRead, BufReader, BufWriter, Write},
     net::IpAddr,
     path::Path,
 };
@@ -26,7 +26,7 @@ pub const DEFAULT_MAX_STORE_ENTITIES: usize = 1_000_000;
 pub const DEFAULT_MAX_STORE_ENTRY_SNAPSHOTS: usize = 10_000_000;
 pub const DEFAULT_MAX_STORE_RUNS: usize = 100_000;
 
-const SAFETY_NOTE: &str = "PRIVATE append-only observation memory: contains network prefixes and optional ASNs derived from local run artifacts. A prefix observed across several runs is recurring address-space observation, not evidence that one operator, owner, or other entity is responsible. Address space is reassigned, shared across tenants, and reused. This is not attribution or a determination of coordinated activity.";
+const SAFETY_NOTE: &str = "PRIVATE append-only observation memory: contains network prefixes and optional ASNs derived from local run artifacts. Analyst corpus labels may contain private information and are annotations, not Shenron determinations. A prefix observed across several runs is recurring address-space observation, not evidence that one operator, owner, or other entity is responsible. Address space is reassigned, shared across tenants, and reused. This is not attribution or a determination of coordinated activity, probing, scanning, attack, or abuse.";
 
 #[derive(Debug, Clone, Copy)]
 pub struct ObservationStoreLimits {
@@ -57,7 +57,7 @@ pub struct ObservationMemoryEntry {
     pub run_ids: Vec<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "record_kind", rename_all = "SCREAMING_SNAKE_CASE")]
 enum StoreRecord {
     Header {
@@ -71,6 +71,8 @@ enum StoreRecord {
         entry: ObservationMemoryEntry,
     },
     Run {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        corpus_label: Option<String>,
         run_id: String,
         run_index: usize,
         retained_entity_observations: usize,
@@ -106,6 +108,12 @@ pub fn update_observation_store(
     let manifest = fs::read(&manifest_path)
         .with_context(|| format!("reading run manifest {}", manifest_path.display()))?;
     let run_id = format!("sha256:{}", hex_digest(&manifest));
+    let metadata: serde_json::Value =
+        serde_json::from_slice(&manifest).context("parsing private run manifest")?;
+    let corpus_label = metadata
+        .get("corpus_label")
+        .and_then(|value| value.as_str())
+        .map(str::to_owned);
     let concentration_path = run_dir.join("request-concentration.json");
     let concentration: PrivateRequestConcentrationReport = serde_json::from_reader(BufReader::new(
         File::open(&concentration_path)
@@ -191,6 +199,7 @@ pub fn update_observation_store(
         candidates.invalid_source_ips,
         limits,
         loaded.has_header,
+        corpus_label,
     )?;
     Ok(update_report(
         run_id,
@@ -204,6 +213,9 @@ pub fn update_observation_store(
 }
 
 struct LoadedStore {
+    header: Option<StoreRecord>,
+    runs: BTreeMap<String, StoreRecord>,
+    records_read: usize,
     has_header: bool,
     run_ids: BTreeSet<String>,
     entries: BTreeMap<(String, String), ObservationMemoryEntry>,
@@ -212,6 +224,9 @@ struct LoadedStore {
 
 fn load_store(path: &Path) -> Result<LoadedStore> {
     let mut loaded = LoadedStore {
+        header: None,
+        runs: BTreeMap::new(),
+        records_read: 0,
         has_header: false,
         run_ids: BTreeSet::new(),
         entries: BTreeMap::new(),
@@ -230,16 +245,21 @@ fn load_store(path: &Path) -> Result<LoadedStore> {
         }
         let record: StoreRecord = serde_json::from_str(&line)
             .with_context(|| format!("parsing {} line {}", path.display(), index + 1))?;
+        loaded.records_read += 1;
         match record {
-            StoreRecord::Header { .. } => loaded.has_header = true,
+            header @ StoreRecord::Header { .. } => {
+                loaded.has_header = true;
+                loaded.header = Some(header);
+            }
             StoreRecord::Entry { entry } => {
                 loaded.entry_snapshot_count += 1;
                 loaded
                     .entries
                     .insert((entry.entity_kind.clone(), entry.value.clone()), entry);
             }
-            StoreRecord::Run { run_id, .. } => {
-                loaded.run_ids.insert(run_id);
+            ref run @ StoreRecord::Run { ref run_id, .. } => {
+                loaded.run_ids.insert(run_id.clone());
+                loaded.runs.insert(run_id.clone(), run.clone());
             }
         }
     }
@@ -293,6 +313,7 @@ fn append_update(
     invalid_source_ips: usize,
     limits: ObservationStoreLimits,
     has_header: bool,
+    corpus_label: Option<String>,
 ) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).with_context(|| {
@@ -326,6 +347,7 @@ fn append_update(
     write_record(
         &mut output,
         &StoreRecord::Run {
+            corpus_label,
             run_id: run_id.to_owned(),
             run_index,
             retained_entity_observations: entries.len(),
@@ -336,7 +358,7 @@ fn append_update(
     Ok(())
 }
 
-fn write_record(output: &mut File, record: &StoreRecord) -> Result<()> {
+fn write_record(output: &mut impl Write, record: &StoreRecord) -> Result<()> {
     serde_json::to_writer(&mut *output, record)?;
     output.write_all(b"\n")?;
     Ok(())
@@ -367,6 +389,164 @@ fn update_report(
 fn hex_digest(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
     digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+#[derive(Debug, Serialize)]
+pub struct ObservationReadEntry {
+    #[serde(flatten)]
+    pub entry: ObservationMemoryEntry,
+    /// Verbatim analyst annotations keyed by opaque run ID, never inferred.
+    pub corpus_labels: BTreeMap<String, String>,
+    pub runs_without_corpus_label: usize,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ObservationStoreRead {
+    pub report_kind: &'static str,
+    pub safety_note: &'static str,
+    pub runs_recorded: usize,
+    pub retained_entities: usize,
+    pub entries_omitted_by_limit: usize,
+    pub entity_observations_beyond_cap: usize,
+    pub invalid_source_ips_excluded: usize,
+    pub entries: Vec<ObservationReadEntry>,
+}
+
+/// Read completed observations only. No logs, writes, external lookup or
+/// classification. Zero limit means all entries; ties use kind then value.
+pub fn read_observation_store(path: &Path, limit: usize) -> Result<ObservationStoreRead> {
+    anyhow::ensure!(
+        path.is_file(),
+        "observation store does not exist: {}",
+        path.display()
+    );
+    let loaded = load_store(path)?;
+    let mut entries = loaded.entries.into_values().collect::<Vec<_>>();
+    entries.sort_by(|left, right| {
+        right
+            .runs_observed
+            .cmp(&left.runs_observed)
+            .then_with(|| left.entity_kind.cmp(&right.entity_kind))
+            .then_with(|| left.value.cmp(&right.value))
+    });
+    let retained_entities = entries.len();
+    let shown = if limit == 0 {
+        retained_entities
+    } else {
+        limit.min(retained_entities)
+    };
+    let mut excluded = 0;
+    let mut invalid = 0;
+    for run in loaded.runs.values() {
+        if let StoreRecord::Run {
+            entity_observations_beyond_cap,
+            invalid_source_ips_excluded,
+            ..
+        } = run
+        {
+            excluded += entity_observations_beyond_cap;
+            invalid += invalid_source_ips_excluded;
+        }
+    }
+    Ok(ObservationStoreRead {
+        report_kind: "PRIVATE_OBSERVATION_STORE_READ",
+        safety_note: SAFETY_NOTE,
+        runs_recorded: loaded.run_ids.len(),
+        retained_entities,
+        entries_omitted_by_limit: retained_entities - shown,
+        entity_observations_beyond_cap: excluded,
+        invalid_source_ips_excluded: invalid,
+        entries: entries
+            .into_iter()
+            .take(shown)
+            .map(|entry| {
+                let corpus_labels = entry
+                    .run_ids
+                    .iter()
+                    .filter_map(|id| match loaded.runs.get(id) {
+                        Some(StoreRecord::Run {
+                            corpus_label: Some(label),
+                            ..
+                        }) => Some((id.clone(), label.clone())),
+                        _ => None,
+                    })
+                    .collect::<BTreeMap<_, _>>();
+                ObservationReadEntry {
+                    runs_without_corpus_label: entry.run_ids.len() - corpus_labels.len(),
+                    entry,
+                    corpus_labels,
+                }
+            })
+            .collect(),
+    })
+}
+
+#[derive(Debug, Serialize)]
+pub struct ObservationCompaction {
+    pub report_kind: &'static str,
+    pub safety_note: &'static str,
+    pub records_before: usize,
+    pub records_after: usize,
+    pub entry_snapshots_before: usize,
+    pub entry_snapshots_after: usize,
+}
+
+/// Explicit deterministic compaction into a new file. The source is untouched;
+/// existing destinations (including symlinks/hardlinks) are never overwritten.
+/// Each entity's last appended snapshot preserves its complete run-ID history.
+pub fn compact_observation_store(input: &Path, output: &Path) -> Result<ObservationCompaction> {
+    anyhow::ensure!(
+        input.is_file(),
+        "observation store does not exist: {}",
+        input.display()
+    );
+    let loaded = load_store(input)?;
+    let header = loaded
+        .header
+        .context("observation store has no header; refusing compaction")?;
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let destination = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(output)
+        .with_context(|| {
+            format!(
+                "creating new private compacted store {} (must not already exist)",
+                output.display()
+            )
+        })?;
+    let mut destination = BufWriter::new(destination);
+    write_record(&mut destination, &header)?;
+    for entry in loaded.entries.values() {
+        write_record(
+            &mut destination,
+            &StoreRecord::Entry {
+                entry: entry.clone(),
+            },
+        )?;
+    }
+    let mut runs = loaded.runs.values().collect::<Vec<_>>();
+    runs.sort_by_key(|run| match run {
+        StoreRecord::Run {
+            run_index, run_id, ..
+        } => (*run_index, run_id.as_str()),
+        _ => unreachable!("run map only retains RUN records"),
+    });
+    for run in runs {
+        write_record(&mut destination, run)?;
+    }
+    destination.flush()?;
+    destination.get_ref().sync_all()?;
+    Ok(ObservationCompaction {
+        report_kind: "PRIVATE_OBSERVATION_STORE_COMPACTION",
+        safety_note: SAFETY_NOTE,
+        records_before: loaded.records_read,
+        records_after: 1 + loaded.entries.len() + loaded.runs.len(),
+        entry_snapshots_before: loaded.entry_snapshot_count,
+        entry_snapshots_after: loaded.entries.len(),
+    })
 }
 
 #[cfg(test)]
@@ -516,5 +696,93 @@ mod tests {
         assert_eq!(update.retained_entities, 1);
         assert_eq!(update.entity_observations_beyond_cap, 1);
         assert!(fs::read_to_string(store).unwrap().contains("safety_note"));
+    }
+
+    #[test]
+    fn read_and_compact_preserve_recurrence_labels_and_the_original_store() {
+        let directory = tempdir().unwrap();
+        let store = directory.path().join("memory.jsonl");
+        for (index, label, ips) in [
+            (1, None, vec!["198.51.100.1"]),
+            (
+                2,
+                Some("  Analyst Label A  "),
+                vec!["198.51.100.2", "203.0.113.1"],
+            ),
+            (3, Some("Label B"), vec!["198.51.100.3", "192.0.2.1"]),
+        ] {
+            let run = directory.path().join(format!("run-{index}"));
+            write_run(&run, &index.to_string(), &ips, index);
+            if let Some(label) = label {
+                fs::write(
+                    run.join("run-manifest.json"),
+                    serde_json::to_vec(&serde_json::json!({"run":index,"corpus_label":label}))
+                        .unwrap(),
+                )
+                .unwrap();
+            }
+            update_observation_store(
+                &store,
+                &run,
+                FocusPrefixLengths::default(),
+                None,
+                ObservationStoreLimits::default(),
+            )
+            .unwrap();
+        }
+        let original = fs::read(&store).unwrap();
+        let report = read_observation_store(&store, 0).unwrap();
+        assert_eq!(report.entries[0].entry.runs_observed, 3);
+        assert_eq!(report.entries[0].entry.run_ids.len(), 3);
+        assert_eq!(report.entries[0].corpus_labels.len(), 2);
+        assert!(report.entries[0]
+            .corpus_labels
+            .values()
+            .any(|label| label == "  Analyst Label A  "));
+        assert_eq!(report.entries[0].runs_without_corpus_label, 1); // Historical unlabeled RUN.
+        assert_eq!(report.entries[1].entry.value, "192.0.2.0/24"); // Tie sorted by kind/value.
+        assert_eq!(
+            read_observation_store(&store, 1)
+                .unwrap()
+                .entries_omitted_by_limit,
+            2
+        );
+        assert_eq!(fs::read(&store).unwrap(), original);
+
+        let first = directory.path().join("compact-a.jsonl");
+        let second = directory.path().join("compact-b.jsonl");
+        let summary = compact_observation_store(&store, &first).unwrap();
+        compact_observation_store(&store, &second).unwrap();
+        assert!(summary.records_before > summary.records_after);
+        assert_eq!(summary.entry_snapshots_before, 5);
+        assert_eq!(summary.entry_snapshots_after, 3);
+        assert_eq!(fs::read(&first).unwrap(), fs::read(&second).unwrap());
+        assert_eq!(
+            serde_json::to_value(&report).unwrap(),
+            serde_json::to_value(read_observation_store(&first, 0).unwrap()).unwrap()
+        );
+        assert_eq!(fs::read(&store).unwrap(), original);
+        assert!(compact_observation_store(&store, &store).is_err());
+        assert!(compact_observation_store(&store, &first).is_err());
+        assert_eq!(fs::read(&store).unwrap(), original);
+        let run = directory.path().join("run-4");
+        write_run(&run, "four", &["198.51.100.4"], 4);
+        let update = update_observation_store(
+            &first,
+            &run,
+            FocusPrefixLengths::default(),
+            None,
+            ObservationStoreLimits::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            update
+                .entries
+                .iter()
+                .find(|entry| entry.value == "198.51.100.0/24")
+                .unwrap()
+                .runs_observed,
+            4
+        );
     }
 }

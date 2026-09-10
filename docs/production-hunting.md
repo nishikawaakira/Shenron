@@ -1,5 +1,12 @@
 # Production AWS WAF hunting
 
+Completed observation memory can be reviewed with `shenron observation-store
+read --store <PATH> --limit 20` and compacted explicitly to a new file with
+`shenron observation-store compact --store <PATH> --output <NEW-PATH>`.
+Both are local private-artifact operations, not log analysis or attribution.
+See [observation memory](observation-store.md) for analyst corpus labels,
+deterministic ordering, exclusions, and non-destructive compaction.
+
 Concentration response summaries retain individual HTTP codes, including
 separate 502 and 504 counts, without changing the existing status classes or
 CVE metrics. Response windows record the earliest UTC bucket attaining each

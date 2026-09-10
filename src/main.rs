@@ -89,6 +89,11 @@ struct Cli {
 // entire production command would add dispatch indirection solely for enum size.
 #[allow(clippy::large_enum_variant)]
 enum Command {
+    /// Read or explicitly compact private observation memory; never parses logs or contacts a service.
+    ObservationStore {
+        #[command(subcommand)]
+        command: ObservationStoreCommand,
+    },
     /// Prepare, inventory, generate, and validate public or synthetic inputs.
     /// Network access occurs only in explicitly invoked update/setup commands.
     #[command(flatten)]
@@ -153,6 +158,25 @@ enum DispositionCommand {
         disposition: DispositionValue,
         #[arg(long)]
         comment: Option<String>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum ObservationStoreCommand {
+    /// Print PRIVATE prefix/ASN recurrence and analyst labels as JSON. Does not modify the store.
+    Read {
+        #[arg(long)]
+        store: PathBuf,
+        /// Maximum entities, ordered by runs observed; 0 displays all.
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+    },
+    /// Keep each entity's latest cumulative snapshot in a NEW private store; never overwrites either file.
+    Compact {
+        #[arg(long)]
+        store: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
     },
 }
 
@@ -945,6 +969,22 @@ impl OutputFormat {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
+        Command::ObservationStore { command } => {
+            let stdout = io::stdout();
+            let mut stdout = stdout.lock();
+            match command {
+                ObservationStoreCommand::Read { store, limit } => serde_json::to_writer_pretty(
+                    &mut stdout,
+                    &shenron::observation_store::read_observation_store(&store, limit)?,
+                )?,
+                ObservationStoreCommand::Compact { store, output } => serde_json::to_writer_pretty(
+                    &mut stdout,
+                    &shenron::observation_store::compact_observation_store(&store, &output)?,
+                )?,
+            }
+            io::Write::write_all(&mut stdout, b"\n")?;
+            Ok(())
+        }
         Command::Lab(command) => run_lab_command(command),
         Command::ValidateRules { rules } => validate(&rules),
         Command::Disposition { command } => match command {
