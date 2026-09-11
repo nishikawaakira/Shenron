@@ -2,35 +2,66 @@
 
 ## First path-segment diversity per observed source
 
-Each retained source reports distinct first path segments across all requests
-and across responses with status 404. The first segment is the text between
+Each retained source reports distinct first path segments across all requests,
+404 responses, and 4xx responses **excluding 499** (400 through 498). The first segment is the text between
 the initial slash and the next slash in `uri_path` (queries are excluded).
 `/` contributes one empty segment. No percent-decoding, case folding, or other
 normalization occurs: `/Images`, `/images`, and `/%69mages` differ. Missing
-paths are excluded and counted. Missing status cannot contribute to the 404
-set; profiles without status report the 404 metrics as unavailable.
+paths are excluded and counted. Missing status cannot contribute to either
+status-specific set; profiles without status report both as unavailable.
+499 is excluded from the new set: a client-closed response does not indicate
+whether the requested path exists. Other 4xx responses likewise do not prove
+that a path is absent; they describe the recorded response only.
 
 The default is 256 retained segments **per source per set**, independently for
-all requests and 404 responses (`ConcentrationLimits.max_source_segments`).
+all requests, 404 responses, and 4xx excluding 499 (`ConcentrationLimits.max_source_segments`).
 First-observed segments are retained; each observation of an unretained segment
 beyond the cap is counted, including repeats. Sources with such omissions are
 also counted. A capped cardinality is a lower bound, not an exact cardinality.
 Source tracking itself still uses the existing source cap and disclosures.
 Segment strings never enter artifacts. Private source records contain counts
 and omissions; sanitized output contains only numeric summaries. `daily` adds
-two indented lines within its summary: maximum and median 404-segment count
-among sources with at least one retained 404 segment, followed by tracking
-disclosures. The participating and total retained source counts are displayed.
+two indented lines within its summary: maximum and median 4xx-segment count
+(excluding 499), followed by tracking disclosures. The median uses sources
+with at least one retained 4xx segment. The participating and total retained
+source counts and the corpus-wide 4xx request total are displayed.
 This subset defines the denominator, not a threshold-based classification.
-`sources_with_404_segments` and
-`median_404_segments_among_sources_with_404_segments` record the new counts;
-the existing `median_404_segments` still includes all retained sources,
-including zero counts. For an even number of sources either median is the
-arithmetic mean of the two central sorted values. An empty subset has an
-unavailable median, not zero. Without status telemetry both medians and the
-subset count are unavailable. No retained sources means unavailable maximum.
-When a source is capped, these aggregate
-statistics describe retained lower bounds as well.
+`distinct_4xx_segments` and `observations_4xx_beyond_cap` are per-source counts.
+The summary adds `maximum_4xx_segments`, `median_4xx_segments` (all retained
+sources, including zeros), `sources_with_4xx_segments`,
+`median_4xx_segments_among_sources_with_4xx_segments`, `sources_4xx_beyond_cap`,
+`observations_4xx_beyond_cap`, and `corpus_4xx_requests`. The latter counts every
+400..=498 response in the analyzed corpus, including requests with no IP or
+path and requests whose sources were omitted by tracking caps.
+
+All existing 404 fields keep their names and meanings for artifact
+compatibility; daily no longer displays them. The 4xx view also covers sites
+returning 403 instead of 404, so it is the broader default observation scope.
+This is not a claim of universally better accuracy: authentication and access
+controls also produce 4xx, and independent caps can retain different segments.
+No threshold, classification, or conclusion about scanning is generated.
+
+For an even number of sources, each median is the arithmetic mean of the two
+central sorted counts. An empty subset has an unavailable median, not zero.
+If `corpus_4xx_requests` is exactly zero, the 4xx maximum and both medians are
+unavailable: there were no client-error responses to measure. The subset count
+is still zero. This is a degenerate denominator, not a site classification.
+Without status telemetry the corpus count and status-specific metrics are
+unavailable, not zero. With no retained sources the maximum and medians are
+also unavailable. Caps, missing paths, and source omissions retain their
+existing count disclosures; capped statistics describe retained lower bounds.
+New fields default to unavailable when reading older artifacts.
+
+Interpreting this metric as breadth across absent paths assumes that the site
+answers those paths with 4xx. Sites returning 200 or a common landing page do
+not satisfy that assumption; no automatic site classification is performed.
+
+A zero first-segment count is not evidence that no source requested many parts
+of the site. Sites that answer absent paths with 200, or that route every
+unknown path to a landing page, produce no client-error responses to count.
+The corpus client-error total is reported beside the metric so a reader can
+see whether the metric had anything to measure. None of this is a determination
+of probing, scanning, an attack, or abuse.
 
 The number of distinct first path segments a source requested is a count of
 what the log recorded. A high count can equally result from a crawler, a broken

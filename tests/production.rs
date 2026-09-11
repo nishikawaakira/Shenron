@@ -361,6 +361,64 @@ fn concentration_writes_private_detail_without_leaking_it_to_sanitized_or_defaul
 }
 
 #[test]
+fn daily_discloses_client_error_segment_denominators_without_private_values() {
+    let directory = tempdir().unwrap();
+    let input = directory.path().join("input.log");
+    for (status, expected_total, expected_max, expected_median) in [
+        (403, 2, Some(2), Some(2.0)),
+        (200, 0, None, None),
+        (499, 0, None, None),
+    ] {
+        let lines = ["/private-one/x", "/private-two/x"].map(|path| format!("198.51.100.1 - - [01/Jan/2026:00:00:00 +0000] \"GET {path} HTTP/1.1\" {status} 10 \"-\" \"agent\"\n")).concat();
+        fs::write(&input, lines).unwrap();
+        let output = directory.path().join(format!("run-{status}"));
+        let assertion = Command::cargo_bin("shenron")
+            .unwrap()
+            .args([
+                "daily",
+                "--input",
+                input.to_str().unwrap(),
+                "--format",
+                "apache",
+                "--output",
+                output.to_str().unwrap(),
+            ])
+            .assert()
+            .success();
+        let text = String::from_utf8_lossy(&assertion.get_output().stdout);
+        assert!(text.starts_with("Daily request-volume summary (aggregate counts only):\n"));
+        let metric = text
+            .lines()
+            .find(|line| line.starts_with("  First path segments (4xx excl. 499)"))
+            .unwrap();
+        assert!(metric.contains(&format!("corpus 4xx requests: {expected_total}")));
+        if expected_total == 0 {
+            assert!(metric.contains("max / median: unavailable / unavailable"));
+            assert!(metric.contains("no client-error responses to measure"));
+        } else {
+            assert!(metric.contains("max / median: 2 / 2.0"));
+        }
+        let sanitized = fs::read_to_string(output.join("sanitized-research.json")).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&sanitized).unwrap();
+        let stats = &json["request_concentration"]["source_segment_diversity"];
+        assert_eq!(stats["corpus_4xx_requests"], expected_total);
+        assert_eq!(
+            stats["maximum_4xx_segments"],
+            serde_json::json!(expected_max)
+        );
+        assert_eq!(
+            stats["median_4xx_segments_among_sources_with_4xx_segments"],
+            serde_json::json!(expected_median)
+        );
+        assert_eq!(stats["maximum_404_segments"], 0);
+        for raw in ["198.51.100.1", "private-one", "private-two"] {
+            assert!(!text.contains(raw));
+            assert!(!sanitized.contains(raw));
+        }
+    }
+}
+
+#[test]
 fn daily_reuses_concentration_metrics_without_writing_default_artifacts() {
     let directory = tempdir().unwrap();
     let input = directory.path().join("daily.log");
@@ -434,7 +492,8 @@ fn daily_reuses_concentration_metrics_without_writing_default_artifacts() {
         ));
     let text = String::from_utf8_lossy(&assertion.get_output().stdout);
     assert!(text.starts_with("Daily request-volume summary (aggregate counts only):\n"));
-    assert!(text.lines().any(|line| line.starts_with("  First path segments (404) max / median: 1 / 1.0 (sources with >= 1 retained 404 segment: 1 / 4 retained)")));
+    assert!(text.lines().any(|line| line.starts_with("  First path segments (4xx excl. 499) max / median: 1 / 1.0 (corpus 4xx requests: 1; sources with >= 1 retained 4xx segment: 1 / 4 retained)")));
+    assert!(!text.contains("First path segments (404)"));
     assert!(text
         .lines()
         .any(|line| line.starts_with("  Segment tracking (")));
