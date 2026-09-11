@@ -179,7 +179,7 @@ impl StatusClassCounts {
             .saturating_sub(self.client_closed_request_499)
     }
 
-    fn total_observations(&self) -> u64 {
+    pub fn total_observations(&self) -> u64 {
         self.informational
             + self.success
             + self.redirection
@@ -222,8 +222,12 @@ pub struct WindowedResponseOutcomeSummary {
     #[serde(default)]
     pub success_share_threshold_percent: Option<u8>,
     /// Eligible buckets strictly below the configured percentage; not an alert.
+    /// None means no measurable eligible buckets. Old numeric counts still deserialize.
     #[serde(default)]
-    pub buckets_below_success_threshold: usize,
+    pub buckets_below_success_threshold: Option<usize>,
+    /// Excluded before the minimum-request check; counts are not double counted.
+    #[serde(default)]
+    pub buckets_without_status: usize,
 }
 
 /// Exact retained code counts. Admission follows input order. Repeated
@@ -1790,6 +1794,7 @@ impl RequestConcentration {
                 let mut maximum_server_error_share: Option<f64> = None;
                 let mut eligible_buckets = 0;
                 let mut buckets_below_minimum = 0;
+                let mut buckets_without_status = 0;
                 let mut minimum_success_bucket_start = None;
                 let mut maximum_server_error_bucket_start = None;
                 let mut minimum_fraction: Option<(u64, u64)> = None;
@@ -1799,6 +1804,10 @@ impl RequestConcentration {
                 // retains the earliest tied bucket without floating-point ties.
                 for (&bucket, counts) in buckets {
                     let total = counts.total_observations();
+                    if total == counts.unavailable {
+                        buckets_without_status += 1;
+                        continue;
+                    }
                     if total < self.response_bucket_minimum_requests {
                         buckets_below_minimum += 1;
                         continue;
@@ -1844,7 +1853,9 @@ impl RequestConcentration {
                     success_share_threshold_percent: Some(
                         self.response_success_share_threshold_percent,
                     ),
-                    buckets_below_success_threshold,
+                    buckets_below_success_threshold: (eligible_buckets > 0)
+                        .then_some(buckets_below_success_threshold),
+                    buckets_without_status,
                     observations_without_timestamp,
                     observations_beyond_bucket_cap: *beyond_caps.get(seconds).unwrap_or(&0),
                 }
@@ -3021,6 +3032,93 @@ mod tests {
     }
 
     #[test]
+    fn statusless_buckets_are_excluded_before_the_minimum_request_check() {
+        let mut accumulator = RequestConcentration::with_capabilities_and_rate_windows(
+            true,
+            true,
+            ConcentrationLimits::default(),
+            &[60],
+        );
+        accumulator.set_response_bucket_minimum_requests(2);
+        for (minute, status) in [
+            (0, None),
+            (0, None),
+            (1, Some(200)),
+            (1, None),
+            (2, Some(200)),
+            (3, None),
+        ] {
+            let mut e = event(Some("/private"), Some("198.51.100.1"), Some(minute));
+            e.status = status;
+            accumulator.observe(&e);
+        }
+        let summary = accumulator.summary();
+        let outcomes = summary.response_outcomes.unwrap();
+        assert_eq!(outcomes.counts.unavailable, 4);
+        assert_eq!(outcomes.counts.success, 2);
+        assert_eq!(outcomes.counts.total_observations(), 6);
+        assert_eq!(outcomes.success_share, 2.0 / 6.0);
+        let window = &summary.response_outcome_windows.unwrap()[0];
+        assert_eq!(window.eligible_buckets, 1);
+        assert_eq!(window.buckets_without_status, 2);
+        assert_eq!(window.buckets_below_minimum, 1);
+        assert_eq!(window.minimum_success_share, Some(0.5));
+        assert_eq!(window.maximum_server_error_share, Some(0.0));
+        assert_eq!(window.buckets_below_success_threshold, Some(0));
+        assert_eq!(
+            window.minimum_success_bucket_start,
+            DateTime::from_timestamp(60, 0)
+        );
+        assert_eq!(
+            summary.requests_per_minute.peak_requests_per_minute,
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn all_missing_status_produces_unavailable_window_measurements_and_reads_legacy_counts() {
+        let mut accumulator = RequestConcentration::with_capabilities_and_rate_windows(
+            true,
+            true,
+            ConcentrationLimits::default(),
+            &[60],
+        );
+        for _ in 0..20 {
+            let mut e = event(Some("/private"), Some("198.51.100.1"), Some(0));
+            e.status = None;
+            accumulator.observe(&e);
+        }
+        let summary = accumulator.summary();
+        assert_eq!(
+            summary
+                .response_outcomes
+                .as_ref()
+                .unwrap()
+                .counts
+                .unavailable,
+            20
+        );
+        let window = &summary.response_outcome_windows.unwrap()[0];
+        assert_eq!(window.buckets_without_status, 1);
+        assert_eq!(window.eligible_buckets, 0);
+        assert_eq!(window.minimum_success_share, None);
+        assert_eq!(window.maximum_server_error_share, None);
+        assert_eq!(window.minimum_success_bucket_start, None);
+        assert_eq!(window.maximum_server_error_bucket_start, None);
+        assert_eq!(window.buckets_below_success_threshold, None);
+        let mut legacy = serde_json::to_value(window).unwrap();
+        assert!(legacy["buckets_below_success_threshold"].is_null());
+        legacy
+            .as_object_mut()
+            .unwrap()
+            .remove("buckets_without_status");
+        legacy["buckets_below_success_threshold"] = serde_json::json!(0);
+        let legacy: WindowedResponseOutcomeSummary = serde_json::from_value(legacy).unwrap();
+        assert_eq!(legacy.buckets_below_success_threshold, Some(0));
+        assert_eq!(legacy.buckets_without_status, 0);
+    }
+
+    #[test]
     fn client_error_segments_include_forbidden_responses_but_not_499() {
         let mut accumulator = RequestConcentration::new(true);
         for (path, status) in [
@@ -3415,7 +3513,7 @@ mod tests {
         );
         assert_eq!(window.minimum_success_share, Some(0.0));
         assert_eq!(window.maximum_server_error_share, Some(1.0));
-        assert_eq!(window.buckets_below_success_threshold, 2); // 50% itself is not below 50%.
+        assert_eq!(window.buckets_below_success_threshold, Some(2)); // 50% itself is not below 50%.
         assert_eq!(window.observations_without_timestamp, 2);
         concentration
             .set_response_success_share_threshold_percent(51)
@@ -3423,7 +3521,7 @@ mod tests {
         assert_eq!(
             concentration.summary().response_outcome_windows.unwrap()[0]
                 .buckets_below_success_threshold,
-            3
+            Some(3)
         );
         assert!(concentration
             .set_response_success_share_threshold_percent(101)

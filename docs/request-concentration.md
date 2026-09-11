@@ -1,5 +1,51 @@
 # Request concentration
 
+## Missing response status and measurable windows
+
+Response shares continue to use **all observations**, including unavailable
+status, as their denominator. `daily` displays the unavailable count and share
+alongside partially observed response classes. If every observation lacks a
+status, it displays "no response status recorded" rather than five zero
+percentages. Empty corpora display unavailable with no observations.
+`ResponseOutcomeSummary.counts.unavailable` and the stored aggregate shares
+retain their existing definitions; no status is inferred from a WAF action.
+Status-capable telemetry does not imply that each record contains a status.
+
+For response-window extrema, entirely statusless buckets are excluded first
+and counted in `buckets_without_status`. The minimum-request rule is applied
+afterwards, so `buckets_below_minimum` and `buckets_without_status` do not
+double count exclusions. A partially observed eligible bucket still includes
+its unavailable observations in the share denominator. Ties continue to select
+the earliest UTC bucket. Request-rate windows themselves are unchanged.
+With no eligible measurable buckets, extrema, their start times, and
+`buckets_below_success_threshold` are unavailable (`null`), not zero. The last
+field retains numeric counts when measurable and accepts old numeric JSON;
+the new exclusion field defaults to zero for older artifacts.
+
+A success share of zero and a share that could not be measured are different
+observations. Some telemetry records a response status only for requests the
+edge itself answered, so a corpus can contain no status at all. Shares are
+reported as unavailable in that case rather than as zero. This is not a
+determination of an outage, degraded availability, an attack, or abuse.
+
+## Configurable bounded tracking
+
+`concentration` and `daily` accept positive, finite integer limits:
+`--max-paths` (default 100,000), `--max-source-ips` (default 1,000,000), and
+`--max-source-path-pairs` (default 2,000,000). Zero and unlimited settings are
+not supported. Raising caps increases memory consumption. For example, an
+analyst-reported 4,407,718-request corpus with 103,570 sources omitted 377,635
+path observations at the default path cap; omission counts are observations,
+not distinct omitted paths. This is capacity context, not a classification.
+
+Admission still follows input order and omissions retain the existing count
+disclosures. When any override is specified and `--output` is used, the private
+`run-manifest.json` records all three resolved values in `tracking_limits`.
+With no overrides this optional field is absent and the existing caps apply.
+Old manifests remain readable. `daily` without `--output` still writes no
+artifacts; use `--output` to retain the configuration and corpus provenance.
+No source IP or URI path is added to sanitized output by these options.
+
 ## First path-segment diversity per observed source
 
 Each retained source reports distinct first path segments across all requests,
@@ -142,7 +188,8 @@ attacker identity.
 ### Response outcome health measurements
 
 The daily summary also reports corpus-wide 2xx, 3xx, ordinary 4xx, nginx 499,
-and 5xx counts and shares. The added `client_closed_request_499` count is a
+and 5xx counts and shares, alongside unavailable status counts and shares.
+Entirely unrecorded status is displayed as unavailable. The added `client_closed_request_499` count is a
 subset of the backward-compatible `client_error` total; displayed ordinary
 4xx subtracts that subset so 499 is not hidden among other client-error
 responses. These aggregate numeric values are also present in sanitized output.
@@ -150,7 +197,8 @@ If the selected telemetry profile cannot expose response status, the entire
 response outcome is `null`/unavailable rather than a fabricated zero.
 
 For each existing simultaneous rate window, Shenron uses the same admitted UTC
-buckets to report the minimum 2xx share and maximum 5xx share. Buckets below
+buckets to report the minimum 2xx share and maximum 5xx share. Statusless
+buckets are excluded and disclosed first as described above. Remaining buckets below
 `--response-bucket-min-requests` are excluded and counted; the deterministic
 default is 10 requests. Undated observations and records beyond the existing
 bucket cap remain separately disclosed. This inclusion floor is configurable

@@ -361,6 +361,159 @@ fn concentration_writes_private_detail_without_leaking_it_to_sanitized_or_defaul
 }
 
 #[test]
+fn daily_distinguishes_unrecorded_and_partially_recorded_waf_statuses() {
+    assert!(TelemetryProfile::AwsWaf.capabilities().status);
+    let directory = tempdir().unwrap();
+    let input = directory.path().join("waf.jsonl");
+    for partial in [false, true] {
+        let mut records = Vec::new();
+        for index in 0..20 {
+            let mut record = serde_json::json!({"timestamp":1735689600000_u64,"action":"ALLOW","httpRequest":{"clientIp":"198.51.100.1","uri":"/private-path","httpMethod":"GET","headers":[]}});
+            if partial && index < 10 {
+                record["responseCodeSent"] = serde_json::json!(200);
+            }
+            records.push(serde_json::to_string(&record).unwrap());
+        }
+        fs::write(&input, records.join("\n")).unwrap();
+        let output = directory
+            .path()
+            .join(if partial { "partial" } else { "missing" });
+        let assertion = Command::cargo_bin("shenron")
+            .unwrap()
+            .args([
+                "daily",
+                "--input",
+                input.to_str().unwrap(),
+                "--format",
+                "aws-waf",
+                "--output",
+                output.to_str().unwrap(),
+                "--rate-window",
+                "1m",
+            ])
+            .assert()
+            .success();
+        let text = String::from_utf8_lossy(&assertion.get_output().stdout);
+        let serialized = fs::read_to_string(output.join("sanitized-research.json")).unwrap();
+        let report: serde_json::Value = serde_json::from_str(&serialized).unwrap();
+        let summary = &report["request_concentration"];
+        assert_eq!(
+            summary["response_outcomes"]["counts"]["unavailable"],
+            if partial { 10 } else { 20 }
+        );
+        if partial {
+            assert!(text.contains("Response outcome: 2xx 50.0% (10)"));
+            assert!(text.contains("unavailable 50.0% (10)"));
+            assert_eq!(
+                summary["response_outcome_windows"][0]["minimum_success_share"],
+                0.5
+            );
+        } else {
+            assert!(text.contains("no response status recorded; unavailable 100.0% (20)"));
+            assert!(!text.contains("Response outcome: 2xx 0.0%"));
+            assert!(text.contains("minimum 2xx / maximum 5xx share: unavailable / unavailable"));
+            assert!(text.contains("below 50%: unavailable"));
+            assert_eq!(
+                summary["response_outcome_windows"][0]["buckets_without_status"],
+                1
+            );
+            assert!(
+                summary["response_outcome_windows"][0]["buckets_below_success_threshold"].is_null()
+            );
+        }
+        for private in ["198.51.100.1", "/private-path"] {
+            assert!(!serialized.contains(private));
+        }
+    }
+}
+
+#[test]
+fn daily_and_concentration_tracking_caps_are_explicit_bounded_and_reproducible() {
+    let directory = tempdir().unwrap();
+    let input = directory.path().join("combined.log");
+    let lines = (1..=3).map(|i| format!("198.51.100.{i} - - [01/Jan/2026:00:00:00 +0000] \"GET /private-{i} HTTP/1.1\" 200 10 \"-\" \"agent\"\n")).collect::<String>();
+    fs::write(&input, lines).unwrap();
+    for subcommand in ["daily", "concentration"] {
+        let mut default_bytes = None;
+        for (name, caps) in [
+            ("implicit", None),
+            ("explicit", Some(["100000", "1000000", "2000000"])),
+            ("capped", Some(["1", "1", "1"])),
+            ("pair-capped", Some(["3", "3", "1"])),
+        ] {
+            let output = directory.path().join(format!("{subcommand}-{name}"));
+            let mut command = Command::cargo_bin("shenron").unwrap();
+            command.args([
+                subcommand,
+                "--input",
+                input.to_str().unwrap(),
+                "--format",
+                "apache",
+                "--output",
+                output.to_str().unwrap(),
+            ]);
+            if let Some([paths, sources, pairs]) = caps {
+                command.args([
+                    "--max-paths",
+                    paths,
+                    "--max-source-ips",
+                    sources,
+                    "--max-source-path-pairs",
+                    pairs,
+                ]);
+            }
+            command.assert().success();
+            let manifest: serde_json::Value =
+                serde_json::from_slice(&fs::read(output.join("run-manifest.json")).unwrap())
+                    .unwrap();
+            if let Some(values) = caps {
+                for (field, value) in ["max_paths", "max_source_ips", "max_source_path_pairs"]
+                    .iter()
+                    .zip(values)
+                {
+                    assert_eq!(
+                        manifest["tracking_limits"][field],
+                        value.parse::<u64>().unwrap()
+                    );
+                }
+            } else {
+                assert!(manifest.get("tracking_limits").is_none());
+            }
+            let bytes = fs::read(output.join("sanitized-research.json")).unwrap();
+            let private_bytes = fs::read(output.join("request-concentration.json")).unwrap();
+            let report: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            let summary = &report["request_concentration"];
+            assert_eq!(report["total_requests_analyzed"], 3);
+            if name == "capped" {
+                assert_eq!(summary["paths_beyond_tracking_cap"], 2);
+                assert_eq!(summary["source_ips_beyond_tracking_cap"], 2);
+            } else if name == "pair-capped" {
+                assert_eq!(summary["source_path_pairs_beyond_tracking_cap"], 2);
+            } else if let Some(default_bytes) = &default_bytes {
+                assert_eq!(default_bytes, &(bytes, private_bytes));
+            } else {
+                default_bytes = Some((bytes, private_bytes));
+            }
+        }
+        for value in ["0", "unlimited", "-1"] {
+            Command::cargo_bin("shenron")
+                .unwrap()
+                .args([
+                    subcommand,
+                    "--input",
+                    input.to_str().unwrap(),
+                    "--output",
+                    directory.path().join("invalid").to_str().unwrap(),
+                    "--max-paths",
+                    value,
+                ])
+                .assert()
+                .failure();
+        }
+    }
+}
+
+#[test]
 fn daily_discloses_client_error_segment_denominators_without_private_values() {
     let directory = tempdir().unwrap();
     let input = directory.path().join("input.log");

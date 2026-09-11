@@ -50,9 +50,9 @@ use shenron::{
         historical_replay_with_optional_kev_and_filter as production_historical_replay,
         hunt_to_writer_with_options as production_hunt_to_writer,
         hunt_with_optional_nuclei_options as production_hunt, load_private_concentration,
-        terminal_safe, AblationReport, CountHypothesisReport, FindingSource,
-        HistoricalReplayReport, HuntFindingFormat, HuntOptions, HuntTimeRange, HuntTriagePolicy,
-        SanitizedConcentrationReport, SanitizedHuntReport, TemplateFilterOptions,
+        terminal_safe, AblationReport, ConcentrationTrackingLimits, CountHypothesisReport,
+        FindingSource, HistoricalReplayReport, HuntFindingFormat, HuntOptions, HuntTimeRange,
+        HuntTriagePolicy, SanitizedConcentrationReport, SanitizedHuntReport, TemplateFilterOptions,
         SENSITIVE_CONFIG_PROBE_RULE_ID,
     },
     report::{
@@ -264,6 +264,38 @@ enum CandidateCommand {
 }
 
 #[derive(Debug, Clone, Default, Args)]
+struct ConcentrationLimitArgs {
+    /// Maximum retained URI paths (default: 100000). Higher caps use more memory.
+    #[arg(long, value_parser = parse_positive_usize)]
+    max_paths: Option<usize>,
+    /// Maximum retained observed sources (default: 1000000).
+    #[arg(long, value_parser = parse_positive_usize)]
+    max_source_ips: Option<usize>,
+    /// Maximum retained source/path pairs (default: 2000000).
+    #[arg(long, value_parser = parse_positive_usize)]
+    max_source_path_pairs: Option<usize>,
+}
+
+impl ConcentrationLimitArgs {
+    fn resolve(&self) -> Option<ConcentrationTrackingLimits> {
+        if self.max_paths.is_none()
+            && self.max_source_ips.is_none()
+            && self.max_source_path_pairs.is_none()
+        {
+            return None;
+        }
+        let defaults = ConcentrationTrackingLimits::default();
+        Some(ConcentrationTrackingLimits {
+            max_paths: self.max_paths.unwrap_or(defaults.max_paths),
+            max_source_ips: self.max_source_ips.unwrap_or(defaults.max_source_ips),
+            max_source_path_pairs: self
+                .max_source_path_pairs
+                .unwrap_or(defaults.max_source_path_pairs),
+        })
+    }
+}
+
+#[derive(Debug, Clone, Default, Args)]
 struct TemplateFilterArgs {
     /// JSON allowlist with `vendors`, `products`, and/or `tags` arrays. Known
     /// template metadata must match at least one listed value.
@@ -446,6 +478,8 @@ enum ProductionCommand {
     },
     /// Measure bounded request-volume distribution without CTI inputs or detector matching.
     Concentration {
+        #[command(flatten)]
+        tracking_limits: ConcentrationLimitArgs,
         #[arg(long)]
         input: PathBuf,
         #[arg(long, value_enum, default_value_t = InputFormat::Auto)]
@@ -516,6 +550,8 @@ enum ProductionCommand {
     /// Print a lightweight aggregate-only daily volume summary. No artifacts
     /// are written unless --output is explicitly supplied.
     Daily {
+        #[command(flatten)]
+        tracking_limits: ConcentrationLimitArgs,
         #[arg(long)]
         input: PathBuf,
         #[arg(long, value_enum, default_value_t = InputFormat::Auto)]
@@ -1313,6 +1349,7 @@ fn main() -> Result<()> {
                 Ok(())
             }
             ProductionCommand::Concentration {
+                tracking_limits,
                 input,
                 format,
                 output,
@@ -1387,6 +1424,7 @@ fn main() -> Result<()> {
                     response_bucket_min_requests,
                     response_success_share_threshold_percent,
                     corpus_label,
+                    tracking_limits.resolve(),
                 )?;
                 let private_path = output.join("request-concentration.json");
                 let private = (show_paths || show_source_ips || focus.is_some())
@@ -1408,6 +1446,7 @@ fn main() -> Result<()> {
                 Ok(())
             }
             ProductionCommand::Daily {
+                tracking_limits,
                 input,
                 format,
                 output,
@@ -1438,6 +1477,7 @@ fn main() -> Result<()> {
                     response_bucket_min_requests,
                     response_success_share_threshold_percent,
                     corpus_label,
+                    tracking_limits.resolve(),
                 )?;
                 let summary = DailyVolumeSummary::from_report(&report, processed_index.is_some());
                 match output_format {
@@ -2978,8 +3018,15 @@ fn print_daily_volume_summary(summary: &DailyVolumeSummary, output: Option<&Path
         _ => println!("  Top path metrics:                       unavailable"),
     }
     match &summary.response_outcomes {
+        Some(outcomes) if outcomes.counts.total_observations() == 0 => println!(
+            "  Response outcome: unavailable (no observations)"
+        ),
+        Some(outcomes) if outcomes.counts.total_observations() == outcomes.counts.unavailable => println!(
+            "  Response outcome: unavailable (no response status recorded; unavailable 100.0% ({}))",
+            outcomes.counts.unavailable,
+        ),
         Some(outcomes) => println!(
-            "  Response outcome: 2xx {:.1}% ({}) / 3xx {:.1}% ({}) / 4xx excl. 499 {:.1}% ({}) / 499 {:.1}% ({}) / 5xx {:.1}% ({})",
+            "  Response outcome: 2xx {:.1}% ({}) / 3xx {:.1}% ({}) / 4xx excl. 499 {:.1}% ({}) / 499 {:.1}% ({}) / 5xx {:.1}% ({}) / unavailable {:.1}% ({})",
             outcomes.success_share * 100.0,
             outcomes.counts.success,
             outcomes.redirection_share * 100.0,
@@ -2990,6 +3037,8 @@ fn print_daily_volume_summary(summary: &DailyVolumeSummary, output: Option<&Path
             outcomes.counts.client_closed_request_499,
             outcomes.server_error_share * 100.0,
             outcomes.counts.server_error,
+            100.0 * outcomes.counts.unavailable as f64 / outcomes.counts.total_observations() as f64,
+            outcomes.counts.unavailable,
         ),
         None => println!(
             "  Response outcome: unavailable (telemetry profile does not expose status)"
@@ -3016,7 +3065,7 @@ fn print_daily_volume_summary(summary: &DailyVolumeSummary, output: Option<&Path
     if let Some(windows) = &summary.response_outcome_windows {
         for window in windows {
             println!(
-                "  Response window {}s minimum 2xx / maximum 5xx share: {} / {} (buckets with >= {} requests: {}; below minimum: {}; undated: {}; beyond cap: {})",
+                "  Response window {}s minimum 2xx / maximum 5xx share: {} / {} (buckets with >= {} requests: {}; below minimum: {}; undated: {}; beyond cap: {}; without status: {})",
                 window.bucket_width_seconds,
                 window
                     .minimum_success_share
@@ -3031,6 +3080,7 @@ fn print_daily_volume_summary(summary: &DailyVolumeSummary, output: Option<&Path
                 window.buckets_below_minimum,
                 window.observations_without_timestamp,
                 window.observations_beyond_bucket_cap,
+                window.buckets_without_status,
             );
             println!("  {}", format_response_window_context(window));
         }
@@ -3281,7 +3331,7 @@ fn format_response_window_context(window: &WindowedResponseOutcomeSummary) -> St
             .map(|value| value.to_rfc3339())
             .unwrap_or_else(|| "unavailable".to_owned())
     };
-    format!("Response window {}s bucket starts (UTC), earliest ties: minimum 2xx {}; maximum 5xx {}; eligible buckets with success share strictly below {}%: {} (a descriptive count, not a classification)", window.bucket_width_seconds, timestamp(window.minimum_success_bucket_start), timestamp(window.maximum_server_error_bucket_start), window.success_share_threshold_percent.map(|value| value.to_string()).unwrap_or_else(|| "unavailable".to_owned()), window.buckets_below_success_threshold)
+    format!("Response window {}s bucket starts (UTC), earliest ties: minimum 2xx {}; maximum 5xx {}; eligible buckets with success share strictly below {}%: {} (a descriptive count, not a classification)", window.bucket_width_seconds, timestamp(window.minimum_success_bucket_start), timestamp(window.maximum_server_error_bucket_start), window.success_share_threshold_percent.map(|value| value.to_string()).unwrap_or_else(|| "unavailable".to_owned()), window.buckets_below_success_threshold.map(|value| value.to_string()).unwrap_or_else(|| "unavailable".to_owned()))
 }
 
 fn format_query_shape(

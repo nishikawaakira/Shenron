@@ -116,6 +116,8 @@ struct Labels {
     minimum_requests_per_bucket: &'static str,
     eligible_buckets: &'static str,
     buckets_below_minimum: &'static str,
+    buckets_without_status: &'static str,
+    no_recorded_status: &'static str,
     undated_observations: &'static str,
     observations_beyond_bucket_cap: &'static str,
     top_paths: &'static str,
@@ -260,6 +262,8 @@ const EN_LABELS: Labels = Labels {
     minimum_requests_per_bucket: "Minimum requests per bucket",
     eligible_buckets: "Eligible buckets",
     buckets_below_minimum: "Buckets below minimum",
+    buckets_without_status: "Buckets without recorded status",
+    no_recorded_status: "Response shares unavailable: no response status recorded.",
     undated_observations: "Undated observations excluded",
     observations_beyond_bucket_cap: "Observations beyond bucket cap",
     top_paths: "Top paths",
@@ -404,6 +408,8 @@ const JA_LABELS: Labels = Labels {
     minimum_requests_per_bucket: "バケットの最小リクエスト数",
     eligible_buckets: "対象バケット数",
     buckets_below_minimum: "最小件数未満のバケット数",
+    buckets_without_status: "ステータス記録なしのバケット数",
+    no_recorded_status: "応答シェアは利用不可：応答ステータスの記録がありません。",
     undated_observations: "時刻なしで除外した観測数",
     observations_beyond_bucket_cap: "バケット上限を超えた観測数",
     top_paths: "上位パス",
@@ -1195,6 +1201,17 @@ fn render_response_outcome_summary(
     language: ReportLanguage,
 ) {
     let labels = language.labels();
+    let total = outcomes.counts.total_observations();
+    if total == outcomes.counts.unavailable {
+        html.push_str(&format!(
+            "<p class=\"note\">{} {}: {} / {}</p>",
+            html_escape(labels.no_recorded_status),
+            html_escape(labels.status_unavailable),
+            group_thousands(outcomes.counts.unavailable),
+            group_thousands(total)
+        ));
+        return;
+    }
     let rows = [
         (
             "2xx",
@@ -1242,6 +1259,12 @@ fn render_response_outcome_summary(
             group_thousands(count),
         ));
     }
+    html.push_str(&format!(
+        "<tr><td>{}</td><td>{:.1}%</td><td>{}</td></tr>",
+        html_escape(labels.status_unavailable),
+        100.0 * outcomes.counts.unavailable as f64 / total as f64,
+        group_thousands(outcomes.counts.unavailable)
+    ));
     html.push_str("</tbody></table></div>");
 }
 
@@ -1289,9 +1312,19 @@ fn render_response_outcome_windows(
                 html_escape(&timestamp(window.maximum_server_error_bucket_start)),
                 html_escape(labels.below_success_threshold),
                 group_thousands(u64::from(threshold)),
-                group_thousands(window.buckets_below_success_threshold as u64)
+                html_escape(
+                    &window
+                        .buckets_below_success_threshold
+                        .map(|value| group_thousands(value as u64))
+                        .unwrap_or_else(|| labels.unavailable.to_owned())
+                )
             ));
         }
+        html.push_str(&format!(
+            "<tr><td colspan=\"8\">{}: {}</td></tr>",
+            html_escape(labels.buckets_without_status),
+            group_thousands(window.buckets_without_status as u64)
+        ));
     }
     html.push_str("</tbody></table></div>");
 }
@@ -2965,7 +2998,8 @@ mod tests {
                 minimum_success_bucket_start: Some(DateTime::from_timestamp(60, 0).unwrap()),
                 maximum_server_error_bucket_start: Some(DateTime::from_timestamp(120, 0).unwrap()),
                 success_share_threshold_percent: Some(50),
-                buckets_below_success_threshold: 123,
+                buckets_below_success_threshold: Some(123),
+                buckets_without_status: 0,
                 bucket_width_seconds: 60,
                 minimum_requests_per_bucket: 10,
                 eligible_buckets: 1_234,
@@ -2979,7 +3013,8 @@ mod tests {
                 minimum_success_bucket_start: None,
                 maximum_server_error_bucket_start: None,
                 success_share_threshold_percent: None,
-                buckets_below_success_threshold: 0,
+                buckets_below_success_threshold: None,
+                buckets_without_status: 0,
                 bucket_width_seconds: 600,
                 minimum_requests_per_bucket: 10,
                 eligible_buckets: 0,
@@ -3037,6 +3072,36 @@ mod tests {
             assert!(japanese.contains(expected), "missing {expected}");
         }
         assert_external_reference_policy(&japanese);
+    }
+
+    #[test]
+    fn unrecorded_status_is_not_rendered_as_zero_success() {
+        for language in [ReportLanguage::En, ReportLanguage::Ja] {
+            let mut outcomes = ResponseOutcomeSummary {
+                counts: StatusClassCounts {
+                    unavailable: 20,
+                    ..StatusClassCounts::default()
+                },
+                success_share: 0.0,
+                redirection_share: 0.0,
+                ordinary_client_error_share: 0.0,
+                client_closed_request_499_share: 0.0,
+                server_error_share: 0.0,
+            };
+            let mut html = String::new();
+            render_response_outcome_summary(&mut html, &outcomes, language);
+            assert!(html.contains(language.labels().no_recorded_status));
+            assert!(html.contains("20 / 20"));
+            assert!(!html.contains("0.0%"));
+            assert_external_reference_policy(&html);
+            outcomes.counts.success = 20;
+            outcomes.success_share = 0.5;
+            html.clear();
+            render_response_outcome_summary(&mut html, &outcomes, language);
+            assert!(html.contains(language.labels().status_unavailable));
+            assert!(html.contains("50.0%"));
+            assert_external_reference_policy(&html);
+        }
     }
 
     #[test]

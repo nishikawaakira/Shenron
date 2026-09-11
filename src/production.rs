@@ -1560,13 +1560,31 @@ pub fn concentration_with_asn_rate_windows_and_query_keys(
         crate::concentration::DEFAULT_RESPONSE_BUCKET_MINIMUM_REQUESTS,
         crate::concentration::DEFAULT_RESPONSE_SUCCESS_SHARE_THRESHOLD_PERCENT,
         None,
+        None,
     )
 }
 
-/// Run the same bounded concentration accumulator used by `concentration`,
-/// optionally omitting every artifact write for lightweight daily monitoring.
-/// The returned report contains aggregate counts only and no path, IP, or query
-/// value. Supplying an output directory preserves the normal artifacts.
+/// Explicit bounded tracking configuration for concentration/daily provenance.
+/// Defaults match the accumulator; counts are not classifications or alerts.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[serde(default)]
+pub struct ConcentrationTrackingLimits {
+    pub max_paths: usize,
+    pub max_source_ips: usize,
+    pub max_source_path_pairs: usize,
+}
+
+impl Default for ConcentrationTrackingLimits {
+    fn default() -> Self {
+        let limits = crate::concentration::ConcentrationLimits::default();
+        Self {
+            max_paths: limits.max_paths,
+            max_source_ips: limits.max_source_ips,
+            max_source_path_pairs: limits.max_source_path_pairs,
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn concentration_with_optional_output(
     input: &Path,
@@ -1583,6 +1601,7 @@ pub fn concentration_with_optional_output(
     response_bucket_minimum_requests: u64,
     response_success_share_threshold_percent: u8,
     corpus_label: Option<String>,
+    tracking_limits: Option<ConcentrationTrackingLimits>,
 ) -> anyhow::Result<SanitizedConcentrationReport> {
     concentration_run(
         input,
@@ -1599,6 +1618,7 @@ pub fn concentration_with_optional_output(
         response_bucket_minimum_requests,
         response_success_share_threshold_percent,
         corpus_label,
+        tracking_limits,
     )
 }
 
@@ -1618,7 +1638,14 @@ fn concentration_run(
     response_bucket_minimum_requests: u64,
     response_success_share_threshold_percent: u8,
     corpus_label: Option<String>,
+    tracking_limits: Option<ConcentrationTrackingLimits>,
 ) -> anyhow::Result<SanitizedConcentrationReport> {
+    let limits = tracking_limits.unwrap_or_default();
+    if limits.max_paths == 0 || limits.max_source_ips == 0 || limits.max_source_path_pairs == 0 {
+        anyhow::bail!(
+            "tracking limits must be positive finite counts; zero does not mean unlimited"
+        );
+    }
     if corpus_label.is_some() && output.is_none() {
         anyhow::bail!("--corpus-label requires --output to record the private analyst annotation");
     }
@@ -1653,7 +1680,12 @@ fn concentration_run(
     let mut accumulator = RequestConcentration::with_capabilities_and_rate_windows(
         telemetry_profile.capabilities().response_bytes,
         telemetry_profile.capabilities().status,
-        crate::concentration::ConcentrationLimits::default(),
+        crate::concentration::ConcentrationLimits {
+            max_paths: limits.max_paths,
+            max_source_ips: limits.max_source_ips,
+            max_source_path_pairs: limits.max_source_path_pairs,
+            ..crate::concentration::ConcentrationLimits::default()
+        },
         rate_window_seconds,
     );
     accumulator.set_response_bucket_minimum_requests(response_bucket_minimum_requests);
@@ -1717,6 +1749,7 @@ fn concentration_run(
             &time_range,
             corpus,
             corpus_label,
+            tracking_limits,
         )?;
     }
     plan.commit()?;
@@ -1741,6 +1774,8 @@ struct ConcentrationRunManifest {
     corpus: Vec<PathProvenance>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     corpus_label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    tracking_limits: Option<ConcentrationTrackingLimits>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -1755,6 +1790,7 @@ fn write_concentration_run_manifest(
     time_range: &HuntTimeRange,
     mut corpus: Vec<PathProvenance>,
     corpus_label: Option<String>,
+    tracking_limits: Option<ConcentrationTrackingLimits>,
 ) -> anyhow::Result<()> {
     corpus.sort_by(|left, right| left.path.cmp(&right.path));
     let manifest = ConcentrationRunManifest {
@@ -1770,6 +1806,7 @@ fn write_concentration_run_manifest(
         },
         corpus,
         corpus_label,
+        tracking_limits,
     };
     let path = output.join("run-manifest.json");
     serde_json::to_writer_pretty(
@@ -2984,6 +3021,7 @@ mod corpus_provenance_tests {
         .unwrap();
         assert!(manifest.corpus.is_empty());
         assert!(manifest.corpus_label.is_none());
+        assert!(manifest.tracking_limits.is_none());
     }
 
     #[test]

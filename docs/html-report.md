@@ -1,5 +1,13 @@
 # Private offline HTML report
 
+Response outcome tables disclose unavailable status counts and shares without
+removing them from the denominator. If no status was recorded, the table is
+replaced by an unavailable note and counts, not zero success percentages.
+Response windows disclose `buckets_without_status`; entirely statusless buckets
+are excluded before the minimum-request rule. With no measurable eligible
+buckets, extrema, UTC starts, and the below-success-share count are unavailable.
+These are recording limitations, not determinations of an outage or an attack.
+
 Response-window details include UTC starts for the minimum 2xx and maximum
 5xx shares (earliest bucket wins a tie), together with the configured success
 percentage and the count of eligible buckets strictly below it. This count
