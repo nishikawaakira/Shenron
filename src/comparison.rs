@@ -220,13 +220,19 @@ fn load_run(dir: &Path) -> anyhow::Result<RunArtifacts> {
     let manifest = read_json_optional(&manifest_path)?;
     let sanitized_path = dir.join("sanitized-research.json");
     let sanitized = read_json_optional(&sanitized_path)?;
-    let private_path = dir.join("private-findings.jsonl");
+    let private_path = crate::findings_io::resolve(dir);
     let concentration_path = dir.join("request-concentration.json");
     let mut hashes = BTreeMap::new();
     for (name, path) in [
         ("run-manifest.json", &manifest_path),
         ("sanitized-research.json", &sanitized_path),
-        ("private-findings.jsonl", &private_path),
+        (
+            private_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("private-findings.jsonl"),
+            &private_path,
+        ),
         ("request-concentration.json", &concentration_path),
     ] {
         let hash = path.exists().then(|| sha256_file(path)).transpose()?;

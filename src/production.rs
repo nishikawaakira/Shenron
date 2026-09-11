@@ -228,6 +228,8 @@ impl HuntTimeRange {
 /// client resolution remains disabled unless trusted proxies are supplied.
 #[derive(Debug, Clone, Default)]
 pub struct HuntOptions {
+    /// Opt out of lossless gzip storage. Stdout is always uncompressed.
+    pub uncompressed_findings: bool,
     /// Verbatim analyst annotation, recorded only in the private run manifest.
     pub corpus_label: Option<String>,
     pub time_range: HuntTimeRange,
@@ -894,9 +896,7 @@ pub struct FindingExplanation {
 }
 
 pub fn explain_private_findings(path: &Path) -> anyhow::Result<Vec<FindingExplanation>> {
-    let reader = BufReader::new(
-        File::open(path).with_context(|| format!("opening private findings {}", path.display()))?,
-    );
+    let reader = crate::findings_io::open(path)?;
     let mut findings = Vec::new();
     for (line_number, line) in reader.lines().enumerate() {
         let line = line?;
@@ -988,6 +988,7 @@ pub fn hunt(
         output,
         telemetry_profile,
         HuntOptions {
+            uncompressed_findings: false,
             corpus_label: None,
             time_range,
             trusted_proxies: TrustedProxySet::default(),
@@ -1079,6 +1080,7 @@ fn hunt_with_destination(
     options: HuntOptions,
 ) -> anyhow::Result<SanitizedHuntReport> {
     let HuntOptions {
+        uncompressed_findings,
         corpus_label,
         time_range,
         trusted_proxies,
@@ -1124,20 +1126,40 @@ fn hunt_with_destination(
     let detection_index = DetectionPathIndex::new(&detections);
     let kev_cves = kev_cves(kev_report)?;
     let files = input_files(input, telemetry_profile)?;
-    let private_destination: Box<dyn Write + '_> = match (output, stdout_writer) {
+    let mut private_destination = match (output, stdout_writer) {
         (Some(output), None) => {
             fs::create_dir_all(output).with_context(|| {
                 format!("creating private output directory {}", output.display())
             })?;
-            let private_path = output.join("private-findings.jsonl");
-            Box::new(BufWriter::new(File::create(&private_path).with_context(
-                || format!("creating {}", private_path.display()),
-            )?))
+            let name = if uncompressed_findings {
+                "private-findings.jsonl"
+            } else {
+                "private-findings.jsonl.gz"
+            };
+            let alternate = output.join(if uncompressed_findings {
+                "private-findings.jsonl.gz"
+            } else {
+                "private-findings.jsonl"
+            });
+            if alternate.exists() {
+                bail!(
+                    "conflicting private finding artifact {}; choose a fresh output directory",
+                    alternate.display()
+                );
+            }
+            let private_path = output.join(name);
+            let file = File::create(&private_path)
+                .with_context(|| format!("creating {}", private_path.display()))?;
+            if uncompressed_findings {
+                crate::findings_io::FindingSink::Plain(Box::new(BufWriter::new(file)))
+            } else {
+                crate::findings_io::FindingSink::compressed(file)
+            }
         }
-        (None, Some(writer)) => Box::new(writer),
+        (None, Some(writer)) => crate::findings_io::FindingSink::Plain(Box::new(writer)),
         _ => bail!("internal hunt destination must select exactly one finding sink"),
     };
-    let mut private = PrivateFindingWriter::new(private_destination, finding_format)?;
+    let mut private = PrivateFindingWriter::new(&mut private_destination, finding_format)?;
     let mut metrics = HuntMetrics {
         files_analyzed: files.len(),
         waf_outcome_available: telemetry_profile == TelemetryProfile::AwsWaf,
@@ -1374,6 +1396,8 @@ fn hunt_with_destination(
         corpus.push(provenance);
     }
     private.flush()?;
+    drop(private);
+    private_destination.finish()?;
     let private_concentration = concentration.private_report();
     if let Some(output) = output {
         write_private_concentration(output, &private_concentration)?;

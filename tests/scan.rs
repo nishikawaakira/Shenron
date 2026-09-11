@@ -1,3 +1,5 @@
+mod common;
+
 use std::{fs, io::Write};
 
 use assert_cmd::Command;
@@ -62,12 +64,10 @@ fn hunt_stdout_mode_emits_private_jsonl_without_creating_artifacts() {
         .success();
     assert_eq!(
         stdout.as_bytes(),
-        fs::read(artifact_output.join("private-findings.jsonl"))
-            .unwrap()
-            .as_slice()
+        common::finding_bytes(artifact_output.join("private-findings.jsonl")).as_slice()
     );
     for artifact in [
-        "private-findings.jsonl",
+        "private-findings.jsonl.gz",
         "sanitized-research.json",
         "run-manifest.json",
         "request-concentration.json",

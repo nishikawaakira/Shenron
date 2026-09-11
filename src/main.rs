@@ -414,6 +414,9 @@ enum ProductionCommand {
         /// setup-free Sigma-only hunt when --rules is supplied.
         #[arg(long, conflicts_with = "results_dir")]
         no_nuclei: bool,
+        /// Write plain private-findings.jsonl instead of lossless gzip.
+        #[arg(long, conflicts_with = "results_dir")]
+        uncompressed_findings: bool,
         /// Frozen operator-published crawler ranges. Defaults to the prepared
         /// data-directory snapshot when present; all matching remains offline.
         #[arg(long, conflicts_with = "results_dir")]
@@ -1075,6 +1078,7 @@ fn main() -> Result<()> {
                 rules,
                 no_sigma,
                 no_nuclei,
+                uncompressed_findings,
                 bot_ranges,
                 observation_store,
                 disposition_store,
@@ -1175,6 +1179,7 @@ fn main() -> Result<()> {
                     HuntTimeRange { from, to }
                 };
                 let options = HuntOptions {
+                    uncompressed_findings,
                     corpus_label,
                     time_range,
                     trusted_proxies: TrustedProxySet::new(trusted_proxy),
@@ -1977,6 +1982,7 @@ fn resolve_optional_local_dataset(
 const REPORT_SOURCE_ARTIFACTS: &[&str] = &[
     "sanitized-research.json",
     "private-findings.jsonl",
+    "private-findings.jsonl.gz",
     "request-concentration.json",
     "triage-view.json",
     "triage-summary.json",
@@ -2115,13 +2121,14 @@ struct ReportPrivateFinding {
 /// review context needed by the private HTML report. A 2xx is not interpreted
 /// as content disclosure, exploitation, or compromise.
 fn load_sensitive_success_findings(path: &Path) -> Result<Vec<SensitiveSuccessFinding>> {
+    let path = shenron::findings_io::resolve(path);
     if !path.is_file() {
         return Ok(Vec::new());
     }
 
-    let file = File::open(path).with_context(|| format!("opening {}", path.display()))?;
+    let reader = shenron::findings_io::open(&path)?;
     let mut findings = Vec::new();
-    for (index, line) in BufReader::new(file).lines().enumerate() {
+    for (index, line) in reader.lines().enumerate() {
         let line =
             line.with_context(|| format!("reading {} line {}", path.display(), index + 1))?;
         if line.trim().is_empty() {

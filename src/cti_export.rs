@@ -7,7 +7,7 @@
 use std::{
     collections::BTreeSet,
     fs::{self, File},
-    io::{BufRead, BufReader},
+    io::BufRead,
     net::IpAddr,
     path::Path,
 };
@@ -135,6 +135,7 @@ fn read_optional_json(path: &Path) -> Result<Option<Value>> {
 }
 
 fn load_private_observables(path: &Path) -> Result<PrivateObservables> {
+    let path = crate::findings_io::resolve(path);
     if !path.is_file() {
         bail!(
             "--include-observables requires private findings at {}",
@@ -142,7 +143,7 @@ fn load_private_observables(path: &Path) -> Result<PrivateObservables> {
         );
     }
     let mut values = PrivateObservables::default();
-    for line in BufReader::new(File::open(path)?).lines() {
+    for line in crate::findings_io::open(&path)?.lines() {
         let line = line?;
         let finding: Value = match serde_json::from_str(&line) {
             Ok(finding) => finding,

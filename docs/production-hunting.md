@@ -431,7 +431,21 @@ compromise, abuse, or attacker identity.
 
 Long streaming commands (`hunt`, `ablation`, `replay`, `count-hypotheses`) emit a periodic progress heartbeat to stderr during a large scan. It reports only a running record count and a fixed command label — never a request value, IP address, or hostname — and stdout continues to carry findings and reports.
 
-`--output` must be outside the raw-input tree. When supplied, the command writes `private-findings.jsonl` locally with investigation evidence, including fields that may be sensitive. `sanitized-research.json` has aggregate CVE/KEV counts, time ranges, WAF outcomes, cardinalities, and the sorted matching Nuclei `template_ids` for each observed CVE. Template IDs are public CTI metadata rather than customer data; no raw request values, IPs, hostnames, JA3/JA4 values, queries, or headers are included. Without `--output`, neither of these files nor a run directory is created; private findings are streamed to stdout only.
+`--output` must be outside the raw-input tree. When supplied, the command writes `private-findings.jsonl.gz` locally with investigation evidence, including fields that may be sensitive. `sanitized-research.json` has aggregate CVE/KEV counts, time ranges, WAF outcomes, cardinalities, and the sorted matching Nuclei `template_ids` for each observed CVE. Template IDs are public CTI metadata rather than customer data; no raw request values, IPs, hostnames, JA3/JA4 values, queries, or headers are included. Without `--output`, neither of these files nor a run directory is created; private findings are streamed to stdout only.
+
+Finding storage uses deterministic, lossless gzip by default. No records are
+omitted: decompression reproduces the previous JSONL bytes and order, including
+generic response-unverified matches. Pass `--uncompressed-findings` to write
+`private-findings.jsonl` instead. Stdout JSONL/CSV remains uncompressed. Readers
+accept either format and prefer `.jsonl.gz` in a run directory, falling back to
+the legacy `.jsonl`. Explain and candidate finding inputs also accept a run
+directory. Comparison provenance hashes the actual stored artifact (compressed
+bytes for gzip), so hashes differ across storage formats, not the observations.
+External scripts that open the old filename directly must decompress the new
+file or request uncompressed storage. Compression is not sanitization: both
+formats contain private request values and must not be shared without review.
+Reusing an output directory with the opposite format is rejected to avoid
+silently reading a stale alternate artifact; select a fresh run directory.
 
 Every artifact-producing hunt also writes a **private** `run-manifest.json`
 beside the sanitized report. It records the Shenron version, generated time,

@@ -9,6 +9,7 @@ pub mod consistency;
 pub mod cti_export;
 pub mod disposition;
 pub mod event;
+pub mod findings_io;
 pub mod kev;
 pub mod lab;
 pub mod lab_cli;

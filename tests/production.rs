@@ -1,3 +1,5 @@
+mod common;
+
 use std::{
     fs::{self, File},
     path::{Path, PathBuf},
@@ -18,6 +20,136 @@ use walkdir::WalkDir;
 
 const GITHUB_TEMPLATE_SEARCH_PREFIX: &str =
     "https://github.com/search?q=repo:projectdiscovery/nuclei-templates";
+
+#[test]
+fn compressed_findings_are_lossless_and_downstream_compatible() {
+    use sha2::{Digest, Sha256};
+    let directory = tempdir().unwrap();
+    let mut runs = Vec::new();
+    for uncompressed in [false, true, false] {
+        let run = directory.path().join(format!("run-{}", runs.len()));
+        let mut command = Command::cargo_bin("shenron").unwrap();
+        command.args([
+            "hunt",
+            "--input",
+            "tests/fixtures/production/waf.jsonl",
+            "--format",
+            "aws-waf",
+            "--nuclei-templates",
+            "tests/fixtures/nuclei",
+            "--nuclei-report",
+            "tests/fixtures/production/nuclei-report.json",
+            "--kev-report",
+            "tests/fixtures/production/kev-report.json",
+            "--output",
+            run.to_str().unwrap(),
+        ]);
+        if uncompressed {
+            command.arg("--uncompressed-findings");
+        }
+        command.assert().success();
+        assert_eq!(run.join("private-findings.jsonl").is_file(), uncompressed);
+        assert_eq!(
+            run.join("private-findings.jsonl.gz").is_file(),
+            !uncompressed
+        );
+        runs.push(run);
+    }
+    assert_eq!(
+        common::finding_bytes(&runs[0]),
+        common::finding_bytes(&runs[1])
+    );
+    assert_eq!(
+        fs::read(runs[0].join("private-findings.jsonl.gz")).unwrap(),
+        fs::read(runs[2].join("private-findings.jsonl.gz")).unwrap()
+    );
+    for artifact in [
+        "sanitized-research.json",
+        "triage-summary.json",
+        "triage-view.json",
+        "request-concentration.json",
+    ] {
+        assert_eq!(
+            fs::read(runs[0].join(artifact)).unwrap(),
+            fs::read(runs[1].join(artifact)).unwrap(),
+            "{artifact}"
+        );
+    }
+    let mut previous = None;
+    let trend = shenron::trend::path_trend(&runs[..2], "/vulnerable/execute").unwrap();
+    assert_eq!(
+        serde_json::to_value(&trend.runs[0].observation).unwrap(),
+        serde_json::to_value(&trend.runs[1].observation).unwrap()
+    );
+    for (index, run) in runs.iter().take(2).enumerate() {
+        // CTI timestamps come from the frozen manifest, not finding storage.
+        // Use identical provenance to isolate the compression dimension.
+        if index > 0 {
+            fs::copy(
+                runs[0].join("run-manifest.json"),
+                run.join("run-manifest.json"),
+            )
+            .unwrap();
+        }
+        let findings = explain_private_findings(run).unwrap();
+        let (candidates, _) = shenron::candidate::build_batch_from_findings(
+            &findings,
+            TelemetryProfile::AwsWaf,
+            true,
+        );
+        let explain = Command::cargo_bin("shenron")
+            .unwrap()
+            .args([
+                "explain",
+                "--findings",
+                run.to_str().unwrap(),
+                "--show-source-ips",
+                "--include-generic",
+            ])
+            .output()
+            .unwrap();
+        assert!(explain.status.success());
+        let export = directory.path().join(format!("export-{index}.json"));
+        shenron::cti_export::export_run(
+            run,
+            &export,
+            shenron::cti_export::CtiExportFormat::Stix,
+            true,
+            None,
+        )
+        .unwrap();
+        let result = (
+            serde_json::to_vec(&candidates).unwrap(),
+            explain.stdout,
+            fs::read(export).unwrap(),
+        );
+        if let Some(previous) = &previous {
+            assert_eq!(previous, &result);
+        }
+        previous = Some(result);
+    }
+    let comparison = serde_json::to_value(
+        shenron::comparison::compare_runs(&runs[0], &runs[1])
+            .unwrap()
+            .sanitized,
+    )
+    .unwrap();
+    let digest = format!(
+        "{:x}",
+        Sha256::digest(fs::read(runs[0].join("private-findings.jsonl.gz")).unwrap())
+    );
+    assert!(comparison.to_string().contains(&digest));
+    assert!(comparison.to_string().contains("private-findings.jsonl.gz"));
+    let same_storage = serde_json::to_value(
+        shenron::comparison::compare_runs(&runs[0], &runs[2])
+            .unwrap()
+            .sanitized,
+    )
+    .unwrap();
+    for field in ["cve_diff", "first_seen_counts", "concentration_delta"] {
+        assert_eq!(comparison[field], same_storage[field]);
+    }
+}
 
 #[test]
 fn concentration_and_daily_manifest_preserve_corpus_and_private_analyst_labels() {
@@ -1798,8 +1930,8 @@ fn compare_reads_existing_runs_without_leaking_private_values_by_default() {
         .unwrap();
     }
     assert_eq!(
-        fs::read(baseline.join("private-findings.jsonl")).unwrap(),
-        fs::read(current.join("private-findings.jsonl")).unwrap(),
+        common::finding_bytes(baseline.join("private-findings.jsonl")),
+        common::finding_bytes(current.join("private-findings.jsonl")),
         "repeated hunts must preserve private finding bytes and order"
     );
     assert_eq!(
@@ -2016,7 +2148,7 @@ fn hunt_baseline_latest_without_a_prior_run_continues_without_comparison() {
         .success();
 
     for artifact in [
-        "private-findings.jsonl",
+        "private-findings.jsonl.gz",
         "sanitized-research.json",
         "request-concentration.json",
         "triage-view.json",
@@ -2426,7 +2558,7 @@ fn hunt_uses_validated_matchers_and_separates_sensitive_output() {
     );
     assert!(report.cve_findings[0].response_status_counts.is_empty());
 
-    let private = fs::read_to_string(output.path().join("private-findings.jsonl")).unwrap();
+    let private = common::finding_text(output.path().join("private-findings.jsonl"));
     assert!(private.contains("secret-token"));
     let sanitized = serde_json::to_string(&report).unwrap();
     assert!(!sanitized.contains("secret-token"));
@@ -2934,7 +3066,7 @@ fn hunt_writes_and_rerenders_private_offline_html() {
     assert!(!html.contains("解決された ASN"));
     assert_report_external_reference_policy(&html);
 
-    let findings_before = fs::read(hunt_output.join("private-findings.jsonl")).unwrap();
+    let findings_before = common::finding_bytes(hunt_output.join("private-findings.jsonl"));
     fs::remove_file(&html_path).unwrap();
     Command::cargo_bin("shenron")
         .unwrap()
@@ -2952,7 +3084,7 @@ fn hunt_writes_and_rerenders_private_offline_html() {
     assert!(rerendered_html.contains("<html lang=\"ja\">"));
     assert!(rerendered_html.contains("集計サマリ"));
     assert_eq!(
-        fs::read(hunt_output.join("private-findings.jsonl")).unwrap(),
+        common::finding_bytes(hunt_output.join("private-findings.jsonl")),
         findings_before
     );
     assert_report_external_reference_policy(&rerendered_html);
@@ -3593,7 +3725,7 @@ fn hunt_records_response_bytes_on_private_findings() {
         .assert()
         .success();
 
-    let findings = fs::read_to_string(output.join("private-findings.jsonl")).unwrap();
+    let findings = common::finding_text(output.join("private-findings.jsonl"));
     let finding = findings
         .lines()
         .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
@@ -4143,7 +4275,7 @@ fn hunt_runs_the_sigma_pass_and_keeps_it_distinct_from_cve_findings() {
     assert_eq!(report.metrics.sigma_matches_by_severity.critical, 0);
 
     // Both sources are present and distinguishable in the private findings.
-    let private = fs::read_to_string(output.join("private-findings.jsonl")).unwrap();
+    let private = common::finding_text(output.join("private-findings.jsonl"));
     assert!(private.contains(r#""source":"sigma""#));
     assert!(private.contains(r#""source":"nuclei""#));
 
@@ -4197,7 +4329,7 @@ fn hunt_counts_sensitive_config_probe_response_outcomes_without_inferring_succes
     assert_eq!(report.metrics.sensitive_config_probe_success_responses, 1);
     assert_eq!(report.metrics.sensitive_config_probe_status_unavailable, 1);
 
-    let private = fs::read_to_string(output.join("private-findings.jsonl")).unwrap();
+    let private = common::finding_text(output.join("private-findings.jsonl"));
     let sensitive = private
         .lines()
         .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
