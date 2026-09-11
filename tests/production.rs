@@ -625,12 +625,12 @@ fn daily_distinguishes_unrecorded_and_partially_recorded_waf_statuses() {
 }
 
 #[test]
-fn daily_and_concentration_tracking_caps_are_explicit_bounded_and_reproducible() {
+fn hunt_daily_and_concentration_tracking_caps_are_explicit_bounded_and_reproducible() {
     let directory = tempdir().unwrap();
     let input = directory.path().join("combined.log");
     let lines = (1..=3).map(|i| format!("198.51.100.{i} - - [01/Jan/2026:00:00:00 +0000] \"GET /private-{i} HTTP/1.1\" 200 10 \"-\" \"agent\"\n")).collect::<String>();
     fs::write(&input, lines).unwrap();
-    for subcommand in ["daily", "concentration"] {
+    for subcommand in ["daily", "concentration", "hunt"] {
         let mut default_bytes = None;
         for (name, caps) in [
             ("implicit", None),
@@ -649,6 +649,9 @@ fn daily_and_concentration_tracking_caps_are_explicit_bounded_and_reproducible()
                 "--output",
                 output.to_str().unwrap(),
             ]);
+            if subcommand == "hunt" {
+                command.args(["--no-nuclei", "--rules", "tests/fixtures/rules"]);
+            }
             if let Some([paths, sources, pairs]) = caps {
                 command.args([
                     "--max-paths",
@@ -664,6 +667,7 @@ fn daily_and_concentration_tracking_caps_are_explicit_bounded_and_reproducible()
                 serde_json::from_slice(&fs::read(output.join("run-manifest.json")).unwrap())
                     .unwrap();
             if let Some(values) = caps {
+                assert_eq!(manifest["tracking_limits"]["max_source_segments"], 256);
                 for (field, value) in ["max_paths", "max_source_ips", "max_source_path_pairs"]
                     .iter()
                     .zip(values)
@@ -679,8 +683,13 @@ fn daily_and_concentration_tracking_caps_are_explicit_bounded_and_reproducible()
             let bytes = fs::read(output.join("sanitized-research.json")).unwrap();
             let private_bytes = fs::read(output.join("request-concentration.json")).unwrap();
             let report: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-            let summary = &report["request_concentration"];
-            assert_eq!(report["total_requests_analyzed"], 3);
+            let metrics = if subcommand == "hunt" {
+                &report["metrics"]
+            } else {
+                &report
+            };
+            let summary = &metrics["request_concentration"];
+            assert_eq!(metrics["total_requests_analyzed"], 3);
             if name == "capped" {
                 assert_eq!(summary["paths_beyond_tracking_cap"], 2);
                 assert_eq!(summary["source_ips_beyond_tracking_cap"], 2);
@@ -708,6 +717,95 @@ fn daily_and_concentration_tracking_caps_are_explicit_bounded_and_reproducible()
                 .failure();
         }
     }
+}
+
+#[test]
+fn segment_tracking_limits_reach_all_streaming_commands_without_exposing_segments() {
+    let directory = tempdir().unwrap();
+    let input = directory.path().join("segments.log");
+    let lines = (0..258).map(|i| format!("198.51.100.1 - - [01/Jan/2026:00:00:00 +0000] \"GET /secret-segment-{i}/child HTTP/1.1\" 403 10 \"-\" \"agent\"\n")).collect::<String>();
+    fs::write(&input, lines).unwrap();
+    for subcommand in ["hunt", "daily", "concentration"] {
+        for (name, cap, omitted) in [
+            ("default", None, 2),
+            ("small", Some("1"), 257),
+            ("raised", Some("300"), 0),
+        ] {
+            let output = directory.path().join(format!("{subcommand}-{name}"));
+            let mut command = Command::cargo_bin("shenron").unwrap();
+            command.args([
+                subcommand,
+                "--input",
+                input.to_str().unwrap(),
+                "--format",
+                "apache",
+                "--output",
+                output.to_str().unwrap(),
+            ]);
+            if subcommand == "hunt" {
+                command.args(["--no-nuclei", "--rules", "tests/fixtures/rules"]);
+            }
+            if let Some(cap) = cap {
+                command.args(["--max-source-segments", cap]);
+            }
+            command.assert().success();
+            let private: serde_json::Value = serde_json::from_slice(
+                &fs::read(output.join("request-concentration.json")).unwrap(),
+            )
+            .unwrap();
+            let segments = &private["source_ips"][0]["path_segment_diversity"];
+            assert_eq!(segments["observations_beyond_cap"], omitted);
+            assert_eq!(segments["observations_4xx_beyond_cap"], omitted);
+            assert_eq!(
+                segments["maximum_segments"],
+                cap.unwrap_or("256").parse::<usize>().unwrap()
+            );
+            // Private path entries still retain full URI paths, but segment
+            // diversity itself contains only counts, never segment strings.
+            assert!(!segments.to_string().contains("secret-segment"));
+            let sanitized = fs::read_to_string(output.join("sanitized-research.json")).unwrap();
+            assert!(!sanitized.contains("secret-segment"));
+            assert!(!sanitized.contains("198.51.100.1"));
+            let manifest: serde_json::Value =
+                serde_json::from_slice(&fs::read(output.join("run-manifest.json")).unwrap())
+                    .unwrap();
+            if let Some(cap) = cap {
+                assert_eq!(
+                    manifest["tracking_limits"]["max_source_segments"],
+                    cap.parse::<usize>().unwrap()
+                );
+            } else {
+                assert!(manifest.get("tracking_limits").is_none());
+            }
+        }
+        for flag in [
+            "--max-paths",
+            "--max-source-ips",
+            "--max-source-path-pairs",
+            "--max-source-segments",
+        ] {
+            Command::cargo_bin("shenron")
+                .unwrap()
+                .args([subcommand, "--input", input.to_str().unwrap(), flag, "0"])
+                .assert()
+                .failure()
+                .stderr(contains("expected a positive integer"));
+        }
+    }
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "hunt",
+            "--results-dir",
+            directory.path().to_str().unwrap(),
+            "--max-source-segments",
+            "300",
+        ])
+        .assert()
+        .failure()
+        .stderr(contains(
+            "tracking limits cannot be combined with --results-dir",
+        ));
 }
 
 #[test]

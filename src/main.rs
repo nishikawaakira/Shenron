@@ -283,6 +283,10 @@ struct ConcentrationLimitArgs {
     /// Maximum retained source/path pairs (default: 2000000).
     #[arg(long, value_parser = parse_positive_usize)]
     max_source_path_pairs: Option<usize>,
+    /// Maximum retained first path segments per source and set (default: 256).
+    /// Higher caps use more memory; only segment counts enter artifacts.
+    #[arg(long, value_parser = parse_positive_usize)]
+    max_source_segments: Option<usize>,
 }
 
 impl ConcentrationLimitArgs {
@@ -290,6 +294,7 @@ impl ConcentrationLimitArgs {
         if self.max_paths.is_none()
             && self.max_source_ips.is_none()
             && self.max_source_path_pairs.is_none()
+            && self.max_source_segments.is_none()
         {
             return None;
         }
@@ -300,6 +305,9 @@ impl ConcentrationLimitArgs {
             max_source_path_pairs: self
                 .max_source_path_pairs
                 .unwrap_or(defaults.max_source_path_pairs),
+            max_source_segments: self
+                .max_source_segments
+                .unwrap_or(defaults.max_source_segments),
         })
     }
 }
@@ -343,6 +351,8 @@ impl TemplateFilterArgs {
 enum ProductionCommand {
     /// Hunt web logs with Nuclei and/or Sigma. Without --output, private findings are written only to stdout.
     Hunt {
+        #[command(flatten)]
+        tracking_limits: ConcentrationLimitArgs,
         /// Verbatim private analyst label recorded in the run manifest, not an inferred identity.
         #[arg(long, requires = "output", conflicts_with = "results_dir")]
         corpus_label: Option<String>,
@@ -1072,6 +1082,7 @@ fn main() -> Result<()> {
         },
         Command::Production(command) => match command {
             ProductionCommand::Hunt {
+                tracking_limits,
                 corpus_label,
                 input,
                 results_dir,
@@ -1108,6 +1119,9 @@ fn main() -> Result<()> {
                 // configured, the later notification call is a strict no-op.
                 let slack_config = SlackNotificationConfig::from_env()?;
                 if let Some(run_dir) = results_dir {
+                    if tracking_limits.resolve().is_some() {
+                        anyhow::bail!("tracking limits cannot be combined with --results-dir because no hunt is run");
+                    }
                     if template_filter.is_active() {
                         anyhow::bail!(
                             "template metadata filters cannot be combined with --results-dir because no hunt is run"
@@ -1190,6 +1204,7 @@ fn main() -> Result<()> {
                     HuntTimeRange { from, to }
                 };
                 let options = HuntOptions {
+                    tracking_limits: tracking_limits.resolve(),
                     uncompressed_findings,
                     corpus_label,
                     time_range,

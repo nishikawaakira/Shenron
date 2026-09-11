@@ -232,6 +232,8 @@ impl HuntTimeRange {
 /// client resolution remains disabled unless trusted proxies are supplied.
 #[derive(Debug, Clone, Default)]
 pub struct HuntOptions {
+    /// Explicit bounded concentration tracking; absent preserves default artifacts.
+    pub tracking_limits: Option<ConcentrationTrackingLimits>,
     /// Opt out of lossless gzip storage. Stdout is always uncompressed.
     pub uncompressed_findings: bool,
     /// Verbatim analyst annotation, recorded only in the private run manifest.
@@ -627,6 +629,8 @@ struct RunManifest {
     /// was disabled or no rules were found). Kept distinct from Nuclei inputs.
     sigma_rules_evaluated: usize,
     exclusions: RunManifestExclusions,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    tracking_limits: Option<ConcentrationTrackingLimits>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -992,6 +996,7 @@ pub fn hunt(
         output,
         telemetry_profile,
         HuntOptions {
+            tracking_limits: None,
             uncompressed_findings: false,
             corpus_label: None,
             time_range,
@@ -1084,6 +1089,7 @@ fn hunt_with_destination(
     options: HuntOptions,
 ) -> anyhow::Result<SanitizedHuntReport> {
     let HuntOptions {
+        tracking_limits,
         uncompressed_findings,
         corpus_label,
         time_range,
@@ -1095,6 +1101,7 @@ fn hunt_with_destination(
         template_filter,
         disposition_store,
     } = options;
+    let concentration_limits = resolve_tracking_limits(tracking_limits)?;
     time_range.validate()?;
     if let Some(output) = output {
         ensure_separate_output(input, output)?;
@@ -1184,8 +1191,12 @@ fn hunt_with_destination(
     let mut all_ja4s = BTreeSet::new();
     let mut matched_sigma_rules = BTreeSet::new();
     let capabilities = telemetry_profile.capabilities();
-    let mut concentration =
-        RequestConcentration::with_capabilities(capabilities.response_bytes, capabilities.status);
+    let mut concentration = RequestConcentration::with_capabilities_and_rate_windows(
+        capabilities.response_bytes,
+        capabilities.status,
+        concentration_limits,
+        &crate::concentration::DEFAULT_RATE_WINDOW_SECONDS,
+    );
     concentration.configure_waf(capabilities);
     metrics.findings_by_waf_action = capabilities.waf_action.then(Default::default);
     let mut bot_ranges = BotRangeAccumulator::default();
@@ -1488,6 +1499,7 @@ fn hunt_with_destination(
             &report.metrics,
             corpus,
             corpus_label,
+            tracking_limits,
         )?;
     }
     Ok(report)
@@ -1600,7 +1612,7 @@ pub fn concentration_with_asn_rate_windows_and_query_keys(
     )
 }
 
-/// Explicit bounded tracking configuration for concentration/daily provenance.
+/// Explicit bounded tracking configuration for hunt/concentration/daily provenance.
 /// Defaults match the accumulator; counts are not classifications or alerts.
 #[derive(Debug, Clone, Copy, Deserialize, Serialize)]
 #[serde(default)]
@@ -1608,6 +1620,7 @@ pub struct ConcentrationTrackingLimits {
     pub max_paths: usize,
     pub max_source_ips: usize,
     pub max_source_path_pairs: usize,
+    pub max_source_segments: usize,
 }
 
 impl Default for ConcentrationTrackingLimits {
@@ -1617,8 +1630,36 @@ impl Default for ConcentrationTrackingLimits {
             max_paths: limits.max_paths,
             max_source_ips: limits.max_source_ips,
             max_source_path_pairs: limits.max_source_path_pairs,
+            max_source_segments: limits.max_source_segments,
         }
     }
+}
+
+/// All streaming entry points share the same defaults and validation. Limits
+/// control retained counts, never classifications or alert thresholds.
+fn resolve_tracking_limits(
+    tracking_limits: Option<ConcentrationTrackingLimits>,
+) -> anyhow::Result<crate::concentration::ConcentrationLimits> {
+    let limits = tracking_limits.unwrap_or_default();
+    if [
+        limits.max_paths,
+        limits.max_source_ips,
+        limits.max_source_path_pairs,
+        limits.max_source_segments,
+    ]
+    .contains(&0)
+    {
+        anyhow::bail!(
+            "tracking limits must be positive finite counts; zero does not mean unlimited"
+        );
+    }
+    Ok(crate::concentration::ConcentrationLimits {
+        max_paths: limits.max_paths,
+        max_source_ips: limits.max_source_ips,
+        max_source_path_pairs: limits.max_source_path_pairs,
+        max_source_segments: limits.max_source_segments,
+        ..crate::concentration::ConcentrationLimits::default()
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1676,12 +1717,7 @@ fn concentration_run(
     corpus_label: Option<String>,
     tracking_limits: Option<ConcentrationTrackingLimits>,
 ) -> anyhow::Result<SanitizedConcentrationReport> {
-    let limits = tracking_limits.unwrap_or_default();
-    if limits.max_paths == 0 || limits.max_source_ips == 0 || limits.max_source_path_pairs == 0 {
-        anyhow::bail!(
-            "tracking limits must be positive finite counts; zero does not mean unlimited"
-        );
-    }
+    let limits = resolve_tracking_limits(tracking_limits)?;
     if corpus_label.is_some() && output.is_none() {
         anyhow::bail!("--corpus-label requires --output to record the private analyst annotation");
     }
@@ -1716,12 +1752,7 @@ fn concentration_run(
     let mut accumulator = RequestConcentration::with_capabilities_and_rate_windows(
         telemetry_profile.capabilities().response_bytes,
         telemetry_profile.capabilities().status,
-        crate::concentration::ConcentrationLimits {
-            max_paths: limits.max_paths,
-            max_source_ips: limits.max_source_ips,
-            max_source_path_pairs: limits.max_source_path_pairs,
-            ..crate::concentration::ConcentrationLimits::default()
-        },
+        limits,
         rate_window_seconds,
     );
     accumulator.set_response_bucket_minimum_requests(response_bucket_minimum_requests);
@@ -2608,6 +2639,7 @@ fn write_run_manifest(
     metrics: &HuntMetrics,
     mut corpus: Vec<PathProvenance>,
     corpus_label: Option<String>,
+    tracking_limits: Option<ConcentrationTrackingLimits>,
 ) -> anyhow::Result<()> {
     corpus.sort_by(|left, right| left.path.cmp(&right.path));
     let manifest = RunManifest {
@@ -2641,6 +2673,7 @@ fn write_run_manifest(
             requests_without_timestamp_excluded: metrics.requests_without_timestamp_excluded,
             parse_errors: metrics.parse_errors,
         },
+        tracking_limits,
     };
     let path = output.join("run-manifest.json");
     serde_json::to_writer_pretty(
@@ -3059,6 +3092,40 @@ mod corpus_provenance_tests {
         assert!(manifest.corpus.is_empty());
         assert!(manifest.corpus_label.is_none());
         assert!(manifest.tracking_limits.is_none());
+        let mut old = serde_json::to_value(&manifest).unwrap();
+        old["tracking_limits"] = serde_json::json!({
+            "max_paths": 12, "max_source_ips": 13, "max_source_path_pairs": 14
+        });
+        let old: ConcentrationRunManifest = serde_json::from_value(old).unwrap();
+        let limits = old.tracking_limits.unwrap();
+        assert_eq!(limits.max_paths, 12);
+        assert_eq!(
+            limits.max_source_segments,
+            crate::concentration::DEFAULT_MAX_SOURCE_SEGMENTS
+        );
+    }
+
+    #[test]
+    fn shared_tracking_limit_resolution_preserves_defaults_and_rejects_each_zero() {
+        let resolved = resolve_tracking_limits(None).unwrap();
+        let defaults = crate::concentration::ConcentrationLimits::default();
+        assert_eq!(format!("{resolved:?}"), format!("{defaults:?}"));
+        for field in [
+            "max_paths",
+            "max_source_ips",
+            "max_source_path_pairs",
+            "max_source_segments",
+        ] {
+            let mut limits = serde_json::to_value(ConcentrationTrackingLimits::default()).unwrap();
+            limits[field] = serde_json::json!(0);
+            let limits = serde_json::from_value(limits).unwrap();
+            assert_eq!(
+                resolve_tracking_limits(Some(limits))
+                    .unwrap_err()
+                    .to_string(),
+                "tracking limits must be positive finite counts; zero does not mean unlimited"
+            );
+        }
     }
 
     #[test]

@@ -65,9 +65,10 @@ determination of an outage, degraded availability, an attack, or abuse.
 
 ## Configurable bounded tracking
 
-`concentration` and `daily` accept positive, finite integer limits:
-`--max-paths` (default 100,000), `--max-source-ips` (default 1,000,000), and
-`--max-source-path-pairs` (default 2,000,000). Zero and unlimited settings are
+`hunt`, `concentration`, and `daily` accept positive, finite integer limits:
+`--max-paths` (default 100,000), `--max-source-ips` (default 1,000,000),
+`--max-source-path-pairs` (default 2,000,000), and `--max-source-segments`
+(default 256 per source, independently for each segment set). Zero and unlimited settings are
 not supported. Raising caps increases memory consumption. For example, an
 analyst-reported 4,407,718-request corpus with 103,570 sources omitted 377,635
 path observations at the default path cap; omission counts are observations,
@@ -75,11 +76,18 @@ not distinct omitted paths. This is capacity context, not a classification.
 
 Admission still follows input order and omissions retain the existing count
 disclosures. When any override is specified and `--output` is used, the private
-`run-manifest.json` records all three resolved values in `tracking_limits`.
+`run-manifest.json` records all four resolved values in `tracking_limits`.
 With no overrides this optional field is absent and the existing caps apply.
 Old manifests remain readable. `daily` without `--output` still writes no
 artifacts; use `--output` to retain the configuration and corpus provenance.
 No source IP or URI path is added to sanitized output by these options.
+Segment spelling and admission order are unchanged: no decoding or case
+folding occurs, and segment strings themselves are never written to artifacts.
+Only counts and each set's omitted-observation totals are recorded. Raising
+`--max-source-segments` increases `maximum_segments` / `maximum_segments_per_source`
+accordingly; these disclose capacity, not a threshold or classification.
+Hunt applies the limits in its existing single streaming pass, including stdout
+mode; they cannot be used with `hunt --results-dir` (rendering does not aggregate).
 
 ## First path-segment diversity per observed source
 

@@ -1,5 +1,14 @@
 # Production AWS WAF hunting
 
+Hunt, concentration, and daily share bounded tracking overrides: `--max-paths`
+(100,000), `--max-source-ips` (1,000,000), `--max-source-path-pairs` (2,000,000),
+and `--max-source-segments` (256 per source per segment set). Defaults are
+unchanged; positive finite overrides increase memory use and are recorded as
+`tracking_limits` in the private run manifest when writing artifacts. With no
+override this field is absent. Retention omissions remain disclosed counts,
+not classifications. Segment strings are not serialized; sanitized output
+contains only aggregate counts. See [bounded tracking](request-concentration.md#configurable-bounded-tracking).
+
 Hunt reports `findings_by_waf_action`: counts of all Nuclei and Sigma matching
 records by the recorded edge decision, not deduplicated requests. ALLOW means
 the WAF passed the request, not that it succeeded or caused a compromise.
