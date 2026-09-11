@@ -627,9 +627,12 @@ mod tests {
         median: f64,
     ) -> PrivateRequestConcentrationReport {
         PrivateRequestConcentrationReport {
+            waf: None,
+            ja4_sources: None,
             report_kind: "REQUEST_CONCENTRATION_PRIVATE".into(),
             safety_note: String::new(),
             summary: RequestConcentrationSummary {
+                waf: None,
                 source_segment_diversity: None,
                 response_status_codes: None,
                 total_requests: 100,
@@ -659,6 +662,7 @@ mod tests {
                 .map(|(p, n)| PrivatePathConcentration {
                     uri_path: p.into(),
                     summary: PathConcentrationSummary {
+                        waf_actions: None,
                         response_status_codes: None,
                         requests: n,
                         request_share: 0.,
@@ -678,6 +682,7 @@ mod tests {
             source_ips: sources
                 .into_iter()
                 .map(|(ip, n)| PrivateSourceConcentration {
+                    waf: None,
                     path_segment_diversity: None,
                     response_status_codes: None,
                     response_outcomes: None,

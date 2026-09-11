@@ -1,5 +1,40 @@
 # Request concentration
 
+## Bounded WAF observations
+
+For AWS WAF input, the same streaming pass counts actions for the corpus,
+retained paths, and retained observed peers. `daily` prints action shares using
+all requests as the denominator; missing actions are `unavailable`, and values
+outside ALLOW/BLOCK/COUNT/CAPTCHA/CHALLENGE are counted as `other`. No log string
+is copied into the sanitized action vocabulary.
+
+The private concentration artifact adds `waf` with JA3/JA4 occurrence maps,
+distinct counts, WAF label occurrences, and country-code counts. Retained peer
+entries have the same private breakdown. `ja4_sources` lists each retained JA4
+and its distinct observed-peer count, ordered by count descending and then
+fingerprint ascending. The inverse association tracking is independent of the
+peer/path admission caps. Sanitized `waf` contains only numeric cardinalities,
+occurrences, omissions, and fixed action counters; it never contains fingerprint,
+label, country-code, peer, or path strings. Country is taken verbatim from the
+log, without a lookup or location/identity inference.
+
+Each categorical map retains at most 100,000 values globally or 256 per peer;
+the inverse JA4 map retains at most 100,000 fingerprints and 2,000,000 distinct
+fingerprint/peer associations in total. These are independent per-field caps.
+New keys are admitted in input order; observations on unretained keys after a
+cap are counted, not guessed as omitted distinct values. Already retained keys
+continue to count. Missing values and empty label arrays are disclosed separately;
+each supplied label occurrence is counted. Cardinalities are lower bounds when
+their omission count is nonzero. Existing peer/path cap disclosures also apply.
+Fields unsupported by the profile are unavailable (`null`), never observed zeros.
+Standard combined profiles do not expose these WAF fields.
+
+A TLS fingerprint groups clients that negotiated the same way. It is not an
+identity: unrelated deployments of the same library share one, and a single
+actor can present several. A WAF action records what the edge decided, not
+whether a request succeeded or whether anything was compromised. None of these
+is a determination of automation, probing, an attack, or abuse.
+
 ## Missing response status and measurable windows
 
 Response shares continue to use **all observations**, including unavailable

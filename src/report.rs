@@ -2571,9 +2571,12 @@ mod tests {
             ..StatusClassCounts::default()
         };
         PrivateRequestConcentrationReport {
+            waf: None,
+            ja4_sources: None,
             report_kind: "REQUEST_CONCENTRATION_PRIVATE".to_owned(),
             safety_note: String::new(),
             summary: RequestConcentrationSummary {
+                waf: None,
                 source_segment_diversity: None,
                 response_status_codes: None,
                 total_requests: 3,
@@ -2617,6 +2620,7 @@ mod tests {
             paths: vec![PrivatePathConcentration {
                 uri_path: path.to_owned(),
                 summary: PathConcentrationSummary {
+                    waf_actions: None,
                     response_status_codes: None,
                     requests: 3,
                     request_share: 1.0,
@@ -2633,6 +2637,7 @@ mod tests {
                 query_keys: Vec::new(),
             }],
             source_ips: vec![PrivateSourceConcentration {
+                waf: None,
                 path_segment_diversity: None,
                 response_status_codes: None,
                 response_outcomes: None,

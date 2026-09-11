@@ -30,3 +30,4 @@ pub mod trend;
 pub mod triage;
 pub mod triage_view;
 pub mod waf;
+pub mod waf_summary;

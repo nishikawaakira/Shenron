@@ -14,6 +14,10 @@ use chrono::{DateTime, Utc};
 use ipnet::IpNet;
 use serde::{Deserialize, Serialize};
 
+use crate::waf_summary::{
+    Ja4SourceAccumulator, PrivateJa4Sources, PrivateWafSummary, WafActionCounts,
+    WafEntityAccumulator, WafSummary,
+};
 use crate::{event::WebEvent, triage::AsnResolver};
 
 pub const DEFAULT_MAX_TRACKED_PATHS: usize = 100_000;
@@ -129,6 +133,9 @@ pub struct ConcentrationLimits {
     pub max_query_strings_per_path: usize,
     pub max_query_keys_per_path: usize,
     pub max_status_codes_per_entity: usize,
+    pub max_waf_values_per_entity: usize,
+    pub max_waf_values: usize,
+    pub max_ja4_source_associations: usize,
 }
 
 impl Default for ConcentrationLimits {
@@ -144,6 +151,9 @@ impl Default for ConcentrationLimits {
             max_query_strings_per_path: DEFAULT_MAX_QUERY_STRINGS_PER_PATH,
             max_query_keys_per_path: DEFAULT_MAX_QUERY_KEYS_PER_PATH,
             max_status_codes_per_entity: DEFAULT_MAX_STATUS_CODES_PER_ENTITY,
+            max_waf_values_per_entity: 256,
+            max_waf_values: 100_000,
+            max_ja4_source_associations: 2_000_000,
         }
     }
 }
@@ -294,6 +304,8 @@ impl StatusCodeCounts {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PathConcentrationSummary {
+    #[serde(default)]
+    pub waf_actions: Option<WafActionCounts>,
     pub requests: u64,
     pub request_share: f64,
     /// Exact unless source-IP tracking reached its disclosed cap.
@@ -400,6 +412,8 @@ fn exact_path_kind() -> String {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RequestConcentrationSummary {
     #[serde(default)]
+    pub waf: Option<WafSummary>,
+    #[serde(default)]
     pub source_segment_diversity: Option<SourceSegmentDiversitySummary>,
     pub total_requests: u64,
     /// Exact unless `paths_beyond_tracking_cap` is non-zero.
@@ -450,6 +464,8 @@ pub struct PrivatePathConcentration {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PrivateSourceConcentration {
+    #[serde(default)]
+    pub waf: Option<PrivateWafSummary>,
     #[serde(default)]
     pub path_segment_diversity: Option<SourceSegmentDiversity>,
     pub source_ip: String,
@@ -612,6 +628,10 @@ pub struct PrivateFocusSummary {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PrivateRequestConcentrationReport {
+    #[serde(default)]
+    pub waf: Option<PrivateWafSummary>,
+    #[serde(default)]
+    pub ja4_sources: Option<Vec<PrivateJa4Sources>>,
     pub report_kind: String,
     pub safety_note: String,
     pub summary: RequestConcentrationSummary,
@@ -634,6 +654,7 @@ pub struct PrivateRequestConcentrationReport {
 
 #[derive(Debug, Default)]
 struct PathAccumulator {
+    waf_actions: WafActionCounts,
     requests: u64,
     source_ips: BTreeSet<String>,
     status_classes: StatusClassCounts,
@@ -644,6 +665,7 @@ struct PathAccumulator {
 
 #[derive(Debug, Default)]
 struct SourceAccumulator {
+    waf: Option<Box<WafEntityAccumulator>>,
     segments: BTreeSet<String>,
     segments_404: BTreeSet<String>,
     segments_4xx: BTreeSet<String>,
@@ -780,6 +802,9 @@ struct QueryShapeAccumulator {
 /// input order; rendered reports are sorted independently for deterministic output.
 #[derive(Debug)]
 pub struct RequestConcentration {
+    waf_capabilities: Option<crate::event::TelemetryCapabilities>,
+    waf: WafEntityAccumulator,
+    ja4_sources: Ja4SourceAccumulator,
     limits: ConcentrationLimits,
     response_bytes_available: bool,
     status_available: bool,
@@ -895,6 +920,9 @@ impl RequestConcentration {
             .collect();
         Self {
             limits,
+            waf_capabilities: None,
+            waf: WafEntityAccumulator::default(),
+            ja4_sources: Ja4SourceAccumulator::default(),
             response_bytes_available,
             status_available,
             response_bucket_minimum_requests: DEFAULT_RESPONSE_BUCKET_MINIMUM_REQUESTS,
@@ -974,6 +1002,15 @@ impl RequestConcentration {
         self.focus_on(FocusSelector::ExactPath(path.into()));
     }
 
+    /// Configure before observing. Standard combined logs do not allocate
+    /// per-source WAF maps or imply absent fields were observed as zero.
+    pub fn configure_waf(&mut self, caps: crate::event::TelemetryCapabilities) {
+        self.waf.set_maximum(self.limits.max_waf_values);
+        self.waf_capabilities =
+            (caps.ja3 || caps.ja4 || caps.country || caps.waf_action || caps.waf_labels)
+                .then_some(caps);
+    }
+
     pub fn observe(&mut self, event: &WebEvent) {
         self.total_requests += 1;
         record_status_class(&mut self.status_classes, event.status);
@@ -986,6 +1023,34 @@ impl RequestConcentration {
         let path_tracked = path.is_some_and(|path| self.track_path(path, event));
         let source_tracked =
             source_ip.is_some_and(|source_ip| self.track_source_ip(source_ip, event.status, path));
+
+        if let Some(caps) = self.waf_capabilities {
+            self.waf.observe(event, caps, self.limits.max_waf_values);
+            if caps.ja4 {
+                self.ja4_sources.observe(
+                    event,
+                    self.limits.max_waf_values,
+                    self.limits.max_ja4_source_associations,
+                );
+            }
+            if let Some(source) = source_ip.filter(|_| source_tracked) {
+                self.source_ips
+                    .get_mut(source)
+                    .expect("retained source")
+                    .waf
+                    .get_or_insert_with(Default::default)
+                    .observe(event, caps, self.limits.max_waf_values_per_entity);
+            }
+            if caps.waf_action {
+                if let Some(path) = path.filter(|_| path_tracked) {
+                    self.paths
+                        .get_mut(path)
+                        .expect("retained path")
+                        .waf_actions
+                        .record(event.waf_action.as_deref());
+                }
+            }
+        }
 
         if path.is_none() {
             self.requests_without_uri_path += 1;
@@ -1024,6 +1089,11 @@ impl RequestConcentration {
         );
         let (peak, median, ratio) = self.request_rate();
         RequestConcentrationSummary {
+            waf: self.waf_capabilities.map(|caps| {
+                let mut summary = self.waf.summary(caps);
+                summary.ja4_sources = caps.ja4.then(|| self.ja4_sources.summary());
+                summary
+            }),
             source_segment_diversity: Some(self.source_segment_summary()),
             total_requests: self.total_requests,
             distinct_uri_paths: self.paths.len(),
@@ -1074,6 +1144,8 @@ impl RequestConcentration {
         include_query_keys: bool,
     ) -> PrivateRequestConcentrationReport {
         PrivateRequestConcentrationReport {
+            waf: self.waf_capabilities.map(|caps| self.waf.private(caps)),
+            ja4_sources: self.waf_capabilities.filter(|caps| caps.ja4).map(|_| self.ja4_sources.private()),
             report_kind: "REQUEST_CONCENTRATION_PRIVATE".to_owned(),
             safety_note: "Private analyst artifact: URI paths and observed connection-peer IPs are included. Request-volume distribution is not a determination of a denial-of-service attempt, attack, abuse, compromise, or attacker identity.".to_owned(),
             summary: self.summary(),
@@ -1094,6 +1166,7 @@ impl RequestConcentration {
                 .sorted_sources()
                 .into_iter()
                 .map(|(source_ip, item)| PrivateSourceConcentration {
+                    waf: self.waf_capabilities.map(|caps| item.waf.as_deref().map(|waf| waf.private(caps)).unwrap_or_default()),
                     path_segment_diversity: Some(item.segment_summary(self.status_available, self.limits.max_source_segments)),
                     source_ip: source_ip.clone(),
                     requests: item.requests,
@@ -1461,6 +1534,10 @@ impl RequestConcentration {
 
     fn path_summary(&self, item: &PathAccumulator) -> PathConcentrationSummary {
         PathConcentrationSummary {
+            waf_actions: self
+                .waf_capabilities
+                .filter(|caps| caps.waf_action)
+                .map(|_| item.waf_actions.clone()),
             requests: item.requests,
             request_share: self.share(item.requests),
             distinct_source_ips: item.source_ips.len(),
@@ -2073,6 +2150,169 @@ fn record_status_class(counts: &mut StatusClassCounts, status: Option<u16>) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn waf_fields_are_bounded_private_and_capability_aware() {
+        let caps = crate::event::TelemetryProfile::AwsWaf.capabilities();
+        let limits = ConcentrationLimits {
+            max_waf_values_per_entity: 1,
+            max_waf_values: 2,
+            max_ja4_source_associations: 2,
+            ..ConcentrationLimits::default()
+        };
+        let mut measured = RequestConcentration::with_limits(false, limits);
+        measured.configure_waf(caps);
+        let mut unchanged = RequestConcentration::with_limits(false, limits);
+        let mut uncapped = RequestConcentration::new(false);
+        uncapped.configure_waf(caps);
+        for (ip, ja3, ja4, country, action) in [
+            (
+                "198.51.100.1",
+                "private-ja3-a",
+                "private-ja4-a",
+                "JP",
+                "ALLOW",
+            ),
+            (
+                "198.51.100.2",
+                "private-ja3-a",
+                "private-ja4-a",
+                "US",
+                "BLOCK",
+            ),
+            (
+                "198.51.100.1",
+                "private-ja3-b",
+                "private-ja4-b",
+                "US",
+                "ALLOW",
+            ),
+            (
+                "198.51.100.3",
+                "private-ja3-c",
+                "private-ja4-c",
+                "DE",
+                "untrusted-value",
+            ),
+        ] {
+            let mut event = event(Some("/private-waf-path"), Some(ip), Some(0));
+            event.ja3 = Some(ja3.to_owned());
+            event.ja4 = Some(ja4.to_owned());
+            event.country = Some(country.to_owned());
+            event.waf_action = Some(action.to_owned());
+            event.waf_labels = vec![ja3.to_owned()];
+            measured.observe(&event);
+            unchanged.observe(&event);
+            uncapped.observe(&event);
+        }
+        let report = measured.private_report();
+        let complete = uncapped.private_report();
+        assert_eq!(
+            complete.source_ips[0]
+                .waf
+                .as_ref()
+                .unwrap()
+                .ja3
+                .as_ref()
+                .unwrap()
+                .distinct_values,
+            2
+        );
+        assert_eq!(
+            complete.source_ips[0]
+                .waf
+                .as_ref()
+                .unwrap()
+                .ja4
+                .as_ref()
+                .unwrap()
+                .distinct_values,
+            2
+        );
+        let waf = report.waf.as_ref().unwrap();
+        assert_eq!(waf.actions.as_ref().unwrap().allow, 2);
+        assert_eq!(waf.actions.as_ref().unwrap().block, 1);
+        assert_eq!(waf.actions.as_ref().unwrap().other, 1);
+        assert_eq!(waf.countries.as_ref().unwrap().values["US"], 2);
+        assert_eq!(waf.countries.as_ref().unwrap().observations_beyond_cap, 1);
+        assert_eq!(waf.labels.as_ref().unwrap().observations_beyond_cap, 1);
+        let source = report.source_ips[0].waf.as_ref().unwrap();
+        assert_eq!(source.ja3.as_ref().unwrap().distinct_values, 1);
+        assert_eq!(source.ja4.as_ref().unwrap().distinct_values, 1);
+        assert_eq!(source.ja3.as_ref().unwrap().observations_beyond_cap, 1);
+        assert_eq!(source.ja4.as_ref().unwrap().observations_beyond_cap, 1);
+        assert_eq!(source.actions.as_ref().unwrap().allow, 2);
+        assert_eq!(
+            report.paths[0].summary.waf_actions.as_ref().unwrap().allow,
+            2
+        );
+        assert_eq!(
+            report.ja4_sources.as_ref().unwrap()[0].distinct_source_ips,
+            2
+        );
+        let inverse = report
+            .summary
+            .waf
+            .as_ref()
+            .unwrap()
+            .ja4_sources
+            .as_ref()
+            .unwrap();
+        assert_eq!(inverse.observations_beyond_fingerprint_cap, 1);
+        assert_eq!(inverse.observations_beyond_association_cap, 1);
+        let serialized = serde_json::to_string(&report.summary).unwrap();
+        for value in [
+            "198.51.100",
+            "/private-waf-path",
+            "private-ja",
+            "untrusted-value",
+            "\"JP\"",
+            "\"US\"",
+        ] {
+            assert!(!serialized.contains(value));
+        }
+        let mut before = serde_json::to_value(unchanged.summary()).unwrap();
+        let mut after = serde_json::to_value(&report.summary).unwrap();
+        for value in [&mut before, &mut after] {
+            value.as_object_mut().unwrap().remove("waf");
+            value["top_path"]
+                .as_object_mut()
+                .unwrap()
+                .remove("waf_actions");
+        }
+        assert_eq!(before, after);
+        let mut legacy = serde_json::to_value(&report).unwrap();
+        legacy.as_object_mut().unwrap().remove("waf");
+        legacy.as_object_mut().unwrap().remove("ja4_sources");
+        legacy["summary"].as_object_mut().unwrap().remove("waf");
+        for path in legacy["paths"].as_array_mut().unwrap() {
+            path.as_object_mut().unwrap().remove("waf_actions");
+        }
+        for source in legacy["source_ips"].as_array_mut().unwrap() {
+            source.as_object_mut().unwrap().remove("waf");
+        }
+        assert!(serde_json::from_value::<PrivateRequestConcentrationReport>(legacy).is_ok());
+        let mut unavailable = RequestConcentration::new(true);
+        unavailable.configure_waf(crate::event::TelemetryProfile::ApacheCombined.capabilities());
+        unavailable.observe(&event(Some("/x"), Some("198.51.100.1"), Some(0)));
+        assert!(unavailable.summary().waf.is_none());
+        assert!(unavailable.private_report().source_ips[0].waf.is_none());
+        let mut partial_caps = caps;
+        partial_caps.ja3 = false;
+        partial_caps.country = false;
+        partial_caps.waf_labels = false;
+        partial_caps.waf_action = false;
+        let mut partial = RequestConcentration::new(false);
+        partial.configure_waf(partial_caps);
+        let summary = partial.summary().waf.unwrap();
+        assert!(
+            summary.ja3.is_none()
+                && summary.actions.is_none()
+                && summary.labels.is_none()
+                && summary.countries.is_none()
+        );
+        assert!(summary.ja4.is_some());
+    }
+
     use std::collections::BTreeMap;
 
     use chrono::TimeZone;
@@ -2364,6 +2604,7 @@ mod tests {
                 max_query_keys_per_path: 1,
                 max_status_codes_per_entity: DEFAULT_MAX_STATUS_CODES_PER_ENTITY,
                 max_source_segments: DEFAULT_MAX_SOURCE_SEGMENTS,
+                ..ConcentrationLimits::default()
             },
         );
         concentration.observe(&event(Some("/one"), Some("198.51.100.1"), Some(0)));
@@ -2414,6 +2655,7 @@ mod tests {
                 max_query_keys_per_path: 10,
                 max_status_codes_per_entity: DEFAULT_MAX_STATUS_CODES_PER_ENTITY,
                 max_source_segments: DEFAULT_MAX_SOURCE_SEGMENTS,
+                ..ConcentrationLimits::default()
             },
         );
         concentration.observe(&event(Some("/first"), Some("198.51.100.1"), Some(0)));
@@ -2503,6 +2745,7 @@ mod tests {
                 max_query_keys_per_path: 10,
                 max_status_codes_per_entity: DEFAULT_MAX_STATUS_CODES_PER_ENTITY,
                 max_source_segments: DEFAULT_MAX_SOURCE_SEGMENTS,
+                ..ConcentrationLimits::default()
             },
         );
         concentration.focus_on_path("/target");

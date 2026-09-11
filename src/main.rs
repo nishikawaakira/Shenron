@@ -941,6 +941,7 @@ enum TrendOutputFormat {
 
 #[derive(Debug, Serialize)]
 struct DailyVolumeSummary {
+    waf: Option<shenron::waf_summary::WafSummary>,
     source_segment_diversity: Option<shenron::concentration::SourceSegmentDiversitySummary>,
     report_kind: &'static str,
     safety_note: &'static str,
@@ -970,6 +971,7 @@ impl DailyVolumeSummary {
         let concentration = &report.request_concentration;
         Self {
             report_kind: "DAILY_REQUEST_VOLUME_SUMMARY",
+            waf: concentration.waf.clone(),
             source_segment_diversity: concentration.source_segment_diversity.clone(),
             safety_note: "Aggregate request-volume and response-outcome measurements only. Response shares are counts of what the log recorded: low success can also result from redirects, authentication, health checks, early client disconnects, a slow backend, or an unavailable origin. These values are not thresholds, alerts, or determinations of outage, degraded availability, automation, denial of service, attack, abuse, compromise, or attacker identity. Source IP counts describe observed connection peers and may include CDN, load-balancer, NAT, or proxy addresses.",
             telemetry_profile: report.telemetry_profile,
@@ -2440,6 +2442,13 @@ fn triage_duration_error(value: &str) -> String {
 }
 
 fn print_hunt(report: &SanitizedHuntReport, sanitized_path: &Path) {
+    println!(
+        "Findings by WAF action (matching records): {}",
+        format_waf_actions(report.metrics.findings_by_waf_action.as_ref(), false)
+    );
+    if report.metrics.findings_by_waf_action.is_some() {
+        println!("{}", shenron::waf_summary::WAF_OBSERVATION_NOTE);
+    }
     let metrics = &report.metrics;
     let time_range = match (&metrics.filter_from, &metrics.filter_to) {
         (None, None) => "Time filter:                all timestamps".to_owned(),
@@ -2537,6 +2546,13 @@ fn print_hunt(report: &SanitizedHuntReport, sanitized_path: &Path) {
 /// summarizes only aggregate observations and never repeats private finding
 /// values; the private JSONL/CSV stream itself is written to stdout.
 fn print_streaming_hunt_summary(report: &SanitizedHuntReport) {
+    eprintln!(
+        "Findings by WAF action (matching records): {}",
+        format_waf_actions(report.metrics.findings_by_waf_action.as_ref(), false)
+    );
+    if report.metrics.findings_by_waf_action.is_some() {
+        eprintln!("{}", shenron::waf_summary::WAF_OBSERVATION_NOTE);
+    }
     let metrics = &report.metrics;
     eprintln!(
         "Read-only production hunt complete (stdout-only private findings).\nRequests analyzed: {}\nFiles analyzed: {}\nParse errors: {}\nCVE-related request matches: {}\nUnique CVEs observed: {}\nSigma-matched requests: {}\nNo run directory or artifact files were created.",
@@ -3001,8 +3017,47 @@ fn normalized_rate_windows(rate_window: Vec<Duration>) -> Vec<u64> {
     }
 }
 
+fn format_waf_actions(
+    counts: Option<&shenron::waf_summary::WafActionCounts>,
+    shares: bool,
+) -> String {
+    let Some(counts) = counts else {
+        return "unavailable (telemetry profile does not expose WAF actions)".to_owned();
+    };
+    let total: u64 = counts.entries().iter().map(|(_, count)| count).sum();
+    if total == 0 {
+        return "unavailable (no observations)".to_owned();
+    }
+    counts
+        .entries()
+        .iter()
+        .filter(|(_, count)| *count > 0)
+        .map(|(name, count)| {
+            if shares {
+                format!(
+                    "{name} {:.1}% ({count})",
+                    *count as f64 / total as f64 * 100.0
+                )
+            } else {
+                format!("{name} {count}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" / ")
+}
+
 fn print_daily_volume_summary(summary: &DailyVolumeSummary, output: Option<&Path>) {
     println!("Daily request-volume summary (aggregate counts only):");
+    println!(
+        "  WAF actions: {}",
+        format_waf_actions(
+            summary.waf.as_ref().and_then(|waf| waf.actions.as_ref()),
+            true
+        )
+    );
+    if summary.waf.is_some() {
+        println!("  {}", shenron::waf_summary::WAF_OBSERVATION_NOTE);
+    }
     println!(
         "  Total requests:                         {}",
         summary.total_requests

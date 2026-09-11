@@ -186,6 +186,7 @@ pub enum HeaderCapability {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct TelemetryCapabilities {
+    pub country: bool,
     pub timestamp: bool,
     pub source_ip: bool,
     /// Whether a verified end-client IP can be populated. Standard combined
@@ -232,6 +233,7 @@ impl TelemetryCapabilities {
         };
         Self {
             timestamp: self.timestamp || other.timestamp,
+            country: self.country || other.country,
             source_ip: self.source_ip || other.source_ip,
             client_ip: self.client_ip || other.client_ip,
             host: self.host || other.host,
@@ -258,6 +260,7 @@ impl TelemetryProfile {
     pub fn capabilities(self) -> TelemetryCapabilities {
         match self {
             Self::AwsWaf => TelemetryCapabilities {
+                country: true,
                 timestamp: true,
                 source_ip: true,
                 // X-Forwarded-For is only usable after a caller supplies
@@ -281,6 +284,7 @@ impl TelemetryProfile {
                 request_body: false,
             },
             Self::NginxCombined | Self::ApacheCombined => TelemetryCapabilities {
+                country: false,
                 timestamp: true,
                 source_ip: true,
                 client_ip: false,

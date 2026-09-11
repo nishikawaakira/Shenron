@@ -1,5 +1,13 @@
 # Production AWS WAF hunting
 
+Hunt reports `findings_by_waf_action`: counts of all Nuclei and Sigma matching
+records by the recorded edge decision, not deduplicated requests. ALLOW means
+the WAF passed the request, not that it succeeded or caused a compromise.
+The same pass supplies bounded, capability-aware WAF concentration counts;
+see [WAF observations](request-concentration.md#bounded-waf-observations).
+Fingerprint, label, country-code, and peer values remain in private artifacts;
+sanitized output contains numeric summaries only.
+
 Completed observation memory can be reviewed with `shenron observation-store
 read --store <PATH> --limit 20` and compacted explicitly to a new file with
 `shenron observation-store compact --store <PATH> --output <NEW-PATH>`.

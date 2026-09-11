@@ -22,6 +22,71 @@ const GITHUB_TEMPLATE_SEARCH_PREFIX: &str =
     "https://github.com/search?q=repo:projectdiscovery/nuclei-templates";
 
 #[test]
+fn waf_counts_reach_daily_and_include_both_finding_engines_without_leaks() {
+    let directory = tempdir().unwrap();
+    let rules = directory.path().join("rules");
+    fs::create_dir(&rules).unwrap();
+    fs::write(rules.join("probe.yml"), "title: Test path\nid: test-waf-action\nlogsource:\n  category: webserver\n  product: aws\n  service: waf\ndetection:\n  selection:\n    uri_path|contains: vulnerable\n  condition: selection\nlevel: medium\n").unwrap();
+    let output = directory.path().join("hunt");
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "hunt",
+            "--input",
+            "tests/fixtures/production/waf.jsonl",
+            "--format",
+            "aws-waf",
+            "--nuclei-templates",
+            "tests/fixtures/nuclei",
+            "--nuclei-report",
+            "tests/fixtures/production/nuclei-report.json",
+            "--rules",
+            rules.to_str().unwrap(),
+            "--output",
+            output.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(contains(
+            "Findings by WAF action (matching records): ALLOW 2 / BLOCK 2",
+        ));
+    let sanitized = fs::read_to_string(output.join("sanitized-research.json")).unwrap();
+    let report: serde_json::Value = serde_json::from_str(&sanitized).unwrap();
+    assert_eq!(report["metrics"]["findings_by_waf_action"]["allow"], 2);
+    assert_eq!(report["metrics"]["cve_related_request_matches"], 2);
+    assert_eq!(report["metrics"]["sigma_rule_matches"], 2);
+    assert_eq!(
+        report["metrics"]["request_concentration"]["waf"]["actions"]["block"],
+        1
+    );
+    assert_eq!(
+        report["metrics"]["request_concentration"]["waf"]["ja4_sources"]
+            ["maximum_distinct_sources"],
+        2
+    );
+    for value in [
+        "198.51.100",
+        "/vulnerable/execute",
+        "t13d1516h2",
+        "test:allow",
+    ] {
+        assert!(!sanitized.contains(value));
+    }
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "daily",
+            "--input",
+            "tests/fixtures/production/waf.jsonl",
+            "--format",
+            "aws-waf",
+        ])
+        .assert()
+        .success()
+        .stdout(contains("  WAF actions: ALLOW 50.0% (1) / BLOCK 50.0% (1)"));
+}
+
+#[test]
 fn compressed_findings_are_lossless_and_downstream_compatible() {
     use sha2::{Digest, Sha256};
     let directory = tempdir().unwrap();

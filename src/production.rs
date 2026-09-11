@@ -103,6 +103,10 @@ impl CatalogSeverityCounts {
 
 #[derive(Debug, Default, Serialize)]
 pub struct HuntMetrics {
+    /// Matching records, not deduplicated requests. Every Nuclei/Sigma finding
+    /// is counted; ALLOW records an edge decision, not request success.
+    #[serde(default)]
+    pub findings_by_waf_action: Option<crate::waf_summary::WafActionCounts>,
     pub waf_outcome_available: bool,
     pub filter_from: Option<String>,
     pub filter_to: Option<String>,
@@ -1182,6 +1186,8 @@ fn hunt_with_destination(
     let capabilities = telemetry_profile.capabilities();
     let mut concentration =
         RequestConcentration::with_capabilities(capabilities.response_bytes, capabilities.status);
+    concentration.configure_waf(capabilities);
+    metrics.findings_by_waf_action = capabilities.waf_action.then(Default::default);
     let mut bot_ranges = BotRangeAccumulator::default();
     metrics.bot_range_snapshot_loaded = bot_range_database.is_some();
     let bot_catalog = if bot_range_database.is_none() {
@@ -1267,6 +1273,9 @@ fn hunt_with_destination(
                 }
                 for detection in &matches {
                     let finding = private_finding(detection, &event);
+                    if let Some(counts) = &mut metrics.findings_by_waf_action {
+                        counts.record(event.waf_action.as_deref());
+                    }
                     record_finding_disposition(
                         metrics.analyst_dispositions.as_mut(),
                         disposition_store.as_ref(),
@@ -1290,6 +1299,9 @@ fn hunt_with_destination(
                 }
                 for rule in &sigma_matches {
                     let finding = sigma_finding(rule, &event);
+                    if let Some(counts) = &mut metrics.findings_by_waf_action {
+                        counts.record(event.waf_action.as_deref());
+                    }
                     record_finding_disposition(
                         metrics.analyst_dispositions.as_mut(),
                         disposition_store.as_ref(),
@@ -1713,6 +1725,7 @@ fn concentration_run(
         rate_window_seconds,
     );
     accumulator.set_response_bucket_minimum_requests(response_bucket_minimum_requests);
+    accumulator.configure_waf(telemetry_profile.capabilities());
     accumulator
         .set_response_success_share_threshold_percent(response_success_share_threshold_percent)
         .map_err(anyhow::Error::msg)?;
