@@ -203,6 +203,15 @@ enum CandidateCommand {
     Build {
         #[arg(long)]
         from_findings: PathBuf,
+        /// Narrow candidates by frozen observed-peer IP/CIDR membership. Private local input.
+        #[arg(long)]
+        source_address_set: Option<PathBuf>,
+        /// Existing operator-maintained IPv4 WAF IP set reference. No set is created.
+        #[arg(long, requires = "source_address_set")]
+        source_ip_set_v4_arn: Option<String>,
+        /// Existing operator-maintained IPv6 WAF IP set reference. No set is created.
+        #[arg(long, requires = "source_address_set")]
+        source_ip_set_v6_arn: Option<String>,
         #[arg(long)]
         output: PathBuf,
         #[arg(long, value_enum)]
@@ -1797,6 +1806,9 @@ fn main() -> Result<()> {
         Command::Candidate { command } => match command {
             CandidateCommand::Build {
                 from_findings,
+                source_address_set,
+                source_ip_set_v4_arn,
+                source_ip_set_v6_arn,
                 output,
                 telemetry,
                 include_response_unverified,
@@ -1819,7 +1831,7 @@ fn main() -> Result<()> {
                 } else {
                     None
                 };
-                let (candidates, stats) = build_batch_from_findings_with_sigma(
+                let (mut candidates, stats) = build_batch_from_findings_with_sigma(
                     &findings,
                     telemetry.explicit_telemetry_profile()?,
                     include_response_unverified,
@@ -1831,6 +1843,18 @@ fn main() -> Result<()> {
                     anyhow::bail!(
                         "no candidate patterns could be built from the supplied findings; response-unverified and Sigma findings are excluded by default, and Sigma rules must be faithfully translatable"
                     );
+                }
+                if let Some(path) = source_address_set {
+                    shenron::production::ensure_separate_output(&path, &output)?;
+                    let set = shenron::address_set::FrozenAddressSet::load(
+                        &path,
+                        source_ip_set_v4_arn,
+                        source_ip_set_v6_arn,
+                    )?;
+                    println!("Frozen source-address set: {} retained networks; {} invalid records excluded; {} duplicate records; {} comment/empty records skipped.\n{}", set.networks.len(), set.invalid_records, set.duplicate_records, set.comment_or_empty_records, shenron::address_set::ADDRESS_SET_NOTE);
+                    for candidate in &mut candidates {
+                        shenron::candidate::with_source_address_set(candidate, set.clone());
+                    }
                 }
                 save_batch(&candidates, &output)?;
                 println!("Candidates written: {}\nSigma TTP candidates (separate evidence class): {}\nOutput directory: {}\nSigma findings excluded without explicit opt-in: {}\nSigma findings skipped because the source rule was missing or not faithfully translatable: {}\nAWS WAF BLOCK findings excluded: {}\nResponse-unverified findings excluded: {}\nFindings skipped for missing method/path: {}\nRecommended initial action: COUNT\nHistorical replay: required before preventive export.\nSigma TTP candidates represent literal rule matches, not CVE evidence or a determination of attack, exploitation, or compromise.", stats.candidates, stats.sigma_candidates, output.display(), stats.excluded_sigma_findings, stats.skipped_sigma_findings_untranslatable, stats.excluded_blocked_findings, stats.excluded_response_unverified_findings, stats.skipped_incomplete_findings);
@@ -1849,6 +1873,11 @@ fn main() -> Result<()> {
                     &output,
                 )?;
                 save_candidate(&candidate, &output)?;
+                if candidate.evidence.source_address_unavailable > 0
+                    || candidate.evidence.source_address_invalid > 0
+                {
+                    println!("Source-address evaluation excluded: {} missing peer addresses; {} invalid peer addresses. These observations cannot establish membership.", candidate.evidence.source_address_unavailable, candidate.evidence.source_address_invalid);
+                }
                 println!("Historical replay complete. Candidate written: {}\nRequests evaluated: {}\nOther historical matches: {}\nPreventive export remains COUNT-only.", output.display(), candidate.evidence.historical_requests_evaluated, candidate.evidence.other_historical_matches);
                 Ok(())
             }
@@ -1890,6 +1919,9 @@ fn main() -> Result<()> {
                 telemetry,
             } => {
                 let candidate = load_candidate(&candidate)?;
+                if shenron::candidate::uses_source_address_set(&candidate) {
+                    println!("{}", shenron::address_set::ADDRESS_SET_NOTE);
+                }
                 let telemetry = match telemetry {
                     Some(telemetry) => telemetry.explicit_telemetry_profile()?,
                     None => candidate.telemetry_profile,

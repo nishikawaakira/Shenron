@@ -642,7 +642,7 @@ struct RunManifestInputs {
     template_filter: Option<TemplateFilterSummary>,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct PathProvenance {
     pub path: String,
     pub byte_length: Option<u64>,
@@ -3179,6 +3179,29 @@ struct FingerprintReader<R> {
 }
 
 struct SharedFingerprintReader<R>(std::rc::Rc<std::cell::RefCell<FingerprintReader<R>>>);
+
+/// Read a frozen local input once, using the same stored-byte fingerprint
+/// reader as corpus streaming. Parsing consumes the returned bytes, not a reopen.
+pub fn read_fingerprinted_input(path: &Path) -> anyhow::Result<(Vec<u8>, PathProvenance)> {
+    let file =
+        File::open(path).with_context(|| format!("opening frozen input {}", path.display()))?;
+    let state = std::rc::Rc::new(std::cell::RefCell::new(FingerprintReader {
+        reader: file,
+        hash: Sha256::new(),
+        bytes: 0,
+    }));
+    let mut bytes = Vec::new();
+    SharedFingerprintReader(state.clone()).read_to_end(&mut bytes)?;
+    let state = state.borrow();
+    Ok((
+        bytes,
+        PathProvenance {
+            path: path.display().to_string(),
+            byte_length: Some(state.bytes),
+            sha256: Some(format!("{:x}", state.hash.clone().finalize())),
+        },
+    ))
+}
 
 impl<R: Read> Read for SharedFingerprintReader<R> {
     fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {

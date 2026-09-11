@@ -16,6 +16,231 @@ use shenron::{
 };
 use tempfile::tempdir;
 
+#[test]
+fn frozen_source_sets_preserve_replay_export_gates_and_private_provenance() {
+    use sha2::{Digest, Sha256};
+    use shenron::{
+        access_log::{parse_combined_line, AccessLogFormat},
+        address_set::FrozenAddressSet,
+        candidate::{save_batch, with_source_address_set},
+    };
+    let directory = tempdir().unwrap();
+    let source = directory.path().join("private-addresses.txt");
+    let bytes =
+        b"# operator snapshot\n198.51.100.0/24\n2001:db8::/48\n198.51.100.1/24\ninvalid-address\n";
+    fs::write(&source, bytes).unwrap();
+    let v4 = "arn:aws:wafv2:us-east-1:123456789012:regional/ipset/frozen-v4/11111111-1111-1111-1111-111111111111";
+    let v6 = "arn:aws:wafv2:us-east-1:123456789012:regional/ipset/frozen-v6/22222222-2222-2222-2222-222222222222";
+    let set = FrozenAddressSet::load(&source, Some(v4.to_owned()), Some(v6.to_owned())).unwrap();
+    assert_eq!(set.networks.len(), 2);
+    assert_eq!(set.invalid_records, 1);
+    assert_eq!(set.duplicate_records, 1);
+    assert_eq!(set.comment_or_empty_records, 1);
+    for ip in [
+        "198.51.100.0",
+        "198.51.100.255",
+        "2001:db8::1",
+        "2001:db8:0:ffff::1",
+    ] {
+        assert!(set.matches(ip));
+    }
+    for ip in ["198.51.101.0", "2001:db8:1::1", "invalid"] {
+        assert!(!set.matches(ip));
+    }
+    let mut built = candidate(DefensiveCondition::UriEquals {
+        value: "/login".to_owned(),
+    });
+    with_source_address_set(&mut built, set.clone());
+    assert!(!built.evidence.replay_completed);
+    let candidates = directory.path().join("candidates");
+    save_batch(&[built.clone()], &candidates).unwrap();
+    let manifest_text = fs::read_to_string(candidates.join("run-manifest.json")).unwrap();
+    let manifest: serde_json::Value = serde_json::from_str(&manifest_text).unwrap();
+    let provenance = &manifest["source_address_sets"][0]["input"];
+    assert_eq!(
+        provenance["path"],
+        source.canonicalize().unwrap().display().to_string()
+    );
+    assert_eq!(provenance["byte_length"], bytes.len());
+    assert_eq!(provenance["sha256"], format!("{:x}", Sha256::digest(bytes)));
+    assert_eq!(manifest["source_address_sets"][0]["invalid_records"], 1);
+    let aws = directory.path().join("export.json");
+    assert!(export(
+        &built,
+        Backend::AwsWafJson,
+        TelemetryProfile::ApacheCombined,
+        &aws,
+        Some(10),
+        99001
+    )
+    .unwrap_err()
+    .to_string()
+    .contains("historical"));
+    let mut logs = String::new();
+    for ip in ["198.51.100.1", "2001:db8::1", "203.0.113.1"] {
+        let line = format!(
+            "{ip} - - [01/Jan/2026:00:00:00 +0000] \"GET /login HTTP/1.1\" 200 10 \"-\" \"agent\""
+        );
+        let event = parse_combined_line(&line, AccessLogFormat::ApacheCombined).unwrap();
+        assert_eq!(built.conditions.matches(&event), ip != "203.0.113.1");
+        logs.push_str(&line);
+        logs.push('\n');
+    }
+    let logs_path = directory.path().join("access.log");
+    fs::write(&logs_path, logs).unwrap();
+    let replayed = replay(
+        built.clone(),
+        &logs_path,
+        TelemetryProfile::ApacheCombined,
+        &directory.path().join("replayed.json"),
+    )
+    .unwrap();
+    assert_eq!(replayed.evidence.historical_requests_evaluated, 3);
+    assert_eq!(replayed.evidence.other_historical_matches, 2);
+    export(
+        &replayed,
+        Backend::AwsWafJson,
+        TelemetryProfile::ApacheCombined,
+        &aws,
+        Some(10),
+        99001,
+    )
+    .unwrap();
+    let rendered = fs::read_to_string(&aws).unwrap();
+    let json: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+    assert!(json["Action"]["Count"].is_object());
+    assert_eq!(rendered.matches("IPSetReferenceStatement").count(), 2);
+    assert!(rendered.contains(v4) && rendered.contains(v6));
+    assert!(!rendered.contains("ForwardedIPConfig"));
+    let terraform = directory.path().join("export-terraform.tf");
+    export(
+        &replayed,
+        Backend::TerraformAwsWaf,
+        TelemetryProfile::ApacheCombined,
+        &terraform,
+        Some(10),
+        99001,
+    )
+    .unwrap();
+    let hcl = fs::read_to_string(terraform).unwrap();
+    assert_eq!(hcl.matches("ip_set_reference_statement").count(), 2);
+    assert!(hcl.contains("count {}") && hcl.contains(v4) && hcl.contains(v6));
+    let sidecar = fs::read_to_string(directory.path().join("export.evidence.json")).unwrap();
+    for value in ["198.51.100", "2001:db8", "private-addresses", "/login"] {
+        assert!(!sidecar.contains(value));
+    }
+    assert_ne!(
+        compatibility(&replayed, Backend::Ossec, TelemetryProfile::ApacheCombined).status,
+        CompatibilityStatus::FullySupported
+    );
+    let missing = candidate(DefensiveCondition::SourceAddressSet {
+        set: FrozenAddressSet::load(&source, None, None).unwrap(),
+    });
+    assert_ne!(
+        compatibility(&missing, Backend::AwsWafJson, TelemetryProfile::AwsWaf).status,
+        CompatibilityStatus::FullySupported
+    );
+    assert!(export(
+        &missing,
+        Backend::AwsWafJson,
+        TelemetryProfile::AwsWaf,
+        &directory.path().join("refused.json"),
+        Some(1),
+        99001
+    )
+    .is_err());
+    fs::write(&source, "0.0.0.0/0\n").unwrap();
+    let unsupported = candidate(DefensiveCondition::SourceAddressSet {
+        set: FrozenAddressSet::load(&source, Some(v4.to_owned()), None).unwrap(),
+    });
+    assert_ne!(
+        compatibility(&unsupported, Backend::AwsWafJson, TelemetryProfile::AwsWaf).status,
+        CompatibilityStatus::FullySupported
+    );
+    assert!(replay(
+        built,
+        &logs_path,
+        TelemetryProfile::ApacheCombined,
+        &directory.path().join("changed.json")
+    )
+    .is_err());
+    assert!(export(
+        &replayed,
+        Backend::AwsWafJson,
+        TelemetryProfile::ApacheCombined,
+        &directory.path().join("changed-export.json"),
+        Some(10),
+        99001
+    )
+    .is_err());
+}
+
+#[test]
+fn candidate_source_set_is_explicit_and_leaves_default_build_unchanged() {
+    let directory = tempdir().unwrap();
+    let run = directory.path().join("run");
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "hunt",
+            "--input",
+            "tests/fixtures/production/waf.jsonl",
+            "--format",
+            "aws-waf",
+            "--nuclei-templates",
+            "tests/fixtures/nuclei",
+            "--nuclei-report",
+            "tests/fixtures/production/nuclei-report.json",
+            "--no-sigma",
+            "--output",
+            run.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    let source = directory.path().join("set.txt");
+    fs::write(&source, "198.51.100.0/24\nnot-an-ip\n").unwrap();
+    for enabled in [false, true] {
+        let output = directory
+            .path()
+            .join(if enabled { "restricted" } else { "default" });
+        let mut command = Command::cargo_bin("shenron").unwrap();
+        command.args([
+            "candidate",
+            "build",
+            "--from-findings",
+            run.to_str().unwrap(),
+            "--telemetry",
+            "aws-waf",
+            "--output",
+            output.to_str().unwrap(),
+        ]);
+        if enabled {
+            command.args(["--source-address-set", source.to_str().unwrap()]);
+        }
+        let assertion = command.assert().success();
+        if enabled {
+            assertion.stdout(contains("1 invalid records excluded"));
+        }
+        assert_eq!(output.join("run-manifest.json").exists(), enabled);
+        let candidate_file = fs::read_dir(&output)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| path.file_name().unwrap() != "run-manifest.json")
+            .unwrap();
+        let built = shenron::candidate::load(&candidate_file).unwrap();
+        assert_eq!(shenron::candidate::uses_source_address_set(&built), enabled);
+        if !enabled {
+            let findings = shenron::production::explain_private_findings(&run).unwrap();
+            let (original, _) =
+                build_batch_from_findings(&findings, TelemetryProfile::AwsWaf, false);
+            assert_eq!(
+                serde_json::to_value(built).unwrap(),
+                serde_json::to_value(&original[0]).unwrap()
+            );
+        }
+    }
+}
+
 fn candidate(condition: DefensiveCondition) -> DefensiveCandidate {
     DefensiveCandidate {
         schema_version: 1,
@@ -27,6 +252,8 @@ fn candidate(condition: DefensiveCondition) -> DefensiveCandidate {
         cves: vec!["CVE-2099-0001".to_owned()],
         kev: false,
         evidence: CandidateEvidence {
+            source_address_unavailable: 0,
+            source_address_invalid: 0,
             historical_requests_evaluated: 11,
             known_threat_findings: 1,
             known_threat_findings_matched: 1,

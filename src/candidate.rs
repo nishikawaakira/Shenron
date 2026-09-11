@@ -14,6 +14,7 @@ use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::address_set::FrozenAddressSet;
 use crate::production::{FindingExplanation, FindingSource};
 use crate::{
     event::{RawRetention, TelemetryProfile, WebEvent},
@@ -24,6 +25,7 @@ use crate::{
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DefensiveCondition {
+    SourceAddressSet { set: FrozenAddressSet },
     UriEquals { value: String },
     UriContains { value: String },
     UriEqualsAsciiCaseInsensitive { value: String },
@@ -47,6 +49,10 @@ pub enum DefensiveCondition {
 impl DefensiveCondition {
     pub fn matches(&self, event: &WebEvent) -> bool {
         match self {
+            Self::SourceAddressSet { set } => event
+                .source_ip
+                .as_deref()
+                .is_some_and(|source| set.matches(source)),
             Self::UriEquals { value } => event.uri_path.as_deref() == Some(value),
             Self::UriContains { value } => {
                 event.uri_path.as_deref().is_some_and(|v| v.contains(value))
@@ -101,6 +107,10 @@ pub struct FindingReference {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CandidateEvidence {
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub source_address_unavailable: u64,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub source_address_invalid: u64,
     pub historical_requests_evaluated: u64,
     pub known_threat_findings: u64,
     pub known_threat_findings_matched: u64,
@@ -182,10 +192,64 @@ pub struct CompatibilityReport {
 }
 
 pub fn load(path: &Path) -> Result<DefensiveCandidate> {
-    serde_json::from_reader(
+    let candidate: DefensiveCandidate = serde_json::from_reader(
         fs::File::open(path).with_context(|| format!("opening candidate {}", path.display()))?,
     )
-    .context("parsing defensive candidate JSON")
+    .context("parsing defensive candidate JSON")?;
+    validate_address_sets(&candidate.conditions)?;
+    Ok(candidate)
+}
+
+fn is_zero(value: &u64) -> bool {
+    *value == 0
+}
+
+pub fn uses_source_address_set(candidate: &DefensiveCandidate) -> bool {
+    !address_sets(&candidate.conditions).is_empty()
+}
+
+fn address_sets(condition: &DefensiveCondition) -> Vec<&crate::address_set::FrozenAddressSet> {
+    match condition {
+        DefensiveCondition::SourceAddressSet { set } => vec![set],
+        DefensiveCondition::And { conditions } | DefensiveCondition::Or { conditions } => {
+            conditions.iter().flat_map(address_sets).collect()
+        }
+        DefensiveCondition::Not { condition } => address_sets(condition),
+        _ => Vec::new(),
+    }
+}
+
+fn validate_address_sets(condition: &DefensiveCondition) -> Result<()> {
+    for set in address_sets(condition) {
+        set.validate_snapshot()?;
+    }
+    Ok(())
+}
+
+/// Explicitly narrow an already-built request-content hypothesis. This resets
+/// replay evidence: a replay for the original condition cannot authorize export.
+pub fn with_source_address_set(
+    candidate: &mut DefensiveCandidate,
+    set: crate::address_set::FrozenAddressSet,
+) {
+    let suffix = set.provenance.sha256.as_deref().unwrap_or_default();
+    candidate
+        .id
+        .push_str(&format!("-source-set-{}", &suffix[..suffix.len().min(12)]));
+    candidate.conditions = DefensiveCondition::And {
+        conditions: vec![
+            candidate.conditions.clone(),
+            DefensiveCondition::SourceAddressSet { set },
+        ],
+    };
+    candidate.evidence.historical_requests_evaluated = 0;
+    candidate.evidence.known_threat_findings_matched = 0;
+    candidate.evidence.known_threat_findings_missed = 0;
+    candidate.evidence.other_historical_matches = 0;
+    candidate.evidence.threat_coverage = None;
+    candidate.evidence.replay_completed = false;
+    candidate.evidence.source_address_invalid = 0;
+    candidate.evidence.source_address_unavailable = 0;
 }
 #[derive(Debug, Clone, Copy)]
 pub struct BatchBuildStats {
@@ -324,6 +388,8 @@ pub fn build_batch_from_findings_with_sigma(
                 cves: vec![cve],
                 kev: false,
                 evidence: CandidateEvidence {
+                    source_address_unavailable: 0,
+                    source_address_invalid: 0,
                     historical_requests_evaluated: 0,
                     known_threat_findings: known,
                     known_threat_findings_matched: 0,
@@ -390,6 +456,8 @@ pub fn build_batch_from_findings_with_sigma(
                 cves: Vec::new(),
                 kev: false,
                 evidence: CandidateEvidence {
+                    source_address_unavailable: 0,
+                    source_address_invalid: 0,
                     historical_requests_evaluated: 0,
                     known_threat_findings: known,
                     known_threat_findings_matched: 0,
@@ -472,6 +540,24 @@ pub fn save_batch(candidates: &[DefensiveCandidate], output: &Path) -> Result<()
         );
     }
     fs::create_dir_all(output)?;
+    let mut snapshots = BTreeMap::new();
+    for candidate in candidates {
+        for set in address_sets(&candidate.conditions) {
+            snapshots.insert(set.provenance.path.clone(), serde_json::json!({
+                "input": set.provenance, "retained_networks": set.networks.len(),
+                "invalid_records": set.invalid_records, "duplicate_records": set.duplicate_records,
+                "comment_or_empty_records": set.comment_or_empty_records,
+                "ipv4_arn": set.ipv4_arn, "ipv6_arn": set.ipv6_arn,
+            }));
+        }
+    }
+    let manifest_path = output.join("run-manifest.json");
+    if !snapshots.is_empty() && manifest_path.exists() {
+        bail!(
+            "refusing to overwrite private source-address manifest {}",
+            manifest_path.display()
+        );
+    }
     let paths: Vec<_> = candidates
         .iter()
         .map(|candidate| output.join(format!("{}.json", candidate.id)))
@@ -485,6 +571,15 @@ pub fn save_batch(candidates: &[DefensiveCandidate], output: &Path) -> Result<()
     for (candidate, path) in candidates.iter().zip(paths) {
         save(candidate, &path)?;
     }
+    if !snapshots.is_empty() {
+        serde_json::to_writer_pretty(
+            fs::File::create(manifest_path)?,
+            &serde_json::json!({
+                "report_kind": "RUN_MANIFEST", "safety_note": "Private candidate provenance: contains local file paths and operator-supplied set references. Not sanitized; do not share without review. SHA-256 identifies stored input bytes, not an identity or a Shenron determination.",
+                "shenron_version": env!("CARGO_PKG_VERSION"), "source_address_sets": snapshots.into_values().collect::<Vec<_>>(),
+            }),
+        )?;
+    }
     Ok(())
 }
 pub fn replay(
@@ -494,6 +589,10 @@ pub fn replay(
     output: &Path,
 ) -> Result<DefensiveCandidate> {
     crate::production::ensure_separate_output(input, output)?;
+    validate_address_sets(&candidate.conditions)?;
+    let uses_addresses = !address_sets(&candidate.conditions).is_empty();
+    candidate.evidence.source_address_unavailable = 0;
+    candidate.evidence.source_address_invalid = 0;
     let mut evaluated = 0_u64;
     let known_request_ids = candidate
         .source_findings
@@ -510,6 +609,19 @@ pub fn replay(
             |event| {
                 if let Ok(event) = event {
                     evaluated += 1;
+                    if uses_addresses {
+                        match event.source_ip.as_deref() {
+                            None => {
+                                candidate.evidence.source_address_unavailable += 1;
+                                return Ok(());
+                            }
+                            Some(ip) if ip.parse::<std::net::IpAddr>().is_err() => {
+                                candidate.evidence.source_address_invalid += 1;
+                                return Ok(());
+                            }
+                            Some(_) => {}
+                        }
+                    }
                     if candidate.conditions.matches(&event) {
                         match event.request_id.as_ref() {
                             Some(request_id) if known_request_ids.contains(request_id) => {
@@ -547,6 +659,12 @@ pub fn compatibility(
     telemetry: TelemetryProfile,
 ) -> CompatibilityReport {
     let mut reasons = Vec::new();
+    if validate_address_sets(&candidate.conditions).is_err() {
+        reasons.push(
+            "frozen source-address snapshot is unavailable or changed; rebuild and replay"
+                .to_owned(),
+        );
+    }
     let mut supported_leaves = 0;
     compatible_condition(
         &candidate.conditions,
@@ -592,6 +710,18 @@ fn compatible_condition(
         }
     };
     match c {
+        DefensiveCondition::SourceAddressSet { set } => {
+            unavailable("observed source IP", capabilities.source_ip, reasons);
+            if backend != Backend::Ossec {
+                reasons.extend(set.compatibility_reasons());
+                if set.has_v4() && set.has_v6() && depth >= 3 {
+                    reasons.push(
+                        "mixed-family IP sets add an OR level beyond AWS WAF nesting support"
+                            .to_owned(),
+                    );
+                }
+            }
+        }
         DefensiveCondition::HostEquals { .. } => unavailable("host", capabilities.host, reasons),
         DefensiveCondition::Ja3Equals { .. } => unavailable("JA3", capabilities.ja3, reasons),
         DefensiveCondition::Ja4Equals { .. } => unavailable("JA4", capabilities.ja4, reasons),
@@ -668,6 +798,9 @@ fn ossec_shape_supported(c: &DefensiveCondition) -> bool {
 }
 fn condition_name(c: &DefensiveCondition) -> &'static str {
     match c {
+        DefensiveCondition::SourceAddressSet { .. } => {
+            "frozen observed-source address membership (not identity or attribution)"
+        }
         DefensiveCondition::Ja4Equals { .. } => "JA4 equality",
         DefensiveCondition::Ja3Equals { .. } => "JA3 equality",
         DefensiveCondition::HostEquals { .. } => "host equality",
@@ -691,6 +824,7 @@ pub fn export(
     priority: Option<u32>,
     ossec_rule_id: u32,
 ) -> Result<CompatibilityReport> {
+    validate_address_sets(&candidate.conditions)?;
     reject_sensitive(candidate)?;
     let report = compatibility(candidate, backend, telemetry);
     if report.status != CompatibilityStatus::FullySupported {
@@ -730,6 +864,18 @@ fn aws_rule(c: &DefensiveCandidate, priority: u32) -> serde_json::Value {
 }
 fn aws_statement(c: &DefensiveCondition) -> serde_json::Value {
     match c {
+        DefensiveCondition::SourceAddressSet { set } => {
+            let mut statements: Vec<_> = set
+                .references()
+                .iter()
+                .map(|arn| serde_json::json!({"IPSetReferenceStatement":{"ARN":arn}}))
+                .collect();
+            if statements.len() == 1 {
+                statements.remove(0)
+            } else {
+                serde_json::json!({"OrStatement":{"Statements":statements}})
+            }
+        }
         DefensiveCondition::And { conditions } => {
             serde_json::json!({"AndStatement":{"Statements": conditions.iter().map(aws_statement).collect::<Vec<_>>()}})
         }
@@ -821,6 +967,15 @@ fn terraform_rule(c: &DefensiveCandidate, priority: u32) -> String {
 fn terraform_statement(c: &DefensiveCondition, indent: usize) -> String {
     let pad = " ".repeat(indent);
     match c {
+        DefensiveCondition::SourceAddressSet { set } => {
+            let references = set.references();
+            if references.len() == 1 {
+                format!("{pad}statement {{\n{pad}  ip_set_reference_statement {{\n{pad}    arn = {}\n{pad}  }}\n{pad}}}", hcl(references[0]))
+            } else {
+                let children = references.iter().map(|arn| format!("{pad}    statement {{\n{pad}      ip_set_reference_statement {{\n{pad}        arn = {}\n{pad}      }}\n{pad}    }}", hcl(arn))).collect::<Vec<_>>().join("\n");
+                format!("{pad}statement {{\n{pad}  or_statement {{\n{children}\n{pad}  }}\n{pad}}}")
+            }
+        }
         DefensiveCondition::And { conditions } | DefensiveCondition::Or { conditions } => {
             let operator = if matches!(c, DefensiveCondition::And { .. }) {
                 "and_statement"
@@ -984,6 +1139,11 @@ fn write_evidence(
     report: &CompatibilityReport,
     output: &Path,
 ) -> Result<()> {
+    let safety_note = if uses_source_address_set(c) {
+        crate::address_set::ADDRESS_SET_NOTE
+    } else {
+        "Candidate artifact only. Human review is required; no deployment was performed."
+    };
     let sidecar = output.with_file_name(format!(
         "{}.evidence.json",
         output
@@ -994,7 +1154,7 @@ fn write_evidence(
     ensure_new(&sidecar)?;
     serde_json::to_writer_pretty(
         fs::File::create(sidecar)?,
-        &serde_json::json!({"candidate_id":c.id,"candidate_kind":c.candidate_kind,"evidence_basis":c.evidence_basis,"cves":c.cves,"kev":c.kev,"evidence":c.evidence,"recommended_initial_action":"COUNT","backend_compatibility":report,"safety_note":"Candidate artifact only. Human review is required; no deployment was performed."}),
+        &serde_json::json!({"candidate_id":c.id,"candidate_kind":c.candidate_kind,"evidence_basis":c.evidence_basis,"cves":c.cves,"kev":c.kev,"evidence":c.evidence,"recommended_initial_action":"COUNT","backend_compatibility":report,"safety_note":safety_note}),
     )?;
     Ok(())
 }
@@ -1024,6 +1184,9 @@ fn reject_sensitive(c: &DefensiveCandidate) -> Result<()> {
 
 fn condition_contains_sensitive_value(condition: &DefensiveCondition) -> bool {
     match condition {
+        // Snapshot values stay private and only validated IP set ARN references
+        // are exported. No observed addresses enter sanitized evidence.
+        DefensiveCondition::SourceAddressSet { .. } => false,
         DefensiveCondition::HeaderEquals { name, value }
         | DefensiveCondition::HeaderContains { name, value } => {
             sensitive_header_name(name) || sensitive_value(value)

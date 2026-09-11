@@ -1,5 +1,66 @@
 # WAF candidate model
 
+## Frozen source-address conditions (explicit opt-in)
+
+`candidate build --source-address-set <FILE>` narrows each request-content
+candidate with an additional AND condition on the **observed connection peer**.
+This is different evidence from a method, path, or header match: it tests
+membership in an operator-selected address snapshot, not identity, ownership,
+intent, or a finding of attack or abuse. No address set is used by default.
+Combined logs suffice; forwarded client headers are not used or inferred.
+The operator must verify that the log's observed peer is the same address that
+the target WAF evaluates; proxy/CDN topologies can invalidate that assumption.
+
+The UTF-8 input contains one IP or CIDR per line, with optional `#` comments.
+IPv4 and IPv6 are supported; invalid records are excluded with counts, duplicate
+normalized networks are counted separately, and an empty usable set is rejected.
+The candidate carries the frozen normalized networks and a reference to the
+original file. The private `run-manifest.json` in the candidate output directory
+records its path, stored byte length, and SHA-256 using the existing input
+fingerprint mechanism. Loading/replaying/exporting a source-set candidate checks
+the snapshot bytes and normalized contents; changing or losing the source file
+requires rebuilding. Preserve this private file with the candidate. Source
+addresses missing or invalid in replay are explicitly counted as unmeasurable,
+never inferred or silently treated as evidence of nonmembership.
+
+AWS IP sets have separate address families. Bind the frozen IPv4 and IPv6 subsets
+with `--source-ip-set-v4-arn` and `--source-ip-set-v6-arn`, respectively. An ARN
+is an operator-supplied reference to an existing set, not a request to create it.
+Mixed-family sets render as OR of two IPSetReferenceStatements. Missing bindings,
+unsupported address ranges, or excessive logical nesting refuse faithful export.
+The operator must ensure those sets contain exactly the frozen subsets, in the
+correct account, region, and scope. Shenron does not call AWS to verify remote
+contents, create sets, or deploy rules. OSSEC cannot faithfully represent this
+condition and is rejected. AWS JSON and Terraform remain COUNT-only and require
+historical replay and explicit priority, exactly as other candidates do.
+
+Address allocations and remote IP sets change. Replay against a frozen snapshot
+is not a guarantee about future traffic. Large cloud ranges also contain
+legitimate search and AI crawlers; blocking them can affect search indexing and
+AI citations as well as ordinary shared-cloud clients. Before considering a
+manual COUNT-to-BLOCK promotion outside Shenron, review representative COUNT
+matches and near misses, legitimate users and crawlers, source-address visibility,
+the request conditions, the exact set contents and age, IPv4/IPv6 bindings, scope,
+rollback procedures, and downstream effects. Neither shared address space nor
+snapshot membership determines a shared operator, actor, attack, or abuse.
+
+For example (all paths and the ARNs are private local configuration):
+
+```bash
+shenron candidate build --from-findings ./hunt \
+  --telemetry apache --output ./source-scoped-candidates \
+  --source-address-set ./frozen-addresses.txt \
+  --source-ip-set-v4-arn "$REVIEWED_IPV4_IP_SET_ARN" \
+  --source-ip-set-v6-arn "$REVIEWED_IPV6_IP_SET_ARN"
+```
+
+Omit a family's reference when the snapshot contains no addresses in that family.
+AWS's [IPSet definition](https://docs.aws.amazon.com/waf/latest/APIReference/API_IPSet.html)
+uses a single address family and excludes `/0`; its
+[IPSetReferenceStatement](https://docs.aws.amazon.com/waf/latest/APIReference/API_IPSetReferenceStatement.html)
+requires the operator-maintained set's ARN. Local `/0` membership remains
+well-defined, but export refuses it rather than changing the snapshot's meaning.
+
 Candidates are source-neutral defensive hypotheses, not automatic policy changes. `shenron candidate compatibility`, `explain`, and `export` perform local review-only analysis. AWS WAF JSON and Terraform exports are COUNT-only and refuse candidates without historical replay evidence, an explicit priority, or fully faithful backend compatibility. OSSEC export is a detection-control XML rule, not a WAF rule.
 
 See [AWS WAF JSON](exporters/aws-waf.md), [Terraform](exporters/terraform.md), and [OSSEC](exporters/ossec.md).
