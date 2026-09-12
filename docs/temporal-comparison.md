@@ -35,6 +35,108 @@ plus the CTI track via retro-hunting; they do not change how a single run works.
 
 ## The comparison modes
 
+### Opt-in daily measurement deltas and comparison points
+
+```bash
+shenron compare --baseline ./private-results/day-1 --current ./private-results/day-2 \
+  --output ./private-results/day-diff --comparison-points
+shenron compare --baseline ./private-results/day-1 --current ./private-results/day-2 \
+  --output ./private-results/custom-diff --comparison-points ./comparison-points.json
+```
+
+`--comparison-points [PATH]` explicitly enables the additive
+`concentration_delta.daily_metrics` section in `comparison-summary.json` and
+the aggregate-only daily lines on stdout. Without this option, existing
+comparison bytes, labels, and fixed `elevated_*` / `low_baseline_*` /
+`median_rpm_elevated` behavior are unchanged. This also leaves automatic
+`hunt --baseline` comparisons unchanged; run `compare` on the completed runs
+to request these additional measurements. No log files are read again, no
+network access occurs, and the exit code reflects processing success only.
+
+The section includes baseline, current, and signed current-minus-baseline
+values for all eight metrics below, plus current/baseline ratios. Total
+requests and retained distinct sources also have exact integer `NumericDelta`
+counts. Ratios below one express decreases and ratios above one express
+increases; no directional finding or flag is created. A baseline of zero
+makes a multiplicative ratio unavailable, not infinite. Its additive count
+delta remains available. Changes outside the signed 64-bit count-delta range
+are rejected with an explicit error rather than wrapped or approximated.
+
+| Metric key | Measurement | Default comparison point when opted in |
+| --- | --- | --- |
+| `total_requests` | All analyzed requests | None |
+| `distinct_source_ips` | Retained distinct observed sources | None |
+| `top_path_share` | Each run's retained top path requests / total requests | Delta at least `0.20` (+20 percentage points) |
+| `top_path_requests_per_source_ip` | That path's requests / its distinct observed sources | Current/baseline ratio at least `10.0` |
+| `corpus_requests_per_source_ip` | Total requests / retained distinct observed sources | None |
+| `success_share` | Corpus 2xx share | Delta at most `-0.25` (-25 percentage points) |
+| `client_closed_request_499_share` | Corpus 499 share | Delta at least `0.10` (+10 percentage points) |
+| `server_error_share` | Corpus 5xx share | None |
+
+The boundary is inclusive (`>=` or `<=`): a value exactly at a comparison
+point counts as crossing it. Computation uses unrounded values, not the
+displayed precision. Point order and crossed-point lists follow the fixed
+metric order in this table. There is no score, classification, warning,
+notification, or recommended response attached to the count.
+
+A JSON file accepts a `points` object with one point per metric. Each point
+has `basis` (`delta` or `ratio`), `relation` (`at_least` or `at_most`), and a
+finite numeric `value`. Ratio points must be nonnegative. Share deltas use
+fractions, not percentage-point integers: use `0.20`, not `20`. The supplied
+map **replaces**, rather than merges with, the four defaults. `{}` selects
+the defaults; `{"points": {}}` requests all measurements with no points.
+Unknown names or fields are errors, preventing silently ignored settings.
+For example, independently count a decline in total recorded requests and
+an increase in corpus-wide requests per retained source:
+
+```json
+{
+  "points": {
+    "total_requests": { "basis": "ratio", "relation": "at_most", "value": 0.01 },
+    "distinct_source_ips": { "basis": "ratio", "relation": "at_most", "value": 0.2 },
+    "corpus_requests_per_source_ip": { "basis": "ratio", "relation": "at_least", "value": 9.0 }
+  }
+}
+```
+
+The resolved settings are stored alongside all original measurements and
+each point's `crossed: true | false | null`, the ordered crossed-point list,
+and configured/evaluated/unavailable/crossed counts. An unavailable point
+includes its reason and is not counted as false. The source settings file's
+path is not copied into sanitized output; the resolved numeric settings are
+sufficient to repeat the evaluation.
+
+#### Denominators, missing values, and retained coverage
+
+- Corpus requests/source and top-path requests/source are independent. On
+  a distributed site, the first can change substantially while the second
+  stays nearly constant. The selected top path can differ between runs;
+  this measures each run's maximum retained share, not a fixed path's trend.
+- Total requests include observations without a source. The corpus ratio
+  divides that total by **retained** distinct sources, preserving the stated
+  definition. Zero source counts make requests/source unavailable. Source
+  caps can make this denominator a lower bound. Path caps can affect which
+  path is selected. Both runs disclose missing-path/source counts and
+  path/source/pair cap omissions, plus top-path request/source denominators.
+- Status shares remain divided by **all** response observations, including
+  missing status. Missing profile support or missing historical fields,
+  an empty corpus, and a corpus with no recorded status yield unavailable
+  2xx/499/5xx comparisons, never a fabricated zero. Partial status coverage
+  keeps the existing shares and discloses total/unavailable response counts.
+- Missing concentration artifacts are reported per side, not replaced with
+  zero. If private concentration detail is absent, a valid sanitized hunt or
+  concentration summary can supply the aggregate-only daily measurements.
+  Legacy private-detail comparisons remain unavailable in that case.
+- The operator selects two runs of the **same corpus** and appropriate time
+  windows. Shenron does not infer common host identity or orchestrate hosts.
+  Counts describe each run's processed scope, not an accumulated history;
+  different windows, caps, missing telemetry, or processed-file selections
+  affect comparability. Existing comparability notes remain visible.
+
+> A comparison point is a value the operator chose, not a finding. Crossing one means the measurement moved by at least that much between two runs of the same corpus. Traffic changes for many reasons: a campaign, a release, a holiday, a crawler arriving or leaving, an upstream change in how client addresses are presented. None of this is a determination of an outage, degraded availability, an attack, or abuse.
+
+### Existing comparison tracks
+
 All four operate by **diffing two already-produced run artifacts**. Shenron does
 not gain a live rolling database; a comparison is a read-only function of two
 frozen inputs, exactly like a single run is a read-only function of one corpus.

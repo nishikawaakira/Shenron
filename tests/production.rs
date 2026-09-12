@@ -2146,6 +2146,173 @@ fn compare_reads_existing_runs_without_leaking_private_values_by_default() {
 }
 
 #[test]
+fn compare_daily_points_are_opt_in_recorded_private_safe_and_artifact_only() {
+    let directory = tempdir().unwrap();
+    let baseline = directory.path().join("baseline");
+    let current = directory.path().join("current");
+    for (run, is_current) in [(&baseline, false), (&current, true)] {
+        let input = directory.path().join("private-input.log");
+        let lines = (0..100).map(|i| {
+            let source = if is_current { 1 } else { i % 10 + 1 };
+            let status = if !is_current || i < 50 { 200 } else if i < 75 { 499 } else { 504 };
+            format!("198.51.100.{source} - - [01/Jan/2026:00:00:00 +0000] \"GET /private-measurement?secret=value HTTP/1.1\" {status} 10 \"-\" \"agent\"\n")
+        }).collect::<String>();
+        fs::write(&input, lines).unwrap();
+        Command::cargo_bin("shenron")
+            .unwrap()
+            .args([
+                "daily",
+                "--input",
+                input.to_str().unwrap(),
+                "--format",
+                "apache",
+                "--output",
+                run.to_str().unwrap(),
+            ])
+            .assert()
+            .success();
+        // The comparison must consume only artifacts; raw input no longer exists.
+        fs::remove_file(input).unwrap();
+    }
+    let points_file = directory.path().join("points.json");
+    fs::write(&points_file, r#"{"points":{"distinct_source_ips":{"basis":"ratio","relation":"at_most","value":0.2},"corpus_requests_per_source_ip":{"basis":"ratio","relation":"at_least","value":9}}}"#).unwrap();
+    let mut legacy_summary = None;
+    let mut legacy_detail = None;
+    for mode in ["legacy", "defaults", "custom", "legacy-again"] {
+        let output = directory.path().join(mode);
+        let mut command = Command::cargo_bin("shenron").unwrap();
+        command.args([
+            "compare",
+            "--baseline",
+            baseline.to_str().unwrap(),
+            "--current",
+            current.to_str().unwrap(),
+            "--output",
+            output.to_str().unwrap(),
+        ]);
+        if mode == "defaults" {
+            command.arg("--comparison-points");
+        }
+        if mode == "custom" {
+            command.args(["--comparison-points", points_file.to_str().unwrap()]);
+        }
+        let assertion = command.assert().success();
+        let stdout = String::from_utf8_lossy(&assertion.get_output().stdout);
+        let bytes = fs::read(output.join("comparison-summary.json")).unwrap();
+        let detail = fs::read(output.join("comparison-detail.json")).unwrap();
+        let mut json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        for private in [
+            "198.51.100.1",
+            "/private-measurement",
+            "secret=value",
+            "private-input.log",
+        ] {
+            assert!(!stdout.contains(private));
+            assert!(!String::from_utf8_lossy(&bytes).contains(private));
+        }
+        if mode == "legacy" {
+            assert!(json["concentration_delta"].get("daily_metrics").is_none());
+            legacy_summary = Some(bytes);
+            legacy_detail = Some(detail);
+        } else if mode == "legacy-again" {
+            assert_eq!(legacy_summary.as_ref().unwrap(), &bytes);
+            assert_eq!(legacy_detail.as_ref().unwrap(), &detail);
+            assert!(!stdout.contains("Daily metric comparison"));
+        } else {
+            let daily = json["concentration_delta"]
+                .as_object_mut()
+                .unwrap()
+                .remove("daily_metrics")
+                .unwrap();
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(legacy_summary.as_ref().unwrap())
+                    .unwrap(),
+                json
+            );
+            assert_eq!(legacy_detail.as_ref().unwrap(), &detail);
+            assert!(stdout.contains("Daily metric comparison (descriptive counts only)"));
+            assert!(stdout.contains("not a finding"));
+            assert_eq!(
+                daily["measurements"]["total_requests"]["counts"]["baseline"],
+                100
+            );
+            assert_eq!(
+                daily["measurements"]["distinct_source_ips"]["counts"]["delta"],
+                -9
+            );
+            assert_eq!(
+                daily["measurements"]["corpus_requests_per_source_ip"]["current_to_baseline_ratio"],
+                10.0
+            );
+            if mode == "defaults" {
+                assert_eq!(daily["crossed_point_count"], 3);
+                assert_eq!(daily["configured_points"], 4);
+                assert!(stdout.contains("Comparison points crossed: 3"));
+            } else {
+                assert_eq!(daily["crossed_point_count"], 2);
+                assert_eq!(
+                    daily["comparison_points"]["points"]["distinct_source_ips"]["value"],
+                    0.2
+                );
+                assert_eq!(
+                    daily["crossed_points"],
+                    serde_json::json!(["distinct_source_ips", "corpus_requests_per_source_ip"])
+                );
+            }
+        }
+    }
+    // A sanitized-only export still provides daily numeric measurements.
+    let sanitized_only = directory.path().join("sanitized-only");
+    fs::create_dir(&sanitized_only).unwrap();
+    fs::copy(
+        current.join("sanitized-research.json"),
+        sanitized_only.join("sanitized-research.json"),
+    )
+    .unwrap();
+    let compared = shenron::comparison::compare_runs_with_points(
+        &baseline,
+        &sanitized_only,
+        Some(Default::default()),
+    )
+    .unwrap();
+    let daily = compared
+        .sanitized
+        .concentration_delta
+        .daily_metrics
+        .unwrap();
+    assert_eq!(
+        daily.measurements[&shenron::comparison::daily::DailyMetric::TotalRequests]
+            .counts
+            .as_ref()
+            .unwrap()
+            .current,
+        100
+    );
+    fs::write(
+        &points_file,
+        r#"{"points":{"total_requests":{"basis":"ratio","relation":"at_least","value":-1}}}"#,
+    )
+    .unwrap();
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "compare",
+            "--baseline",
+            baseline.to_str().unwrap(),
+            "--current",
+            current.to_str().unwrap(),
+            "--output",
+            directory.path().join("invalid").to_str().unwrap(),
+            "--comparison-points",
+            points_file.to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .stderr(contains("ratio comparison points must be nonnegative"));
+    assert!(!directory.path().join("invalid").exists());
+}
+
+#[test]
 fn hunt_baseline_writes_temporal_comparison_artifacts() {
     let directory = tempdir().unwrap();
     let baseline = directory.path().join("baseline");

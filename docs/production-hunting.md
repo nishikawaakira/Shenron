@@ -1,5 +1,12 @@
 # Production AWS WAF hunting
 
+For opt-in daily deltas over two completed runs, use `compare --baseline <run-A>
+--current <run-B> --output <diff-dir> --comparison-points [points.json]`.
+It reports original aggregate values, signed deltas, bidirectional ratios,
+coverage, and counts of crossed operator-selected comparison points—not
+classifications or alerts. Without the option, comparison output is unchanged.
+See [daily comparison points](temporal-comparison.md#opt-in-daily-measurement-deltas-and-comparison-points).
+
 Hunt, concentration, and daily share bounded tracking overrides: `--max-paths`
 (100,000), `--max-source-ips` (1,000,000), `--max-source-path-pairs` (2,000,000),
 and `--max-source-segments` (256 per source per segment set). Defaults are

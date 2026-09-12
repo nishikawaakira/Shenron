@@ -12,7 +12,7 @@ use std::{
 };
 
 use anyhow::Context;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
@@ -23,6 +23,9 @@ use crate::{
 
 pub const ELEVATED_RATIO: f64 = 3.0;
 pub const MIN_BASELINE_REQUESTS: u64 = 30;
+
+pub mod daily;
+use daily::{compare_daily_metrics, DailyComparison, DailyComparisonPoints};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct RunProvenance {
@@ -47,13 +50,13 @@ pub struct Comparability {
     pub reasons: Vec<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct NumericDelta {
     pub baseline: u64,
     pub current: u64,
     pub delta: i64,
 }
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct OptionalRatioDelta {
     pub baseline: Option<f64>,
     pub current: Option<f64>,
@@ -102,7 +105,7 @@ pub struct VolumeDetail {
     pub ratio: Option<f64>,
     pub label: String,
 }
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct ConcentrationDeltaSummary {
     pub available: bool,
     pub reason: Option<String>,
@@ -117,6 +120,9 @@ pub struct ConcentrationDeltaSummary {
     pub peak_rpm_delta: Option<i64>,
     pub top_ten_paths_share_delta: Option<f64>,
     pub top_ten_source_ips_share_delta: Option<f64>,
+    /// Explicit opt-in; absent preserves the historical comparison bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub daily_metrics: Option<DailyComparison>,
 }
 #[derive(Debug, Serialize)]
 pub struct ConcentrationDeltaPrivate {
@@ -163,6 +169,17 @@ struct RunArtifacts {
 }
 
 pub fn compare_runs(baseline_dir: &Path, current_dir: &Path) -> anyhow::Result<TemporalComparison> {
+    compare_runs_with_points(baseline_dir, current_dir, None)
+}
+
+pub fn compare_runs_with_points(
+    baseline_dir: &Path,
+    current_dir: &Path,
+    points: Option<DailyComparisonPoints>,
+) -> anyhow::Result<TemporalComparison> {
+    if let Some(points) = &points {
+        points.validate()?;
+    }
     let baseline = load_run(baseline_dir)?;
     let current = load_run(current_dir)?;
     let provenance = ComparisonProvenance {
@@ -173,10 +190,16 @@ pub fn compare_runs(baseline_dir: &Path, current_dir: &Path) -> anyhow::Result<T
     let cve_diff = cve_diff(baseline.cves.as_ref(), current.cves.as_ref());
     let (first_seen_counts, first_seen_entities) =
         first_seen(baseline.findings.as_deref(), current.findings.as_deref());
-    let (concentration_delta, concentration_delta_detail) = concentration_delta(
+    let (mut concentration_delta, concentration_delta_detail) = concentration_delta(
         baseline.concentration.as_ref(),
         current.concentration.as_ref(),
     );
+    if let Some(points) = points {
+        let b = daily_summary(baseline_dir, baseline.concentration.as_ref())?;
+        let c = daily_summary(current_dir, current.concentration.as_ref())?;
+        concentration_delta.daily_metrics =
+            Some(compare_daily_metrics(b.as_ref(), c.as_ref(), points)?);
+    }
     let safety = safety_note().to_owned();
     Ok(TemporalComparison {
         sanitized: SanitizedTemporalComparison {
@@ -196,6 +219,30 @@ pub fn compare_runs(baseline_dir: &Path, current_dir: &Path) -> anyhow::Result<T
             concentration_delta_detail,
         },
     })
+}
+
+// New aggregate-only comparisons can also consume sanitized-only exports.
+// Legacy comparisons do not enter this path or change their input handling.
+fn daily_summary(
+    dir: &Path,
+    private: Option<&PrivateRequestConcentrationReport>,
+) -> anyhow::Result<Option<crate::concentration::RequestConcentrationSummary>> {
+    if let Some(private) = private {
+        return Ok(Some(private.summary.clone()));
+    }
+    let sanitized = read_json_optional(&dir.join("sanitized-research.json"))?;
+    sanitized
+        .as_ref()
+        .and_then(|value| {
+            value
+                .get("request_concentration")
+                .or_else(|| value.pointer("/metrics/request_concentration"))
+        })
+        .filter(|value| !value.is_null())
+        .map(|value| {
+            serde_json::from_value(value.clone()).context("reading aggregate concentration summary")
+        })
+        .transpose()
 }
 
 pub fn write_comparison(output: &Path, comparison: &TemporalComparison) -> anyhow::Result<()> {
@@ -478,6 +525,7 @@ fn concentration_delta(
     let (Some(b), Some(c)) = (b, c) else {
         return (
             ConcentrationDeltaSummary {
+                daily_metrics: None,
                 available: false,
                 reason: Some(
                     "request-concentration.json is unavailable for one or both runs".to_owned(),
@@ -532,6 +580,7 @@ fn concentration_delta(
         .map(|(b, c)| c as i64 - b as i64);
     (
         ConcentrationDeltaSummary {
+            daily_metrics: None,
             available: true,
             reason: None,
             elevated_paths: paths.iter().filter(|x| x.label == "elevated").count(),
@@ -707,6 +756,11 @@ mod tests {
         let (s, p) = concentration_delta(Some(&b), Some(&c));
         assert_eq!(s.low_baseline_paths, 1);
         assert_eq!(s.elevated_paths, 1);
+        let old = serde_json::to_value(&s).unwrap();
+        assert!(old.get("daily_metrics").is_none());
+        let restored: ConcentrationDeltaSummary = serde_json::from_value(old.clone()).unwrap();
+        assert!(restored.daily_metrics.is_none());
+        assert_eq!(serde_json::to_value(restored).unwrap(), old);
         assert_eq!(
             p.paths.iter().find(|x| x.key == "/new").unwrap().label,
             "new"

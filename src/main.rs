@@ -22,7 +22,8 @@ use shenron::{
         save as save_candidate, save_batch, Backend,
     },
     comparison::{
-        compare_runs, write_comparison, PrivateTemporalComparison, SanitizedTemporalComparison,
+        compare_runs, compare_runs_with_points, daily::DailyComparisonPoints, write_comparison,
+        PrivateTemporalComparison, SanitizedTemporalComparison,
     },
     concentration::{
         FocusPrefixLengths, FocusSelector, PrivateRequestConcentrationReport,
@@ -483,6 +484,11 @@ enum ProductionCommand {
     },
     /// Compare two existing local run-artifact directories without re-streaming logs.
     Compare {
+        /// Opt in to daily measurement deltas and descriptive comparison points,
+        /// not classifications or alerts. No PATH uses four documented defaults;
+        /// a JSON file supplies explicit points. Omit for the legacy comparison.
+        #[arg(long, num_args = 0..=1, value_name = "PATH")]
+        comparison_points: Option<Option<PathBuf>>,
         #[arg(long)]
         baseline: PathBuf,
         #[arg(long)]
@@ -1357,6 +1363,7 @@ fn main() -> Result<()> {
                 Ok(())
             }
             ProductionCommand::Compare {
+                comparison_points,
                 baseline,
                 current,
                 output,
@@ -1367,7 +1374,19 @@ fn main() -> Result<()> {
             } => {
                 shenron::production::ensure_separate_output(&baseline, &output)?;
                 shenron::production::ensure_separate_output(&current, &output)?;
-                let comparison = compare_runs(&baseline, &current)?;
+                let points = comparison_points
+                    .map(|path| -> Result<DailyComparisonPoints> {
+                        match path {
+                            None => Ok(DailyComparisonPoints::default()),
+                            Some(path) => {
+                                serde_json::from_reader(File::open(&path)?).with_context(|| {
+                                    format!("reading comparison points {}", path.display())
+                                })
+                            }
+                        }
+                    })
+                    .transpose()?;
+                let comparison = compare_runs_with_points(&baseline, &current, points)?;
                 write_comparison(&output, &comparison)?;
                 print_temporal_comparison(
                     &comparison.sanitized,
@@ -3316,6 +3335,11 @@ fn print_temporal_comparison(
     );
     for reason in &report.comparability.reasons {
         println!("  Comparability note:       {reason}");
+    }
+    if let Some(daily) = &report.concentration_delta.daily_metrics {
+        for line in daily.display_lines() {
+            println!("{}", terminal_safe(&line));
+        }
     }
     if show_entities {
         println!("\nPrivate first-seen entities:");
