@@ -6,6 +6,12 @@ Shenron is a passive Rust threat-hunting engine for historical web telemetry. It
 
 ## How it works (architecture overview)
 
+For opt-in non-matching request context (`context`), original-line evidence,
+scoped dispositions and review deadlines, comparison-condition disclosures,
+multiple frozen reference runs, and `candidate evaluate`, see the
+[investigation workflow](docs/investigation-workflow.md). These are local review
+tools, not automatic classifications; existing defaults remain unchanged.
+
 In one line: **Shenron correlates public CTI with your own historical logs in an offline analysis pipeline, producing confidence-labeled evidence and COUNT-only WAF rule candidates that you review before deploying.** Explicit preparation commands `shenron nuclei update` and `shenron reputation update` may download public intelligence, but never upload customer logs, findings, IPs, request values, or other customer data.
 
 All analysis and preparation commands ship in one `shenron` binary. Analysis

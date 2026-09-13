@@ -167,6 +167,8 @@ fn split_uri(uri: Option<&str>) -> (Option<String>, Option<String>) {
 /// Streams newline-delimited AWS WAF JSON records. Invalid records are yielded
 /// as errors so callers can count and report them without aborting a scan.
 pub struct WafLines<R: Read> {
+    io_error: Option<String>,
+    line_number: u64,
     reader: BufReader<R>,
     line: String,
     raw_retention: RawRetention,
@@ -179,10 +181,20 @@ impl<R: Read> WafLines<R> {
 
     pub fn with_raw_retention(reader: R, raw_retention: RawRetention) -> Self {
         Self {
+            line_number: 0,
+            io_error: None,
             reader: BufReader::new(reader),
             line: String::new(),
             raw_retention,
         }
+    }
+
+    /// Physical decoded line number, including blank and malformed lines.
+    pub fn line_number(&self) -> u64 {
+        self.line_number
+    }
+    pub fn io_error(&self) -> Option<&str> {
+        self.io_error.as_deref()
     }
 }
 
@@ -192,6 +204,7 @@ impl<R: Read> Iterator for WafLines<R> {
     fn next(&mut self) -> Option<Self::Item> {
         loop {
             self.line.clear();
+            self.line_number += 1;
             match self.reader.read_line(&mut self.line) {
                 Ok(0) => return None,
                 Ok(_) if self.line.trim().is_empty() => continue,
@@ -201,7 +214,10 @@ impl<R: Read> Iterator for WafLines<R> {
                         self.raw_retention,
                     ));
                 }
-                Err(error) => return Some(Err(WafParseError::Json(serde_json::Error::io(error)))),
+                Err(error) => {
+                    self.io_error = Some(error.to_string());
+                    return Some(Err(WafParseError::Json(serde_json::Error::io(error))));
+                }
             }
         }
     }

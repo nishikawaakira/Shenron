@@ -32,8 +32,8 @@ use shenron::{
     },
     cti_export::{export_run as export_cti_run, CtiExportFormat, TlpLevel},
     disposition::{
-        record_disposition, AnalystDisposition, DispositionKey, DispositionStore,
-        DISPOSITION_SAFETY_NOTE,
+        record_disposition_with_review, AnalystDisposition, DispositionKey, DispositionReview,
+        DispositionStore, DISPOSITION_SAFETY_NOTE,
     },
     event::{TelemetryCapabilities, TelemetryProfile, TrustedProxy, TrustedProxySet},
     lab_cli::{run as run_lab_command, LabCommand},
@@ -140,7 +140,16 @@ enum Command {
 }
 
 #[derive(Debug, Subcommand)]
+// Keep the infrequently constructed, typed CLI arguments together.
+#[allow(clippy::large_enum_variant)]
 enum DispositionCommand {
+    /// Read private selected opinions and review metadata; never modifies the store.
+    Read {
+        #[arg(long)]
+        store: PathBuf,
+        #[command(flatten)]
+        selection: DispositionSelectionArgs,
+    },
     /// Append or update one analyst opinion. Repeating an identical opinion is idempotent.
     Set {
         #[arg(long)]
@@ -159,7 +168,56 @@ enum DispositionCommand {
         disposition: DispositionValue,
         #[arg(long)]
         comment: Option<String>,
+        /// Exact private corpus scope. Unscoped opinions are never inherited by a scope.
+        #[arg(long)]
+        corpus_scope: Option<String>,
+        #[arg(long)]
+        reviewer: Option<String>,
+        /// Private analyst-provided evidence run reference, not automatically verified.
+        #[arg(long)]
+        evidence_run: Option<String>,
+        #[arg(long)]
+        nuclei_revision: Option<String>,
+        /// Explicit UTC review deadline. Does not automatically change the opinion.
+        #[arg(long, value_parser = parse_rfc3339_utc)]
+        review_after: Option<DateTime<Utc>>,
     },
+}
+
+#[derive(Debug, Default, Args)]
+struct DispositionSelectionArgs {
+    /// Exact analyst-defined scope; no cross-scope or unscoped fallback.
+    #[arg(long)]
+    disposition_scope: Option<String>,
+    /// Evaluate review deadlines at this explicit UTC time, never the system clock.
+    #[arg(long, value_parser = parse_rfc3339_utc)]
+    disposition_as_of: Option<DateTime<Utc>>,
+}
+
+impl DispositionSelectionArgs {
+    fn load(self, path: Option<&Path>) -> Result<Option<DispositionStore>> {
+        let active = self.disposition_scope.is_some() || self.disposition_as_of.is_some();
+        let Some(path) = path else {
+            if active {
+                anyhow::bail!("disposition scope/as-of requires --disposition-store");
+            }
+            return Ok(None);
+        };
+        let store =
+            DispositionStore::load(path)?.select(self.disposition_scope, self.disposition_as_of);
+        let summary = store.review_summary();
+        if active
+            || summary.entries_excluded_by_scope > 0
+            || summary.entries_with_review_deadline > 0
+        {
+            eprintln!(
+                "Analyst opinion selection (store entries, not matching requests): {}",
+                serde_json::to_string(&summary)?
+            );
+            eprintln!("Exact scope only; excluded opinions are not applied. Review deadlines do not change analyst opinions or finding counts; no deadline evaluation without explicit --disposition-as-of.");
+        }
+        Ok(Some(store))
+    }
 }
 
 #[derive(Debug, Subcommand)]
@@ -200,6 +258,19 @@ impl From<DispositionValue> for AnalystDisposition {
 
 #[derive(Debug, Subcommand)]
 enum CandidateCommand {
+    /// Evaluate one frozen candidate across explicitly selected corpora; does not authorize export.
+    Evaluate {
+        #[arg(long)]
+        candidate: PathBuf,
+        /// Private JSON cohort plan; relative input paths resolve against its parent directory.
+        #[arg(long)]
+        plan: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
+        /// Maximum displayed matching paths/peers per cohort. Caps and omissions are disclosed.
+        #[arg(long, default_value = "20", value_parser = parse_positive_usize)]
+        limit: usize,
+    },
     /// Build narrow candidates from private hunt findings. AWS WAF BLOCK and URI-only findings are excluded by default.
     Build {
         #[arg(long)]
@@ -350,8 +421,37 @@ impl TemplateFilterArgs {
 // arguments would add indirection solely to reduce the enum's stack size.
 #[allow(clippy::large_enum_variant)]
 enum ProductionCommand {
+    /// Review all requests (including non-matches) by observed peers in an explicit UTC window.
+    Context {
+        #[arg(long)]
+        input: PathBuf,
+        #[arg(long, value_enum, default_value_t = InputFormat::Auto)]
+        format: InputFormat,
+        #[arg(long, required = true, value_delimiter = ',')]
+        source_ip: Vec<IpAddr>,
+        #[arg(long, value_parser = parse_rfc3339_utc)]
+        from: DateTime<Utc>,
+        #[arg(long, value_parser = parse_rfc3339_utc)]
+        to: DateTime<Utc>,
+        #[arg(long, default_value = "10000", value_parser = parse_positive_usize)]
+        max_records: usize,
+        /// Opt in to private request records on stdout; default stdout is counts only.
+        #[arg(long)]
+        show_request: bool,
+        /// Include sensitive query values in private output. Requires --show-request.
+        #[arg(long, requires = "show_request")]
+        show_query: bool,
+        /// Write a private context artifact, never a sanitized report.
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
     /// Hunt web logs with Nuclei and/or Sigma. Without --output, private findings are written only to stdout.
     Hunt {
+        #[command(flatten)]
+        disposition_selection: DispositionSelectionArgs,
+        /// Add private input-file/physical-line evidence references. Manifest hashes identify stored bytes.
+        #[arg(long, requires = "output", conflicts_with = "results_dir")]
+        include_source_references: bool,
         #[command(flatten)]
         tracking_limits: ConcentrationLimitArgs,
         /// Verbatim private analyst label recorded in the run manifest, not an inferred identity.
@@ -484,6 +584,13 @@ enum ProductionCommand {
     },
     /// Compare two existing local run-artifact directories without re-streaming logs.
     Compare {
+        /// Add explicit frozen reference runs to the baseline set; repeat for multiple runs.
+        /// Reports equal-weight median/min/max, not an inferred normal range.
+        #[arg(long)]
+        reference_run: Vec<PathBuf>,
+        /// Disclose recorded coverage/settings differences without inferring comparability.
+        #[arg(long)]
+        compare_conditions: bool,
         /// Opt in to daily measurement deltas and descriptive comparison points,
         /// not classifications or alerts. No PATH uses four documented defaults;
         /// a JSON file supplies explicit points. Omit for the legacy comparison.
@@ -716,6 +823,8 @@ enum ProductionCommand {
     },
     /// Show CVE/template mappings from a locally stored private findings file.
     Explain {
+        #[command(flatten)]
+        disposition_selection: DispositionSelectionArgs,
         #[arg(long)]
         findings: PathBuf,
         /// Restrict results to a WAF enforcement outcome. nginx/Apache findings have an unknown outcome.
@@ -1060,6 +1169,13 @@ fn main() -> Result<()> {
         Command::Lab(command) => run_lab_command(command),
         Command::ValidateRules { rules } => validate(&rules),
         Command::Disposition { command } => match command {
+            DispositionCommand::Read { store, selection } => {
+                let store = selection.load(Some(&store))?.expect("explicit store");
+                eprintln!("{DISPOSITION_SAFETY_NOTE}");
+                serde_json::to_writer_pretty(io::stdout().lock(), &store.selected_entries())?;
+                println!();
+                Ok(())
+            }
             DispositionCommand::Set {
                 store,
                 source,
@@ -1069,12 +1185,31 @@ fn main() -> Result<()> {
                 query,
                 disposition,
                 comment,
+                corpus_scope,
+                reviewer,
+                evidence_run,
+                nuclei_revision,
+                review_after,
             } => {
-                let result = record_disposition(
+                let mut key =
+                    DispositionKey::new(&source, &template_id, &method, &path, query.as_deref());
+                key.corpus_scope = corpus_scope;
+                let review = (reviewer.is_some()
+                    || evidence_run.is_some()
+                    || nuclei_revision.is_some()
+                    || review_after.is_some())
+                .then_some(DispositionReview {
+                    reviewer,
+                    evidence_run,
+                    nuclei_revision,
+                    review_after,
+                });
+                let result = record_disposition_with_review(
                     &store,
-                    DispositionKey::new(&source, &template_id, &method, &path, query.as_deref()),
+                    key,
                     disposition.into(),
                     comment,
+                    review,
                 )?;
                 println!(
                     "Private analyst disposition store: {}\n  Already recorded: {}\n  Effective pattern dispositions: {}",
@@ -1087,7 +1222,51 @@ fn main() -> Result<()> {
             }
         },
         Command::Production(command) => match command {
+            ProductionCommand::Context {
+                input,
+                format,
+                source_ip,
+                from,
+                to,
+                max_records,
+                show_request,
+                show_query,
+                output,
+            } => {
+                if let Some(path) = &output {
+                    shenron::production::ensure_separate_output(&input, path)?;
+                }
+                let result = shenron::investigation::request_context(
+                    &input,
+                    format.telemetry_profile_for_input(&input)?,
+                    &shenron::investigation::ContextOptions {
+                        source_ips: source_ip.into_iter().collect(),
+                        from,
+                        to,
+                        maximum_records: max_records,
+                        include_query: show_query,
+                    },
+                )?;
+                if let Some(path) = output {
+                    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+                        fs::create_dir_all(parent)?;
+                    }
+                    serde_json::to_writer_pretty(File::create(path)?, &result)?;
+                    eprintln!("{}", shenron::investigation::SAFETY_NOTE);
+                }
+                if show_request {
+                    eprintln!("{}", shenron::investigation::SAFETY_NOTE);
+                    serde_json::to_writer_pretty(io::stdout().lock(), &result)?;
+                } else {
+                    serde_json::to_writer_pretty(io::stdout().lock(), &result.counts)?;
+                }
+                println!();
+                eprintln!("{}", result.retention_note);
+                Ok(())
+            }
             ProductionCommand::Hunt {
+                disposition_selection,
+                include_source_references,
                 tracking_limits,
                 corpus_label,
                 input,
@@ -1125,6 +1304,13 @@ fn main() -> Result<()> {
                 // configured, the later notification call is a strict no-op.
                 let slack_config = SlackNotificationConfig::from_env()?;
                 if let Some(run_dir) = results_dir {
+                    if disposition_selection.disposition_scope.is_some()
+                        || disposition_selection.disposition_as_of.is_some()
+                    {
+                        anyhow::bail!(
+                            "disposition scope/as-of cannot be combined with --results-dir"
+                        );
+                    }
                     if tracking_limits.resolve().is_some() {
                         anyhow::bail!("tracking limits cannot be combined with --results-dir because no hunt is run");
                     }
@@ -1210,6 +1396,7 @@ fn main() -> Result<()> {
                     HuntTimeRange { from, to }
                 };
                 let options = HuntOptions {
+                    include_source_references,
                     tracking_limits: tracking_limits.resolve(),
                     uncompressed_findings,
                     corpus_label,
@@ -1220,10 +1407,7 @@ fn main() -> Result<()> {
                     bot_range_database,
                     bot_range_snapshot_path: bot_range_path,
                     template_filter: template_filter.into_options(),
-                    disposition_store: disposition_store
-                        .as_deref()
-                        .map(DispositionStore::load)
-                        .transpose()?,
+                    disposition_store: disposition_selection.load(disposition_store.as_deref())?,
                 };
                 let resolved_nuclei = nuclei_inputs
                     .as_ref()
@@ -1363,6 +1547,8 @@ fn main() -> Result<()> {
                 Ok(())
             }
             ProductionCommand::Compare {
+                reference_run,
+                compare_conditions,
                 comparison_points,
                 baseline,
                 current,
@@ -1374,6 +1560,9 @@ fn main() -> Result<()> {
             } => {
                 shenron::production::ensure_separate_output(&baseline, &output)?;
                 shenron::production::ensure_separate_output(&current, &output)?;
+                for reference in &reference_run {
+                    shenron::production::ensure_separate_output(reference, &output)?;
+                }
                 let points = comparison_points
                     .map(|path| -> Result<DailyComparisonPoints> {
                         match path {
@@ -1386,7 +1575,20 @@ fn main() -> Result<()> {
                         }
                     })
                     .transpose()?;
-                let comparison = compare_runs_with_points(&baseline, &current, points)?;
+                let mut comparison = compare_runs_with_points(&baseline, &current, points)?;
+                if !reference_run.is_empty() {
+                    comparison.sanitized.reference_distribution =
+                        Some(shenron::comparison::references::compare_reference_runs(
+                            &baseline,
+                            &reference_run,
+                            &current,
+                        )?);
+                }
+                if compare_conditions {
+                    comparison.sanitized.measurement_conditions = Some(
+                        shenron::comparison::conditions::compare_conditions(&baseline, &current)?,
+                    );
+                }
                 write_comparison(&output, &comparison)?;
                 print_temporal_comparison(
                     &comparison.sanitized,
@@ -1655,6 +1857,7 @@ fn main() -> Result<()> {
                 Ok(())
             }
             ProductionCommand::Explain {
+                disposition_selection,
                 findings,
                 waf_outcome,
                 include_generic,
@@ -1684,10 +1887,7 @@ fn main() -> Result<()> {
                     .map(load_reputation_database)
                     .transpose()?;
                 let findings = explain_private_findings(&findings)?;
-                let disposition_store = disposition_store
-                    .as_deref()
-                    .map(DispositionStore::load)
-                    .transpose()?;
+                let disposition_store = disposition_selection.load(disposition_store.as_deref())?;
                 // Bound the reachable behavior-score maximum by what the source
                 // profiles can express. Union across recorded sources; legacy
                 // findings without a source fall back to the full-capability
@@ -1913,6 +2113,49 @@ fn main() -> Result<()> {
                     println!("Source-address evaluation excluded: {} missing peer addresses; {} invalid peer addresses. These observations cannot establish membership.", candidate.evidence.source_address_unavailable, candidate.evidence.source_address_invalid);
                 }
                 println!("Historical replay complete. Candidate written: {}\nRequests evaluated: {}\nOther historical matches: {}\nPreventive export remains COUNT-only.", output.display(), candidate.evidence.historical_requests_evaluated, candidate.evidence.other_historical_matches);
+                Ok(())
+            }
+            CandidateCommand::Evaluate {
+                candidate,
+                plan,
+                output,
+                limit,
+            } => {
+                for input in [&candidate, &plan] {
+                    shenron::production::ensure_separate_output(input, &output)?;
+                }
+                let inputs: shenron::candidate::evaluation::EvaluationPlan =
+                    serde_json::from_reader(File::open(&plan)?)?;
+                for corpus in inputs.corpora {
+                    let input = if corpus.input.is_absolute() {
+                        corpus.input
+                    } else {
+                        plan.parent().unwrap_or(Path::new(".")).join(corpus.input)
+                    };
+                    shenron::production::ensure_separate_output(&input, &output)?;
+                }
+                let result = shenron::candidate::evaluation::evaluate(&candidate, &plan, limit)?;
+                if let Some(parent) = output.parent().filter(|p| !p.as_os_str().is_empty()) {
+                    fs::create_dir_all(parent)?;
+                }
+                serde_json::to_writer_pretty(
+                    fs::OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .open(&output)?,
+                    &result,
+                )?;
+                eprintln!("{}", result.safety_note);
+                for (index, row) in result.corpora.iter().enumerate() {
+                    println!("Cohort {}: parsed {} / malformed {} / matched {} / match share {} (source missing/invalid exclusions: {}/{}; absent condition fields: {}; overlapping whole files: {}; displayed path/peer omissions: {}/{})", index + 1, row.parseable_records, row.parse_errors, row.matching_records, row.match_share.map(|v| format!("{:.2}%", v*100.0)).unwrap_or_else(|| "unavailable".into()), row.source_address_unavailable, row.source_address_invalid, row.records_with_absent_condition_fields, row.files_with_identical_bytes_in_another_cohort, row.retained_paths_omitted_from_display, row.retained_peers_omitted_from_display);
+                    println!(
+                        "  Tracking-cap omissions (paths / sources / pairs): {} / {} / {}",
+                        row.matches.paths_beyond_tracking_cap,
+                        row.matches.source_ips_beyond_tracking_cap,
+                        row.matches.source_path_pairs_beyond_tracking_cap
+                    );
+                }
+                println!("COUNT evaluation only; candidate and replay/export evidence unchanged. Cohort labels are analyst declarations, not ground truth.");
                 Ok(())
             }
             CandidateCommand::Compatibility {
@@ -2631,6 +2874,9 @@ fn print_streaming_hunt_summary(report: &SanitizedHuntReport) {
     );
     eprintln!("\n{}", input_quality_summary(metrics));
     if let Some(counts) = &metrics.analyst_dispositions {
+        if let Some(due) = counts.review_due_matching_findings {
+            eprintln!("Matching findings with analyst opinions due for re-review: {due} (original opinions unchanged)");
+        }
         eprintln!(
             "Analyst-authored dispositions (private local opinions; findings remain retained and counted): reviewed {}, expected {}, needs-review {}, unclassified {}. These are not Shenron determinations.",
             counts.reviewed, counts.expected, counts.needs_review, counts.unclassified,
@@ -3318,6 +3564,48 @@ fn print_temporal_comparison(
     show_source_ips: bool,
     limit: usize,
 ) {
+    if let Some(references) = &report.reference_distribution {
+        println!("Explicit reference-run distribution ({} runs; {} duplicate directory references excluded):", references.reference_runs.len(), references.duplicate_directory_references_excluded);
+        for (metric, row) in &references.metrics {
+            let display = |v: Option<f64>| {
+                v.map(|v| format!("{v:.4}"))
+                    .unwrap_or_else(|| "unavailable".into())
+            };
+            println!("  {} min / median / max / current / current-to-median: {} / {} / {} / {} / {} (available/unavailable runs: {}/{})", metric.label(), display(row.minimum), display(row.median), display(row.maximum), display(row.current), display(row.ratio_to_median), row.available_runs, row.unavailable_runs);
+            for (reason, count) in &row.unavailable_reasons {
+                println!("    {count} reference runs: {reason}");
+            }
+            if let Some(reason) = &row.current_unavailable_reason {
+                println!("    Current unavailable: {reason}");
+            }
+        }
+        println!("{}", references.note);
+    }
+    if let Some(conditions) = &report.measurement_conditions {
+        println!("Measurement conditions (recorded facts; missing values are unavailable):");
+        for (key, baseline) in &conditions.baseline.numeric {
+            let display = |v: Option<f64>| {
+                v.map(|v| v.to_string())
+                    .unwrap_or_else(|| "unavailable".into())
+            };
+            println!(
+                "  {key}: {} -> {}",
+                display(*baseline),
+                display(conditions.current.numeric[key])
+            );
+        }
+        println!(
+            "  Changed recorded facts ({}): {}",
+            conditions.changed_recorded_facts.len(),
+            conditions.changed_recorded_facts.join(", ")
+        );
+        println!(
+            "  Unavailable facts ({}): {}",
+            conditions.unavailable_facts.len(),
+            conditions.unavailable_facts.join(", ")
+        );
+        println!("{}", conditions.note);
+    }
     println!(
         "Temporal comparison (local artifact diff only; not an attack, abuse, compromise, or attribution determination):\n  Comparison kind:           {}\n  Baseline-comparable:       {}\n  Newly observed CVEs:       {}\n  Disappeared CVEs:          {}\n  First-seen source IPs:     {}\n  First-seen hosts:          {}\n  First-seen URI paths:      {}\n  First-seen JA4 values:     {}\n  Elevated paths:            {}\n  Elevated source IPs:       {}\n  Low-baseline paths:        {}\n  Low-baseline source IPs:   {}",
         report.comparability.kind,
@@ -3767,27 +4055,22 @@ fn disposition_counts(
     findings: &[shenron::production::FindingExplanation],
     store: &DispositionStore,
 ) -> shenron::production::AnalystDispositionCounts {
-    let mut counts = shenron::production::AnalystDispositionCounts::default();
+    let mut counts = shenron::production::AnalystDispositionCounts::for_store(store);
     for finding in findings {
-        let disposition = finding
+        let key = finding
             .method
             .as_deref()
             .zip(finding.uri_path.as_deref())
-            .and_then(|(method, path)| {
-                store.get(&DispositionKey::new(
+            .map(|(method, path)| {
+                DispositionKey::new(
                     finding.source.label(),
                     &finding.template_id,
                     method,
                     path,
                     finding.uri_query.as_deref(),
-                ))
+                )
             });
-        match disposition {
-            Some(AnalystDisposition::Reviewed) => counts.reviewed += 1,
-            Some(AnalystDisposition::Expected) => counts.expected += 1,
-            Some(AnalystDisposition::NeedsReview) => counts.needs_review += 1,
-            None => counts.unclassified += 1,
-        }
+        counts.record_pattern(key.as_ref(), store);
     }
     counts
 }
@@ -3798,6 +4081,9 @@ fn print_analyst_dispositions(counts: Option<&shenron::production::AnalystDispos
             "Analyst-authored dispositions (private local opinions; findings remain retained and counted):\n  Reviewed: {}\n  Expected: {}\n  Needs review: {}\n  Unclassified: {}\n  These are analyst opinions, not Shenron determinations of attack, exploitation, compromise, or benignness.",
             counts.reviewed, counts.expected, counts.needs_review, counts.unclassified,
         );
+        if let Some(due) = counts.review_due_matching_findings {
+            println!("  Matching findings with analyst opinions due for re-review: {due} (original opinions and all findings remain unchanged)");
+        }
     }
 }
 

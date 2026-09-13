@@ -24,7 +24,9 @@ use crate::{
 pub const ELEVATED_RATIO: f64 = 3.0;
 pub const MIN_BASELINE_REQUESTS: u64 = 30;
 
+pub mod conditions;
 pub mod daily;
+pub mod references;
 use daily::{compare_daily_metrics, DailyComparison, DailyComparisonPoints};
 
 #[derive(Debug, Clone, Serialize)]
@@ -139,6 +141,10 @@ pub struct SanitizedTemporalComparison {
     pub cve_diff: CveDiff,
     pub first_seen_counts: FirstSeenCounts,
     pub concentration_delta: ConcentrationDeltaSummary,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub measurement_conditions: Option<conditions::ConditionsComparison>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference_distribution: Option<references::ReferenceDistribution>,
 }
 #[derive(Debug, Serialize)]
 pub struct PrivateTemporalComparison {
@@ -210,6 +216,8 @@ pub fn compare_runs_with_points(
             cve_diff,
             first_seen_counts,
             concentration_delta,
+            measurement_conditions: None,
+            reference_distribution: None,
         },
         private: PrivateTemporalComparison {
             report_kind: "TEMPORAL_COMPARISON_PRIVATE".to_owned(),

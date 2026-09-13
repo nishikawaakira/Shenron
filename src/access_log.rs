@@ -261,6 +261,8 @@ fn split_target(target: &str) -> (String, Option<String>, Option<String>) {
 }
 
 pub struct AccessLogLines<R: Read> {
+    io_error: Option<String>,
+    line_number: u64,
     reader: BufReader<R>,
     line: String,
     format: AccessLogFormat,
@@ -277,11 +279,21 @@ impl<R: Read> AccessLogLines<R> {
         raw_retention: RawRetention,
     ) -> Self {
         Self {
+            line_number: 0,
+            io_error: None,
             reader: BufReader::new(reader),
             line: String::new(),
             format,
             raw_retention,
         }
+    }
+
+    /// Physical decoded line number, including blank and malformed lines.
+    pub fn line_number(&self) -> u64 {
+        self.line_number
+    }
+    pub fn io_error(&self) -> Option<&str> {
+        self.io_error.as_deref()
     }
 }
 impl<R: Read> Iterator for AccessLogLines<R> {
@@ -289,6 +301,7 @@ impl<R: Read> Iterator for AccessLogLines<R> {
     fn next(&mut self) -> Option<Self::Item> {
         loop {
             self.line.clear();
+            self.line_number += 1;
             match self.reader.read_line(&mut self.line) {
                 Ok(0) => return None,
                 Ok(_) if self.line.trim().is_empty() => continue,
@@ -302,7 +315,10 @@ impl<R: Read> Iterator for AccessLogLines<R> {
                         self.raw_retention,
                     ));
                 }
-                Err(_) => return Some(Err(AccessLogParseError::Format)),
+                Err(error) => {
+                    self.io_error = Some(error.to_string());
+                    return Some(Err(AccessLogParseError::Format));
+                }
             }
         }
     }

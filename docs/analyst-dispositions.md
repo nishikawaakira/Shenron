@@ -1,5 +1,11 @@
 # Analyst dispositions
 
+For exact corpus scopes, reviewer/evidence metadata, explicit UTC review deadlines
+and `disposition read`, see [Scoped analyst opinions](investigation-workflow.md#scoped-analyst-opinions-and-review-deadlines).
+New metadata is optional. Scoped opinions never fall back to unscoped entries;
+due opinions retain their original classification and are separately counted
+for human re-review. Lookups never use the machine clock.
+
 Shenron can remember an analyst-authored review state for a recurring finding
 pattern in a private, append-only JSONL store. This is explicit opt-in state:
 no store is created or read unless `--disposition-store` is supplied. A key is

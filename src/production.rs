@@ -191,9 +191,27 @@ pub struct AnalystDispositionCounts {
     pub expected: usize,
     pub needs_review: usize,
     pub unclassified: usize,
+    /// Additional review context only; original disposition counts are unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_due_matching_findings: Option<usize>,
 }
 
 impl AnalystDispositionCounts {
+    pub fn for_store(store: &DispositionStore) -> Self {
+        Self {
+            review_due_matching_findings: store.review_evaluation_requested().then_some(0),
+            ..Default::default()
+        }
+    }
+
+    pub fn record_pattern(&mut self, key: Option<&DispositionKey>, store: &DispositionStore) {
+        self.record(key.and_then(|key| store.get(key)));
+        if let Some(count) = self.review_due_matching_findings.as_mut() {
+            if key.and_then(|key| store.review_due(key)) == Some(true) {
+                *count += 1;
+            }
+        }
+    }
     fn record(&mut self, disposition: Option<AnalystDisposition>) {
         match disposition {
             Some(AnalystDisposition::Reviewed) => self.reviewed += 1,
@@ -232,6 +250,8 @@ impl HuntTimeRange {
 /// client resolution remains disabled unless trusted proxies are supplied.
 #[derive(Debug, Clone, Default)]
 pub struct HuntOptions {
+    /// Private physical-line references, resolved against manifest corpus hashes.
+    pub include_source_references: bool,
     /// Explicit bounded concentration tracking; absent preserves default artifacts.
     pub tracking_limits: Option<ConcentrationTrackingLimits>,
     /// Opt out of lossless gzip storage. Stdout is always uncompressed.
@@ -615,6 +635,8 @@ struct HypothesisRungAccumulator {
 
 #[derive(Serialize)]
 struct RunManifest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    disposition_context: Option<crate::disposition::DispositionContext>,
     #[serde(skip_serializing_if = "Option::is_none")]
     corpus_label: Option<String>,
     report_kind: &'static str,
@@ -690,6 +712,8 @@ impl FindingSource {
 
 #[derive(Debug, Deserialize, Serialize)]
 struct PrivateFinding {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source_reference: Option<crate::investigation::SourceReference>,
     /// Detection engine. Absent in older private findings, which are all Nuclei.
     #[serde(default)]
     source: FindingSource,
@@ -996,6 +1020,7 @@ pub fn hunt(
         output,
         telemetry_profile,
         HuntOptions {
+            include_source_references: false,
             tracking_limits: None,
             uncompressed_findings: false,
             corpus_label: None,
@@ -1089,6 +1114,7 @@ fn hunt_with_destination(
     options: HuntOptions,
 ) -> anyhow::Result<SanitizedHuntReport> {
     let HuntOptions {
+        include_source_references,
         tracking_limits,
         uncompressed_findings,
         corpus_label,
@@ -1102,6 +1128,9 @@ fn hunt_with_destination(
         disposition_store,
     } = options;
     let concentration_limits = resolve_tracking_limits(tracking_limits)?;
+    if include_source_references && output.is_none() {
+        bail!("source references require a private run output directory with corpus hashes");
+    }
     time_range.validate()?;
     if let Some(output) = output {
         ensure_separate_output(input, output)?;
@@ -1178,8 +1207,8 @@ fn hunt_with_destination(
         filter_to: time_range.to.map(|time| time.to_rfc3339()),
         ..HuntMetrics::default()
     };
-    if disposition_store.is_some() {
-        metrics.analyst_dispositions = Some(AnalystDispositionCounts::default());
+    if let Some(store) = disposition_store.as_ref() {
+        metrics.analyst_dispositions = Some(AnalystDispositionCounts::for_store(store));
     }
     let sigma_rules = sigma_ruleset
         .as_ref()
@@ -1211,11 +1240,12 @@ fn hunt_with_destination(
     let mut progress = ProgressReporter::new("hunt");
     let mut corpus = Vec::new();
     for path in files {
-        let provenance = stream_events_with_trusted_proxies(
+        let provenance = stream_hunt_events(
             &path,
             telemetry_profile,
             &trusted_proxies,
-            |result| {
+            include_source_references,
+            |result, source_reference| {
                 progress.tick();
                 let event = match result {
                     Ok(event) => event,
@@ -1283,7 +1313,8 @@ fn hunt_with_destination(
                     return Ok(());
                 }
                 for detection in &matches {
-                    let finding = private_finding(detection, &event);
+                    let mut finding = private_finding(detection, &event);
+                    finding.source_reference = source_reference.clone();
                     if let Some(counts) = &mut metrics.findings_by_waf_action {
                         counts.record(event.waf_action.as_deref());
                     }
@@ -1309,7 +1340,8 @@ fn hunt_with_destination(
                     }
                 }
                 for rule in &sigma_matches {
-                    let finding = sigma_finding(rule, &event);
+                    let mut finding = sigma_finding(rule, &event);
+                    finding.source_reference = source_reference.clone();
                     if let Some(counts) = &mut metrics.findings_by_waf_action {
                         counts.record(event.waf_action.as_deref());
                     }
@@ -1500,6 +1532,9 @@ fn hunt_with_destination(
             corpus,
             corpus_label,
             tracking_limits,
+            disposition_store
+                .as_ref()
+                .and_then(DispositionStore::review_context),
         )?;
     }
     Ok(report)
@@ -2640,9 +2675,11 @@ fn write_run_manifest(
     mut corpus: Vec<PathProvenance>,
     corpus_label: Option<String>,
     tracking_limits: Option<ConcentrationTrackingLimits>,
+    disposition_context: Option<crate::disposition::DispositionContext>,
 ) -> anyhow::Result<()> {
     corpus.sort_by(|left, right| left.path.cmp(&right.path));
     let manifest = RunManifest {
+        disposition_context,
         corpus_label,
         report_kind: "RUN_MANIFEST",
         safety_note: "PRIVATE run provenance: corpus paths and verbatim analyst labels may contain private information. Do not share without review. No log record values are copied. SHA-256 values identify the stored input bytes for reproducibility; labels are analyst annotations, not Shenron determinations.",
@@ -2793,24 +2830,25 @@ fn record_finding_disposition(
     let (Some(counts), Some(store)) = (counts, store) else {
         return;
     };
-    let disposition = finding
+    let key = finding
         .method
         .as_deref()
         .zip(finding.uri_path.as_deref())
-        .and_then(|(method, path)| {
-            store.get(&DispositionKey::new(
+        .map(|(method, path)| {
+            DispositionKey::new(
                 finding.source.label(),
                 &finding.template_id,
                 method,
                 path,
                 finding.uri_query.as_deref(),
-            ))
+            )
         });
-    counts.record(disposition);
+    counts.record_pattern(key.as_ref(), store);
 }
 
 fn private_finding(detection: &ValidatedNucleiDetection, event: &WebEvent) -> PrivateFinding {
     PrivateFinding {
+        source_reference: None,
         source: FindingSource::Nuclei,
         template_id: detection.template_id.clone(),
         cves: detection.cves.clone(),
@@ -2846,6 +2884,7 @@ fn private_finding(detection: &ValidatedNucleiDetection, event: &WebEvent) -> Pr
 /// tags are preserved but never merged into the CVE metrics.
 fn sigma_finding(rule: &crate::sigma::CompiledRule, event: &WebEvent) -> PrivateFinding {
     PrivateFinding {
+        source_reference: None,
         source: FindingSource::Sigma,
         template_id: rule.id.clone(),
         cves: rule.cves.clone(),
@@ -3139,6 +3178,90 @@ fn is_gzip(path: &Path) -> bool {
     path.extension()
         .and_then(|extension| extension.to_str())
         .is_some_and(|extension| extension.eq_ignore_ascii_case("gz"))
+}
+
+fn stream_hunt_events<F>(
+    path: &Path,
+    profile: TelemetryProfile,
+    proxies: &TrustedProxySet,
+    references: bool,
+    mut callback: F,
+) -> anyhow::Result<PathProvenance>
+where
+    F: FnMut(
+        Result<WebEvent, String>,
+        Option<crate::investigation::SourceReference>,
+    ) -> anyhow::Result<()>,
+{
+    if !references {
+        return stream_events_with_trusted_proxies(path, profile, proxies, |event| {
+            callback(event, None)
+        });
+    }
+    stream_referenced_events(path, profile, RawRetention::Keep, |line, event| {
+        callback(
+            event.map(|mut event| {
+                proxies.resolve_client_ip(&mut event);
+                event
+            }),
+            Some(crate::investigation::SourceReference {
+                input_file: path.display().to_string(),
+                line_number: line,
+            }),
+        )
+    })
+}
+
+/// Physical decoded line references and stored-byte hashes in one read. Gzip
+/// line numbers refer to decompressed text, not compressed byte offsets.
+pub(crate) fn stream_referenced_events<F>(
+    path: &Path,
+    profile: TelemetryProfile,
+    retention: RawRetention,
+    mut callback: F,
+) -> anyhow::Result<PathProvenance>
+where
+    F: FnMut(u64, Result<WebEvent, String>) -> anyhow::Result<()>,
+{
+    let state = std::rc::Rc::new(std::cell::RefCell::new(FingerprintReader {
+        reader: File::open(path)?,
+        hash: Sha256::new(),
+        bytes: 0,
+    }));
+    let decoded = maybe_gzip_reader(SharedFingerprintReader(state.clone()), is_gzip(path));
+    if profile == TelemetryProfile::AwsWaf {
+        let mut lines = WafLines::with_raw_retention(decoded, retention);
+        while let Some(event) = lines.next() {
+            if let Some(error) = lines.io_error() {
+                bail!("reading decoded input: {error}");
+            }
+            callback(lines.line_number(), event.map_err(|e| e.to_string()))?;
+        }
+    } else {
+        let format = match profile {
+            TelemetryProfile::ApacheCombined => AccessLogFormat::ApacheCombined,
+            TelemetryProfile::ApacheVhostCombined => AccessLogFormat::ApacheVhostCombined,
+            TelemetryProfile::NginxCombined => AccessLogFormat::NginxCombined,
+            _ => bail!("source references require a supported combined or AWS WAF profile"),
+        };
+        let mut lines = AccessLogLines::with_raw_retention(decoded, format, retention);
+        while let Some(event) = lines.next() {
+            if let Some(error) = lines.io_error() {
+                bail!("reading decoded input: {error}");
+            }
+            callback(lines.line_number(), event.map_err(|e| e.to_string()))?;
+        }
+    }
+    std::io::copy(
+        &mut SharedFingerprintReader(state.clone()),
+        &mut std::io::sink(),
+    )?;
+    let state = state.borrow();
+    Ok(PathProvenance {
+        path: path.display().to_string(),
+        byte_length: Some(state.bytes),
+        sha256: Some(format!("{:x}", state.hash.clone().finalize())),
+    })
 }
 
 fn event_reader(path: &Path) -> anyhow::Result<Box<dyn Read>> {

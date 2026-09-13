@@ -1,5 +1,10 @@
 # Production AWS WAF hunting
 
+The [investigation workflow](investigation-workflow.md) connects findings to
+non-matching request context and physical source lines, scoped analyst review,
+measurement-condition disclosures, independent candidate evaluation, and explicit
+multi-run reference distributions. All additions are opt-in and local.
+
 For opt-in daily deltas over two completed runs, use `compare --baseline <run-A>
 --current <run-B> --output <diff-dir> --comparison-points [points.json]`.
 It reports original aggregate values, signed deltas, bidirectional ratios,

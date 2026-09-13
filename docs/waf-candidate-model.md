@@ -1,5 +1,10 @@
 # WAF candidate model
 
+Use [independent-corpus evaluation](investigation-workflow.md#evaluate-candidates-on-separate-corpora)
+to inspect one frozen condition across explicitly selected development/reference/
+holdout corpora. It does not change the candidate, mark replay complete, or
+relax COUNT-only/fidelity/export gates. Analyst cohort labels are not ground truth.
+
 ## Frozen source-address conditions (explicit opt-in)
 
 `candidate build --source-address-set <FILE>` narrows each request-content

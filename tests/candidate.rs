@@ -17,6 +17,96 @@ use shenron::{
 use tempfile::tempdir;
 
 #[test]
+fn independent_cohort_evaluation_is_deterministic_private_and_does_not_grant_replay() {
+    let dir = tempdir().unwrap();
+    let mut c = candidate(DefensiveCondition::UriEquals {
+        value: "/login".into(),
+    });
+    c.evidence.replay_completed = false;
+    let candidate_path = dir.path().join("candidate.json");
+    shenron::candidate::save(&c, &candidate_path).unwrap();
+    let before = fs::read(&candidate_path).unwrap();
+    let line = |path: &str| {
+        format!("198.51.100.1 - - [24/Aug/2026:11:20:30 +0000] \"GET {path} HTTP/1.1\" 200 12 \"-\" \"-\"\n")
+    };
+    fs::write(
+        dir.path().join("a.log"),
+        line("/login") + &line("/ordinary"),
+    )
+    .unwrap();
+    fs::write(dir.path().join("b.log"), line("/ordinary") + "bad\n").unwrap();
+    let plan = dir.path().join("plan.json");
+    fs::write(
+        &plan,
+        serde_json::json!({"corpora":[
+            {"input":"a.log","role":"development","telemetry_profile":"apache-combined"},
+            {"input":"b.log","role":"holdout","telemetry_profile":"apache-combined"}
+        ]})
+        .to_string(),
+    )
+    .unwrap();
+    let result = shenron::candidate::evaluation::evaluate(&candidate_path, &plan, 1).unwrap();
+    assert_eq!(result.corpora[0].matching_records, 1);
+    assert_eq!(result.corpora[0].match_share, Some(0.5));
+    assert_eq!(result.corpora[1].matching_records, 0);
+    assert_eq!(result.corpora[1].parse_errors, 1);
+    assert_eq!(result.corpora[0].top_paths[0].uri_path, "/login");
+    assert_eq!(
+        serde_json::to_vec(&result).unwrap(),
+        serde_json::to_vec(
+            &shenron::candidate::evaluation::evaluate(&candidate_path, &plan, 1).unwrap()
+        )
+        .unwrap()
+    );
+    assert_eq!(before, fs::read(&candidate_path).unwrap());
+    assert!(
+        !shenron::candidate::load(&candidate_path)
+            .unwrap()
+            .evidence
+            .replay_completed
+    );
+    assert!(export(
+        &c,
+        Backend::AwsWafJson,
+        TelemetryProfile::AwsWaf,
+        &dir.path().join("export.json"),
+        Some(10),
+        99001
+    )
+    .is_err());
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "candidate",
+            "evaluate",
+            "--candidate",
+            candidate_path.to_str().unwrap(),
+            "--plan",
+            plan.to_str().unwrap(),
+            "--output",
+            dir.path().join("evaluation.json").to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(contains("matched 1"))
+        .stdout(predicates::prelude::PredicateBooleanExt::not(contains(
+            "/login",
+        )));
+    let mut frozen: serde_json::Value = serde_json::from_slice(&fs::read(&plan).unwrap()).unwrap();
+    frozen["corpora"][0]["expected_corpus"] =
+        serde_json::to_value(&result.corpora[0].corpus).unwrap();
+    fs::write(&plan, serde_json::to_vec(&frozen).unwrap()).unwrap();
+    assert!(shenron::candidate::evaluation::evaluate(&candidate_path, &plan, 1).is_ok());
+    fs::write(dir.path().join("a.log"), line("/changed")).unwrap();
+    assert!(
+        shenron::candidate::evaluation::evaluate(&candidate_path, &plan, 1)
+            .unwrap_err()
+            .to_string()
+            .contains("frozen expected provenance")
+    );
+}
+
+#[test]
 fn frozen_source_sets_preserve_replay_export_gates_and_private_provenance() {
     use sha2::{Digest, Sha256};
     use shenron::{

@@ -66,7 +66,7 @@ impl DailyMetric {
         }
     }
 
-    fn measurement(
+    pub(crate) fn measurement(
         self,
         summary: Option<&RequestConcentrationSummary>,
     ) -> Result<f64, &'static str> {

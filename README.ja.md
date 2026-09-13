@@ -2,6 +2,8 @@
 
 [English README](README.md)
 
+非一致リクエストも確認する `context`、原本の行参照、スコープ付き判定と再レビュー期限、比較条件の開示、複数 run の基準値比較、`candidate evaluate` の使い方は [Investigation workflow](docs/investigation-workflow.md) を参照してください。すべて明示指定のローカルレビュー機能であり、自動判定は行わず、既定の動作も変更しません。
+
 Shenron は、Web アクセスログを対象にした Rust 製の「受動的（パッシブ）な脅威ハンティング・エンジン」です。公開されている脅威インテリジェンス（Nuclei テンプレートや CISA KEV Catalog）を、自組織のログと突き合わせ、防御ルールの候補作成を支援します。
 
 単一バイナリ `shenron` の解析コマンドは既定ではネットワーク接続せず、ターゲットへのスキャン、エクスプロイトの実行、AWS の変更や AWS API の呼び出し、WAF ルールの自動適用、`terraform plan/apply`、OSSEC の再起動を行いません。ログ・検出結果・IP・リクエスト値などの生の顧客データを外部へ送信・アップロードしません。ネットワークを使うのは、明示的に実行した `setup` / `nuclei update` / `kev` / `reputation update` / `bot-ranges update` と、`SHENRON_SLACK_WEBHOOK` を設定した hunt 完了後通知だけです。取得コマンドは公開インテリジェンスのダウンロードだけを行い、Slack 通知は sanitized 集計だけを送り、生 IP・パス・ホスト・ヘッダー・ログ値・private findings は含みません。出力は必ず人間のレビューを前提とした「提案」であり、Shenron 自身が何かをデプロイすることはありません。
