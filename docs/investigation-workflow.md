@@ -59,8 +59,10 @@ discover the corpus period. Omitted bounds are absent from the private JSON.
 
 `counts.earliest_retained` and `counts.latest_retained` in private output describe
 the actual retained UTC span (unavailable when no records are retained). They do
-not describe omitted records. Counts-only stdout retains its previous shape and
-does not include these private time bounds. With cap omissions, the retained span
+not describe omitted records. Counts-only stdout also reports the retained span.
+These are aggregate times for an operator-selected peer, not request values: no
+path, header, agent or query value enters counts-only stdout. They are absent when
+no record is retained. With cap omissions, the retained span
 is only a lower bound on the observed span; stderr reports the omitted count and
 suggests narrowing the window or raising `--max-records`. The default remains
 10,000 records. For a bounded follow-up, use the retained times as explicit

@@ -50,7 +50,7 @@ pub struct ContextRecord {
     pub referer: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Default, Serialize)]
 pub struct ContextCounts {
     pub parseable_records: u64,
     pub parse_errors: u64,
@@ -65,17 +65,6 @@ pub struct ContextCounts {
     pub earliest_retained: Option<DateTime<Utc>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub latest_retained: Option<DateTime<Utc>>,
-}
-
-impl ContextCounts {
-    /// Preserve the counts-only stdout contract; retained time bounds are private metadata.
-    pub fn counts_only(&self) -> Self {
-        Self {
-            earliest_retained: None,
-            latest_retained: None,
-            ..self.clone()
-        }
-    }
 }
 
 #[derive(Debug, Serialize)]

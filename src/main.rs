@@ -1260,10 +1260,7 @@ fn main() -> Result<()> {
                     eprintln!("{}", shenron::investigation::SAFETY_NOTE);
                     serde_json::to_writer_pretty(io::stdout().lock(), &result)?;
                 } else {
-                    serde_json::to_writer_pretty(
-                        io::stdout().lock(),
-                        &result.counts.counts_only(),
-                    )?;
+                    serde_json::to_writer_pretty(io::stdout().lock(), &result.counts)?;
                 }
                 println!();
                 eprintln!("{}", result.retention_note);

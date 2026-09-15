@@ -17,7 +17,7 @@ fn context_command(input: &std::path::Path, format: &str) -> Command {
 }
 
 #[test]
-fn context_details_follow_capabilities_and_query_gate_without_changing_counts_stdout() {
+fn context_details_follow_capabilities_and_query_gate_with_aggregate_retained_times() {
     use shenron::event::TelemetryProfile;
 
     let dir = tempfile::tempdir().unwrap();
@@ -56,17 +56,44 @@ fn context_details_follow_capabilities_and_query_gate_without_changing_counts_st
                 .stdout
                 .clone()
         };
-        // Exact pre-extension counts-only serialization, including order and newline.
+        let counts_bytes = run(&[]);
+        assert_eq!(counts_bytes, run(&[]));
+        let counts_stdout = String::from_utf8(counts_bytes).unwrap();
+        // Keep the original nine fields in order, followed only by the two UTC bounds.
         assert_eq!(
-            String::from_utf8(run(&[])).unwrap(),
+            counts_stdout,
             concat!(
                 "{\n  \"parseable_records\": 1,\n  \"parse_errors\": 0,\n",
                 "  \"nonselected_peers\": 0,\n  \"selected_without_timestamp\": 0,\n",
                 "  \"selected_outside_window\": 0,\n  \"eligible_records\": 1,\n",
                 "  \"retained_records\": 1,\n  \"records_beyond_cap\": 0,\n",
-                "  \"maximum_records\": 10000\n}\n"
+                "  \"maximum_records\": 10000,\n",
+                "  \"earliest_retained\": \"2026-08-24T11:20:30Z\",\n",
+                "  \"latest_retained\": \"2026-08-24T11:20:30Z\"\n}\n"
             )
         );
+        for private in [
+            "records",
+            "field_availability",
+            "selected_source_ips",
+            "corpus",
+            "198.51.100.1",
+            "/ordinary",
+            "Declared-Agent",
+            "private.example",
+            "token=secret",
+            "https://referrer.example/?patient_id=private",
+            "private-ja3",
+            "private-ja4",
+            "recorded-label",
+            "RECORDED_ACTION",
+        ] {
+            // Match JSON field names exactly: counters such as retained_records remain valid.
+            assert!(
+                !counts_stdout.contains(&format!("\"{private}\"")),
+                "{private}"
+            );
+        }
         let bytes = run(&["--show-request"]);
         assert_eq!(bytes, run(&["--show-request"]));
         let report: Value = serde_json::from_slice(&bytes).unwrap();
@@ -229,6 +256,33 @@ fn optional_context_bounds_reconcile_counts_and_disclose_retained_span_and_caps(
     assert!(String::from_utf8(capped.stderr).unwrap().contains(
         "1 record(s) beyond the cap were omitted; narrow the window or raise --max-records."
     ));
+    for (flags, expected) in [
+        (vec![], &full_report),
+        (vec!["--max-records", "2"], &report),
+    ] {
+        let aggregate = || {
+            context_command(&input, "aws-waf")
+                .args(&flags)
+                .assert()
+                .success()
+                .get_output()
+                .stdout
+                .clone()
+        };
+        let bytes = aggregate();
+        assert_eq!(bytes, aggregate());
+        let counts: Value = serde_json::from_slice(&bytes).unwrap();
+        // Capped output reports only the retained span alongside its omitted count.
+        assert_eq!(counts, expected["counts"]);
+        let follow_up = run(&[
+            "--from",
+            counts["earliest_retained"].as_str().unwrap(),
+            "--to",
+            counts["latest_retained"].as_str().unwrap(),
+        ]);
+        let narrowed: Value = serde_json::from_slice(&follow_up.stdout).unwrap();
+        assert_eq!(narrowed["records"], expected["records"]);
+    }
     context_command(&input, "aws-waf")
         .args([
             "--from",
@@ -388,10 +442,24 @@ fn empty_context_keeps_sorted_selection_only_in_private_output() {
     );
     assert_eq!(private["records"], serde_json::json!([]));
     let public = String::from_utf8(result.stdout).unwrap();
+    // Zero retained records preserve the complete pre-extension stdout byte sequence.
+    assert_eq!(
+        public,
+        concat!(
+            "{\n  \"parseable_records\": 0,\n  \"parse_errors\": 0,\n",
+            "  \"nonselected_peers\": 0,\n  \"selected_without_timestamp\": 0,\n",
+            "  \"selected_outside_window\": 0,\n  \"eligible_records\": 0,\n",
+            "  \"retained_records\": 0,\n  \"records_beyond_cap\": 0,\n",
+            "  \"maximum_records\": 10000\n}\n"
+        )
+    );
     let counts: Value = serde_json::from_str(&public).unwrap();
     assert_eq!(counts["eligible_records"], 0);
     for value in [
+        "\"records\"",
+        "field_availability",
         "selected_source_ips",
+        "corpus",
         "198.51.100.1",
         "198.51.100.2",
         "2001:db8::1",

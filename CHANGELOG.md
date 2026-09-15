@@ -7,6 +7,7 @@ default and COUNT-only; see the README for the full invariants.
 
 ### Fixed
 
+- Corrected the context retained-span addition: aggregate UTC bounds now appear in default counts-only stdout when records are retained, without requiring `--show-request`.
 - Concatenated gzip input is now fully decoded. Previously a `.gz` file holding
   more than one gzip member (for example rotated logs appended together) had only
   its first member parsed while later members were silently dropped, even though
