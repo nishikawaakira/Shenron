@@ -1,7 +1,7 @@
 use std::io::{BufRead, BufReader, Read};
 
 use chrono::{TimeZone, Utc};
-use flate2::read::GzDecoder;
+use flate2::read::MultiGzDecoder;
 use serde::Deserialize;
 use thiserror::Error;
 
@@ -225,7 +225,8 @@ impl<R: Read> Iterator for WafLines<R> {
 
 pub fn maybe_gzip_reader<R: Read + 'static>(reader: R, compressed: bool) -> Box<dyn Read> {
     if compressed {
-        Box::new(GzDecoder::new(reader))
+        // Concatenated gzip members are one decoded log stream, not a suffix to skip.
+        Box::new(MultiGzDecoder::new(reader))
     } else {
         Box::new(reader)
     }
@@ -234,6 +235,34 @@ pub fn maybe_gzip_reader<R: Read + 'static>(reader: R, compressed: bool) -> Box<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gzip_reader_consumes_every_member_and_reports_corrupt_later_members() {
+        use std::io::{Cursor, Write};
+
+        let compress = |text: &[u8]| {
+            let mut encoder =
+                flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+            encoder.write_all(text).unwrap();
+            encoder.finish().unwrap()
+        };
+        let first = compress(b"first\n");
+        let second = compress(b"second\n");
+        for (stored, expected) in [
+            (first.clone(), "first\n"),
+            ([first.clone(), second.clone()].concat(), "first\nsecond\n"),
+        ] {
+            let mut decoded = String::new();
+            maybe_gzip_reader(Cursor::new(stored), true)
+                .read_to_string(&mut decoded)
+                .unwrap();
+            assert_eq!(decoded, expected);
+        }
+        let truncated = [first, second[..second.len() - 4].to_vec()].concat();
+        assert!(maybe_gzip_reader(Cursor::new(truncated), true)
+            .read_to_string(&mut String::new())
+            .is_err());
+    }
 
     #[test]
     fn normalizes_ja_fingerprints_headers_and_uri() {

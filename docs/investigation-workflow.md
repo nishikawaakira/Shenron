@@ -15,8 +15,11 @@ References are valid only for the frozen corpus identified by that SHA-256, not
 a live log path. Appends change the fingerprint, while rotation, truncation or
 replacement can also shift or reassign physical line numbers; verify the frozen
 bytes before following a reference.
+Concatenated gzip members are decoded as one continuous log stream, with line
+numbers continuing across member boundaries. Fingerprints cover all stored members.
 
 ```sh
+shenron context --input ./logs --source-ip 198.51.100.1 --show-request
 shenron context --input ./logs --source-ip 198.51.100.1 \
   --from 2026-08-24T11:15:00Z --to 2026-08-24T11:25:00Z
 shenron context --input ./logs --source-ip 198.51.100.1 \
@@ -24,14 +27,44 @@ shenron context --input ./logs --source-ip 198.51.100.1 \
   --show-request --output ./private-context.json
 ```
 
-Context includes all requests from the selected observed peers in the inclusive
-UTC window, whether or not they matched Nuclei/Sigma. No intelligence inputs or
+Context includes all requests from the selected observed peers within any supplied
+inclusive UTC bounds, whether or not they matched Nuclei/Sigma. No intelligence inputs or
 network access are required. Peers can represent CDN/LB/NAT/proxies, not actors.
 Default stdout contains counts only. `--show-request` opts into private records;
-`--show-query` additionally includes sensitive query values. Private output never
+`--show-query` additionally includes sensitive query and Referer values, including
+any query values in the Referer URL. Private output never
 becomes sanitized merely because it is JSON. No query values are retained in the
 context artifact by default. The original logs and ordinary hunt findings retain
 their existing privacy contract.
+The private context artifact also records `selected_source_ips` as a sorted,
+deduplicated selection, including peers with no retained records. This preserves
+the selection when there are no matches or the record cap is reached; it is never
+included in default counts-only stdout.
+
+Private records also include Host, User-Agent, country, JA3/JA4, WAF action and
+WAF labels when the selected telemetry profile supports them and the request
+records them. `field_availability` records that profile's capabilities, not
+per-request populated counts. Unsupported or unrecorded new fields are omitted;
+Referer is additionally omitted without `--show-query`. WAF action is the recorded
+string, not an interpretation of whether a request reached the origin or a control
+succeeded. An absent field does not establish that a control did not act. No field
+is inferred from another field, and these details never enter counts-only stdout.
+
+Both time bounds are optional: `--from` alone retains requests at or after that
+instant, `--to` alone retains requests at or before it, and omitting both applies
+no time filter. Supplying both preserves the closed interval and rejects reversed
+bounds. Missing timestamps are always excluded and counted in
+`selected_without_timestamp`, even with no window. No preliminary pass is made to
+discover the corpus period. Omitted bounds are absent from the private JSON.
+
+`counts.earliest_retained` and `counts.latest_retained` in private output describe
+the actual retained UTC span (unavailable when no records are retained). They do
+not describe omitted records. Counts-only stdout retains its previous shape and
+does not include these private time bounds. With cap omissions, the retained span
+is only a lower bound on the observed span; stderr reports the omitted count and
+suggests narrowing the window or raising `--max-records`. The default remains
+10,000 records. For a bounded follow-up, use the retained times as explicit
+`--from`/`--to` values, while accounting for the disclosed cap omissions.
 
 The default finite cap is 10,000 eligible records (`--max-records`). The first
 eligible records in sorted file/physical-line order are retained, then displayed

@@ -1,6 +1,6 @@
 //! Bounded private request context, independent of detection matches.
 use crate::{
-    event::{RawRetention, TelemetryProfile},
+    event::{RawRetention, TelemetryCapabilities, TelemetryProfile},
     production::{stream_referenced_events, PathProvenance},
 };
 use anyhow::{bail, Context};
@@ -32,9 +32,25 @@ pub struct ContextRecord {
     pub response_status: Option<u16>,
     pub response_bytes: Option<u64>,
     pub source_reference: SourceReference,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_agent: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub country: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ja3: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ja4: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub waf_action: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub waf_labels: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub referer: Option<String>,
 }
 
-#[derive(Debug, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct ContextCounts {
     pub parseable_records: u64,
     pub parse_errors: u64,
@@ -45,6 +61,21 @@ pub struct ContextCounts {
     pub retained_records: usize,
     pub records_beyond_cap: u64,
     pub maximum_records: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub earliest_retained: Option<DateTime<Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latest_retained: Option<DateTime<Utc>>,
+}
+
+impl ContextCounts {
+    /// Preserve the counts-only stdout contract; retained time bounds are private metadata.
+    pub fn counts_only(&self) -> Self {
+        Self {
+            earliest_retained: None,
+            latest_retained: None,
+            ..self.clone()
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -52,18 +83,23 @@ pub struct ContextReport {
     pub report_kind: &'static str,
     pub safety_note: &'static str,
     pub retention_note: &'static str,
-    pub from: DateTime<Utc>,
-    pub to: DateTime<Utc>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub from: Option<DateTime<Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub to: Option<DateTime<Utc>>,
     pub query_values_included: bool,
+    /// Private selection criteria, retained even when no records match or the cap is reached.
+    pub selected_source_ips: BTreeSet<IpAddr>,
     pub counts: ContextCounts,
     pub corpus: Vec<PathProvenance>,
     pub records: Vec<ContextRecord>,
+    pub field_availability: TelemetryCapabilities,
 }
 
 pub struct ContextOptions {
     pub source_ips: BTreeSet<IpAddr>,
-    pub from: DateTime<Utc>,
-    pub to: DateTime<Utc>,
+    pub from: Option<DateTime<Utc>>,
+    pub to: Option<DateTime<Utc>>,
     pub maximum_records: usize,
     pub include_query: bool,
 }
@@ -95,15 +131,23 @@ pub fn request_context(
     profile: TelemetryProfile,
     options: &ContextOptions,
 ) -> anyhow::Result<ContextReport> {
-    if options.from > options.to || options.maximum_records == 0 || options.source_ips.is_empty() {
-        bail!("context requires an ordered explicit UTC window, selected peers, and a positive finite record cap");
+    if options
+        .from
+        .zip(options.to)
+        .is_some_and(|(from, to)| from > to)
+        || options.maximum_records == 0
+        || options.source_ips.is_empty()
+    {
+        bail!("context requires ordered UTC bounds when both are specified, selected peers, and a positive finite record cap");
     }
     let mut report = ContextReport {
         report_kind: "PRIVATE_REQUEST_CONTEXT", safety_note: SAFETY_NOTE,
-        retention_note: "First eligible records in sorted input-file/physical-line order are retained; retained records are then sorted by UTC time, file, and line. Not necessarily the earliest records when capped. Query values are absent unless explicitly enabled.",
+        retention_note: "First eligible records in sorted input-file/physical-line order are retained; retained records are then sorted by UTC time, file, and line. Not necessarily the earliest records when capped. Query values are absent unless explicitly enabled. A field absent from a record is either unavailable in this telemetry profile (see field_availability) or unrecorded for that request. Absence is not a determination that a control did not act. Retained time bounds describe only the retained records. When records were omitted beyond the cap, they are a lower bound on the observed span.",
         from: options.from, to: options.to, query_values_included: options.include_query,
+        selected_source_ips: options.source_ips.clone(),
         counts: ContextCounts { maximum_records: options.maximum_records, ..Default::default() },
         corpus: Vec::new(), records: Vec::new(),
+        field_availability: profile.capabilities(),
     };
     for path in sorted_input_files(input)? {
         let provenance =
@@ -126,7 +170,9 @@ pub fn request_context(
                     report.counts.selected_without_timestamp += 1;
                     return Ok(());
                 };
-                if timestamp < options.from || timestamp > options.to {
+                if options.from.is_some_and(|from| timestamp < from)
+                    || options.to.is_some_and(|to| timestamp > to)
+                {
                     report.counts.selected_outside_window += 1;
                     return Ok(());
                 }
@@ -151,6 +197,46 @@ pub fn request_context(
                         input_file: path.display().to_string(),
                         line_number,
                     },
+                    host: if report.field_availability.host {
+                        event.host
+                    } else {
+                        None
+                    },
+                    user_agent: if report.field_availability.user_agent {
+                        event.user_agent
+                    } else {
+                        None
+                    },
+                    country: if report.field_availability.country {
+                        event.country
+                    } else {
+                        None
+                    },
+                    ja3: if report.field_availability.ja3 {
+                        event.ja3
+                    } else {
+                        None
+                    },
+                    ja4: if report.field_availability.ja4 {
+                        event.ja4
+                    } else {
+                        None
+                    },
+                    waf_action: if report.field_availability.waf_action {
+                        event.waf_action
+                    } else {
+                        None
+                    },
+                    waf_labels: if report.field_availability.waf_labels {
+                        event.waf_labels
+                    } else {
+                        Vec::new()
+                    },
+                    referer: if options.include_query && report.field_availability.referer {
+                        event.referer
+                    } else {
+                        None
+                    },
                 });
                 Ok(())
             })?;
@@ -169,6 +255,8 @@ pub fn request_context(
             ))
     });
     report.counts.retained_records = report.records.len();
+    report.counts.earliest_retained = report.records.first().map(|record| record.timestamp);
+    report.counts.latest_retained = report.records.last().map(|record| record.timestamp);
     Ok(report)
 }
 
@@ -199,8 +287,8 @@ mod tests {
         .unwrap();
         let options = ContextOptions {
             source_ips: ["198.51.100.1".parse().unwrap()].into(),
-            from,
-            to: from,
+            from: Some(from),
+            to: Some(from),
             maximum_records: 10,
             include_query: false,
         };
@@ -225,8 +313,8 @@ mod tests {
         fs::write(dir.path().join("a.gz"), &compressed).unwrap();
         let mut options = ContextOptions {
             source_ips: ["198.51.100.1".parse().unwrap()].into(),
-            from: "2026-08-24T00:00:00Z".parse().unwrap(),
-            to: "2026-08-25T00:00:00Z".parse().unwrap(),
+            from: Some("2026-08-24T00:00:00Z".parse().unwrap()),
+            to: Some("2026-08-25T00:00:00Z".parse().unwrap()),
             maximum_records: 1,
             include_query: false,
         };
@@ -250,5 +338,51 @@ mod tests {
         )
         .unwrap()
         .contains("token=secret"));
+    }
+
+    #[test]
+    fn concatenated_gzip_context_preserves_lines_fingerprint_and_capped_selection() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("context.gz");
+        let line = "198.51.100.1 - - [24/Aug/2026:11:20:30 +0000] \"GET /ordinary HTTP/1.1\" 200 12 \"-\" \"-\"\n";
+        let mut stored = Vec::new();
+        for member in [format!("\nbad\n{line}"), line.to_owned()] {
+            let mut encoder =
+                flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+            encoder.write_all(member.as_bytes()).unwrap();
+            stored.extend(encoder.finish().unwrap());
+        }
+        fs::write(&input, &stored).unwrap();
+        let mut options = ContextOptions {
+            source_ips: [
+                "198.51.100.1".parse().unwrap(),
+                "2001:db8::1".parse().unwrap(),
+            ]
+            .into(),
+            from: Some("2026-08-24T00:00:00Z".parse().unwrap()),
+            to: Some("2026-08-25T00:00:00Z".parse().unwrap()),
+            maximum_records: 10,
+            include_query: false,
+        };
+        let report = request_context(&input, TelemetryProfile::ApacheCombined, &options).unwrap();
+        assert_eq!(report.counts.parseable_records, 2);
+        assert_eq!(report.counts.parse_errors, 1);
+        assert_eq!(
+            report
+                .records
+                .iter()
+                .map(|r| r.source_reference.line_number)
+                .collect::<Vec<_>>(),
+            [3, 4]
+        );
+        assert_eq!(report.corpus[0].byte_length, Some(stored.len() as u64));
+        assert_eq!(
+            report.corpus[0].sha256,
+            Some(format!("{:x}", Sha256::digest(&stored)))
+        );
+        options.maximum_records = 1;
+        let capped = request_context(&input, TelemetryProfile::ApacheCombined, &options).unwrap();
+        assert_eq!(capped.counts.records_beyond_cap, 1);
+        assert_eq!(capped.selected_source_ips, options.source_ips);
     }
 }

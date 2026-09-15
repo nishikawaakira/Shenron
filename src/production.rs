@@ -3076,9 +3076,14 @@ mod corpus_provenance_tests {
                     flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
                 gzip.write_all(input).unwrap();
                 let mut stored = gzip.finish().unwrap();
-                // The parser decodes one gzip member; provenance must also drain
-                // the unread suffix, even when it exceeds the decoder's buffer.
-                stored.extend(vec![0; 100_000]);
+                // A later valid member exceeds the decoder's buffer. All records
+                // and stored bytes must be consumed without a second read.
+                let mut later =
+                    flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::none());
+                for _ in 0..2_000 {
+                    later.write_all(input).unwrap();
+                }
+                stored.extend(later.finish().unwrap());
                 stored
             } else {
                 input.to_vec()
@@ -3108,7 +3113,7 @@ mod corpus_provenance_tests {
                     },
                 )
                 .unwrap();
-                assert_eq!(events, 1);
+                assert_eq!(events, if compressed { 2_001 } else { 1 });
                 assert_eq!(bytes.get(), stored.len());
                 assert_eq!(length, stored.len() as u64);
                 assert_eq!(hash, format!("{:x}", Sha256::digest(&stored)));
@@ -3405,7 +3410,7 @@ impl<R: Read> Read for SharedFingerprintReader<R> {
 
 /// Hash stored bytes beneath decompression in the parsing pass. There is no
 /// seek or reopen; any unread compressed suffix is drained from the same
-/// reader so provenance covers the whole file, not only the decoded member.
+/// reader so provenance covers the whole file across all decoded members.
 fn stream_fingerprinted_events<R: Read + 'static, F>(
     reader: R,
     compressed: bool,

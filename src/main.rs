@@ -421,7 +421,7 @@ impl TemplateFilterArgs {
 // arguments would add indirection solely to reduce the enum's stack size.
 #[allow(clippy::large_enum_variant)]
 enum ProductionCommand {
-    /// Review all requests (including non-matches) by observed peers in an explicit UTC window.
+    /// Review all requests (including non-matches) by observed peers, optionally within UTC bounds.
     Context {
         #[arg(long)]
         input: PathBuf,
@@ -429,16 +429,18 @@ enum ProductionCommand {
         format: InputFormat,
         #[arg(long, required = true, value_delimiter = ',')]
         source_ip: Vec<IpAddr>,
+        /// Inclusive lower UTC bound; omit for no lower time limit.
         #[arg(long, value_parser = parse_rfc3339_utc)]
-        from: DateTime<Utc>,
+        from: Option<DateTime<Utc>>,
+        /// Inclusive upper UTC bound; omit for no upper time limit.
         #[arg(long, value_parser = parse_rfc3339_utc)]
-        to: DateTime<Utc>,
+        to: Option<DateTime<Utc>>,
         #[arg(long, default_value = "10000", value_parser = parse_positive_usize)]
         max_records: usize,
         /// Opt in to private request records on stdout; default stdout is counts only.
         #[arg(long)]
         show_request: bool,
-        /// Include sensitive query values in private output. Requires --show-request.
+        /// Include sensitive query and Referer values in private output. Requires --show-request.
         #[arg(long, requires = "show_request")]
         show_query: bool,
         /// Write a private context artifact, never a sanitized report.
@@ -1258,10 +1260,16 @@ fn main() -> Result<()> {
                     eprintln!("{}", shenron::investigation::SAFETY_NOTE);
                     serde_json::to_writer_pretty(io::stdout().lock(), &result)?;
                 } else {
-                    serde_json::to_writer_pretty(io::stdout().lock(), &result.counts)?;
+                    serde_json::to_writer_pretty(
+                        io::stdout().lock(),
+                        &result.counts.counts_only(),
+                    )?;
                 }
                 println!();
                 eprintln!("{}", result.retention_note);
+                if result.counts.records_beyond_cap > 0 {
+                    eprintln!("{} record(s) beyond the cap were omitted; narrow the window or raise --max-records.", result.counts.records_beyond_cap);
+                }
                 Ok(())
             }
             ProductionCommand::Hunt {

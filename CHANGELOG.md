@@ -5,6 +5,23 @@ default and COUNT-only; see the README for the full invariants.
 
 ## [Unreleased]
 
+### Fixed
+
+- Concatenated gzip input is now fully decoded. Previously a `.gz` file holding
+  more than one gzip member (for example rotated logs appended together) had only
+  its first member parsed while later members were silently dropped, even though
+  the corpus fingerprint still covered every byte. All members are now read
+  across `hunt`, `concentration`, and `context`, and a truncated later member is
+  an error rather than a silent stop.
+
+### Added
+
+- `context` records now include capability-gated host, user agent, country,
+  JA3/JA4, WAF action and labels, and (behind `--show-query`) Referer, with the
+  telemetry profile's `field_availability` reported so an absent field is
+  distinguishable from an unsupported one. Time bounds are optional, and the
+  retained-record span is disclosed as a lower bound when the cap is reached.
+
 ## [0.4.0] - 2026-09-13
 
 All additions are private-only with sanitized output kept to aggregate counts,
