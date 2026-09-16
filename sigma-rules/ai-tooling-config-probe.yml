@@ -1,0 +1,35 @@
+title: AI Developer Tooling Configuration Probe
+id: shenron-ai-tooling-config-probe
+status: experimental
+description: >-
+  Requests targeting configuration files written by AI coding assistants and
+  Model Context Protocol clients. These files can hold provider API keys and
+  MCP server definitions, so they appear in the same reconnaissance sweeps as
+  classic secret files. This is a generic reconnaissance TTP, not a per-CVE
+  claim, and never asserts an attack, exploitation, compromise, or a vulnerable
+  product. Published AI-crawler convention files such as /llms.txt are ordinary
+  site content and are deliberately excluded.
+references:
+  - https://owasp.org/www-community/attacks/Forced_browsing
+  - https://modelcontextprotocol.io/
+tags: []
+logsource:
+  category: webserver
+detection:
+  selection:
+    uri_path|contains:
+      - '/.cursor/'
+      - '/.codex/'
+      - '/.aider.conf'
+      - '/.continue/config.json'
+      - '/.openclaw/'
+      - '/.claude/settings'
+      - '/.gemini/settings'
+      - '/.windsurf/'
+      - '/.roo/'
+      - '/.zed/settings'
+      - '/mcp.json'
+      - '/.mcp.json'
+      - '/.copilot/'
+  condition: selection
+level: medium

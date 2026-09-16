@@ -17,6 +17,7 @@ default and COUNT-only; see the README for the full invariants.
 
 ### Added
 
+- Bundled Sigma rules now include AI developer tooling configuration requests and expanded secret/configuration paths; public Firebase initialization, AI-crawler convention files and standalone `/mcp` remain excluded. Matches do not establish an attack, compromise or a vulnerable product.
 - `context` records now include capability-gated host, user agent, country,
   JA3/JA4, WAF action and labels, and (behind `--show-query`) Referer, with the
   telemetry profile's `field_availability` reported so an absent field is

@@ -35,7 +35,7 @@ subset without running a hunt.
 `shenron setup` populates that default directory. It installs the **bundled
 Shenron pack** — a small set of curated, Shenron-supported generic-TTP rules
 embedded in the binary (secret/config-file probes, version-control exposure
-probes, management/actuator endpoint probes) — into
+probes, management/actuator endpoint probes, AI developer tooling configuration probes) — into
 `<data-dir>/sigma-rules/shenron-pack/`, so the default-on pass works out of the
 box with no network fetch. `setup --sigma-source <git-url>` additionally fetches
 an external source's `rules/web` subtree (download-only, e.g.

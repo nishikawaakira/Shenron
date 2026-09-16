@@ -207,3 +207,37 @@ fn validate_reports_unsupported_features() {
                 .and(predicate::str::contains("modifier(s) `re`")),
         );
 }
+
+#[test]
+fn validate_supports_all_four_bundled_rules_before_and_after_installation() {
+    let directory = tempdir().unwrap();
+    assert_eq!(
+        shenron::sigma_pack::install_bundled_pack(directory.path()).unwrap(),
+        4
+    );
+    let validate = |path: &std::path::Path| {
+        Command::cargo_bin("shenron")
+            .unwrap()
+            .arg("validate-rules")
+            .arg("--rules")
+            .arg(path)
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone()
+    };
+    let source = validate(std::path::Path::new("sigma-rules"));
+    assert_eq!(source, validate(directory.path()));
+    let output = String::from_utf8(source).unwrap();
+    assert_eq!(
+        output
+            .lines()
+            .filter(|line| line.starts_with("SUPPORTED    "))
+            .count(),
+        4
+    );
+    assert!(output.contains("SUPPORTED    AI Developer Tooling Configuration Probe"));
+    assert!(output.contains("Supported:          4"));
+    assert!(output.contains("Unsupported:        0"));
+}

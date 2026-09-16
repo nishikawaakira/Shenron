@@ -25,6 +25,10 @@ pub const BUNDLED_RULES: &[(&str, &str)] = &[
         "admin-and-actuator-endpoint-probe.yml",
         include_str!("../sigma-rules/admin-and-actuator-endpoint-probe.yml"),
     ),
+    (
+        "ai-tooling-config-probe.yml",
+        include_str!("../sigma-rules/ai-tooling-config-probe.yml"),
+    ),
 ];
 
 /// Directory name the bundled pack is installed under, inside the Sigma rules
@@ -91,5 +95,61 @@ mod tests {
         assert!(matches_any("/.env"));
         assert!(matches_any("/.git/config"));
         assert!(matches_any("/actuator/health"));
+    }
+
+    #[test]
+    fn bundled_pack_separates_configuration_requests_from_public_convention_paths() {
+        let dir = tempdir().unwrap();
+        install_bundled_pack(dir.path()).unwrap();
+        let ruleset = load_rules(dir.path());
+        let matching_ids = |path: &str| {
+            let event = crate::access_log::parse_combined_line(
+                &format!(
+                    r#"203.0.113.9 - - [17/Aug/2026:00:00:00 +0900] "GET {path} HTTP/1.1" 200 12 "-" "curl/8""#
+                ),
+                crate::access_log::AccessLogFormat::ApacheCombined,
+            ).unwrap();
+            ruleset
+                .supported
+                .iter()
+                .filter(|rule| rule.matches(&event))
+                .map(|rule| rule.id.as_str())
+                .collect::<Vec<_>>()
+        };
+        // Public platform resources and conventions are not configuration probes.
+        for path in [
+            "/__/firebase/init.json",
+            "/llms.txt",
+            "/.well-known/llms.txt",
+            "/llms-full.txt",
+            "/mcp",
+        ] {
+            assert!(matching_ids(path).is_empty(), "{path}");
+        }
+        for path in [
+            "/.cursor/mcp.json",
+            "/.codex/config.toml",
+            "/.aider.conf.yml",
+            "/.continue/config.json",
+            "/.openclaw/.env",
+        ] {
+            // Overlapping secret-file matches remain valid; no finding is suppressed.
+            assert!(
+                matching_ids(path).contains(&"shenron-ai-tooling-config-probe"),
+                "{path}"
+            );
+        }
+        assert_eq!(
+            matching_ids("/serviceAccountKey.json"),
+            ["shenron-secret-config-file-probe"]
+        );
+        for path in [
+            "/.aws/credentials", "/.aws/config", "/rclone.conf", "/.gitconfig",
+            "/.gitlab-ci.yml", "/.github/workflows/deploy.yml", "/.vscode/sftp.json",
+            "/@fs/var/run/secrets/kubernetes.io/serviceaccount/token",
+            "/public/plugins/alertlist/../../../../../../../../var/run/secrets/kubernetes.io/serviceaccount/token",
+        ] {
+            assert!(matching_ids(path).contains(&"shenron-secret-config-file-probe"), "{path}");
+        }
     }
 }
