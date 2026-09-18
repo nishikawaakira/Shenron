@@ -41,6 +41,8 @@ shenron hunt \
   --input ./historical-logs --format aws-waf
 ```
 
+Rerun `shenron nuclei update` to regenerate existing frozen reports with the unified generic-path classification (traversal-shaped paths and query/header conditions remain eligible).
+
 The update command downloads public intelligence only. Coverage, inventory,
 matchers, and all production analysis remain local; matchers in particular do
 not access the network or execute templates.

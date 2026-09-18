@@ -193,8 +193,114 @@ fn classifies_path_distinctiveness_with_a_transparent_path_only_heuristic() {
         "/remote/login",
         "/wp-json/gravitysmtp/v1/tests/mock-data",
         "/wp-content/plugins/x/y.php",
+        "/.%2e/.%2e/../var/www/html/index.html",
+        "/.%2E/.%2E/var/www/html/index.html",
+        "/..%2f..%2fetc/passwd",
+        "/../index.html",
+        "/%2E/index.html",
     ] {
         assert_eq!(path_distinctiveness(path), PathDistinctiveness::Distinctive);
+    }
+}
+
+#[test]
+fn frozen_coverage_uses_shared_path_classification_and_preserves_query_and_header_evidence() {
+    let directory = tempdir().unwrap();
+    for (id, path, headers, generic) in [
+        ("robots", "/robots.txt", false, true),
+        ("login", "/login", false, true),
+        ("query", "/index.php?marker=fixture", false, true),
+        ("header", "/index.php", true, true),
+        (
+            "traversal",
+            "/.%2e/.%2E/../var/www/html/index.html",
+            false,
+            false,
+        ),
+    ] {
+        let header = if headers {
+            "    headers:\n      X-Fixture: marker\n"
+        } else {
+            ""
+        };
+        fs::write(directory.path().join(format!("{id}.yaml")), format!(
+            "id: {id}\ninfo:\n  name: Path classification fixture\n  classification:\n    cve-id: CVE-2026-51001\nhttp:\n  - method: GET\n    path:\n      - '{{{{BaseURL}}}}{path}'\n{header}    matchers:\n      - type: status\n        status: [200]\n"
+        )).unwrap();
+        // Inventory exercises the conversion gate before synthetic coverage validation.
+        let inventory = inventory(directory.path(), "fixed-revision");
+        let template = inventory
+            .templates
+            .iter()
+            .find(|t| t.template_id == id)
+            .unwrap();
+        let supported = headers || path.contains('?') || !generic;
+        assert_eq!(
+            template.conversion_status,
+            if supported {
+                ConversionStatus::Supported
+            } else {
+                ConversionStatus::Unsupported
+            },
+            "{id}"
+        );
+        assert_eq!(
+            template.detectability,
+            if supported {
+                Detectability::High
+            } else {
+                Detectability::Low
+            },
+            "{id}"
+        );
+        assert_eq!(
+            template.conversion_reason.as_deref(),
+            if supported {
+                None
+            } else {
+                Some("request_too_generic")
+            },
+            "{id}"
+        );
+        let reasons = &template.detectability_reasons;
+        assert_eq!(
+            reasons.iter().any(|r| r == "request_too_generic"),
+            generic,
+            "{id}"
+        );
+        assert_eq!(
+            reasons.iter().any(|r| r == "distinctive_request_path"),
+            !generic,
+            "{id}"
+        );
+    }
+    let report = coverage(directory.path(), "fixed-revision");
+    assert_eq!(
+        serde_json::to_vec(&report).unwrap(),
+        serde_json::to_vec(&coverage(directory.path(), "fixed-revision")).unwrap()
+    );
+    let robots = report
+        .templates
+        .iter()
+        .find(|t| t.template_id == "robots")
+        .unwrap();
+    assert_eq!(robots.detectability, Detectability::Low);
+    assert_eq!(robots.conversion_status, ConversionStatus::Unsupported);
+    assert_eq!(
+        robots.conversion_reason.as_deref(),
+        Some("request_too_generic")
+    );
+    for id in ["query", "header", "traversal"] {
+        let template = report
+            .templates
+            .iter()
+            .find(|t| t.template_id == id)
+            .unwrap();
+        assert_eq!(
+            template.conversion_status,
+            ConversionStatus::Supported,
+            "{id}"
+        );
+        assert_eq!(template.validation_status, "passed", "{id}");
     }
 }
 
@@ -250,7 +356,9 @@ fn lab_matchers_lists_supported_template_literals_and_respects_frozen_report_gat
     let all_matchers: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(&all_output).unwrap()).unwrap();
     let all_records = all_matchers.as_array().unwrap();
-    assert_eq!(all_records.len(), 5);
+    // The non-CVE /health fixture is now excluded by the shared generic-path gate.
+    assert_eq!(all_records.len(), 4);
+    assert!(all_records.iter().all(|record| record["path"] != "/health"));
     let raw_matcher = all_records
         .iter()
         .find(|record| record["template_id"] == "synthetic-cve-2024-10002")

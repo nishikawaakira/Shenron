@@ -180,13 +180,21 @@ pub const GENERIC_SEGMENTS: &[&str] = &[
 /// Classifies a request path without changing any matching decision. The path
 /// is trimmed, lowercased, and split on `/`; empty segments are ignored.
 /// Empty/root paths, generic basenames, and paths made solely of generic
-/// segments are `Generic`; every other path is `Distinctive`.
+/// segments are `Generic`, except that literal `..` or percent-encoded dots
+/// keep a path `Distinctive`. This is a spelling heuristic, not decoding or
+/// a determination of exploitation; every other path is `Distinctive`.
 pub fn path_distinctiveness(path: &str) -> PathDistinctiveness {
     let normalized = path.trim().to_ascii_lowercase();
     let segments = normalized
         .split('/')
         .filter(|segment| !segment.is_empty())
         .collect::<Vec<_>>();
+    if segments
+        .iter()
+        .any(|segment| segment.contains("..") || segment.contains("%2e"))
+    {
+        return PathDistinctiveness::Distinctive;
+    }
     let Some(basename) = segments.last() else {
         return PathDistinctiveness::Generic;
     };
@@ -1424,7 +1432,10 @@ fn analyze_value(root: &Value, path: String) -> AnalyzedTemplate {
             observable.push("headers".to_owned());
             reasons.push("distinctive_request_header".to_owned());
         }
-        if detections.iter().all(|detection| detection.path == "/") {
+        if detections
+            .iter()
+            .all(|detection| path_distinctiveness(&detection.path) == PathDistinctiveness::Generic)
+        {
             reasons.push("request_too_generic".to_owned());
         } else {
             reasons.push("distinctive_request_path".to_owned());
@@ -1470,7 +1481,9 @@ fn analyze_value(root: &Value, path: String) -> AnalyzedTemplate {
     } else if parsed.as_ref().is_ok_and(|detections| {
         !detections.is_empty()
             && detections.iter().all(|detection| {
-                detection.path == "/" && detection.query.is_none() && detection.headers.is_empty()
+                path_distinctiveness(&detection.path) == PathDistinctiveness::Generic
+                    && detection.query.is_none()
+                    && detection.headers.is_empty()
             })
     }) {
         (Detectability::Low, Some("request_too_generic".to_owned()))
