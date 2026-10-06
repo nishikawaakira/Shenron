@@ -5,6 +5,10 @@ canonical addresses (invalid values compare as exact raw strings). Each new
 address is counted once and listed using its lexicographically smallest current
 raw spelling; triage-view marks all equivalent raw connection-IP keys without
 rewriting those keys. Host, path and JA4 comparisons remain unchanged.
+Because connection-IP groups stay separate per raw spelling, the triage
+summary's `first_seen_entities` counts marked rows, not addresses: one new
+address seen as both `::ffff:203.0.113.8` and `203.0.113.8` is `1` in
+`first_seen_counts.source_ips` but `2` in `first_seen_entities`.
 
 Status: **implemented (Parts A and B)**. This document records the design
 decisions before any code is written, so that the implementation stays inside
