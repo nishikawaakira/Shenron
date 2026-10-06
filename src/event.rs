@@ -4,6 +4,37 @@ use chrono::{DateTime, Utc};
 use ipnet::IpNet;
 use serde::{Deserialize, Serialize};
 
+/// Parse an address for local matching and distinct-member accounting.
+/// IPv4-mapped IPv6 becomes IPv4; callers retain raw display/group keys.
+pub fn canonical_ip(value: &str) -> Option<IpAddr> {
+    value.parse::<IpAddr>().ok().map(|ip| ip.to_canonical())
+}
+
+pub(crate) fn canonical_address_or_raw(value: &str) -> String {
+    canonical_ip(value)
+        .map(|ip| ip.to_string())
+        .unwrap_or_else(|| value.to_owned())
+}
+
+/// Preserve native-family membership, with equivalent mapped IPv4 matching
+/// in either direction, without rewriting frozen network snapshots.
+pub(crate) fn ip_matches_network(address: IpAddr, network: &IpNet) -> bool {
+    let canonical = address.to_canonical();
+    if network.contains(&address) || network.contains(&canonical) {
+        return true;
+    }
+    // Only mapped IPv6 networks represent IPv4 space; do not expand a native
+    // IPv4 address into unrelated IPv6 ranges such as ::/0.
+    match (canonical, network) {
+        (IpAddr::V4(ip), IpNet::V6(range))
+            if range.prefix_len() >= 96 && range.network().to_ipv4_mapped().is_some() =>
+        {
+            range.contains(&ip.to_ipv6_mapped())
+        }
+        _ => false,
+    }
+}
+
 /// Controls whether parsers retain a copy of the original input record.
 ///
 /// Matching paths that build a keyword haystack must use [`Self::Keep`].

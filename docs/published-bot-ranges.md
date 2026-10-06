@@ -5,6 +5,10 @@ frozen local copy of that operator's published IP ranges. This is an offline,
 labeled observation: it is not reverse-DNS verification and does not determine
 impersonation, attack, abuse, compromise, vulnerability, or attacker identity.
 
+Membership treats IPv4-mapped IPv6 peers as IPv4 while preserving matches against
+mapped IPv6 ranges (including native IPv4 peers); private observations retain
+the raw peer spelling, and invalid addresses remain unavailable.
+
 Prepare the snapshot explicitly with either:
 
 ```bash

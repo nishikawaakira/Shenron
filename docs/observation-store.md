@@ -22,6 +22,11 @@ prepared default dataset when present. Invalid source IPs and observations that
 cannot be admitted after a fixed cap are counted and disclosed rather than
 inferred or approximated.
 
+Prefix and ASN lookup treats IPv4-mapped IPv6 as IPv4 without changing raw
+per-source display values. Existing store records are not migrated: peers
+previously recorded under mapped IPv6 keys such as `::/48` can start new
+recurrence histories under their IPv4 prefix or ASN keys.
+
 Each append records an aggregate entry snapshot with the first and last
 observed epoch minute, first and last run ID, number of distinct runs, and the
 ordered run IDs. The run ID is the SHA-256 of the existing `run-manifest.json`;

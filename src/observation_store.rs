@@ -19,6 +19,7 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     concentration::{FocusPrefixLengths, PrivateRequestConcentrationReport},
+    event::canonical_ip,
     reputation::AsnDatabase,
 };
 
@@ -279,7 +280,7 @@ fn candidate_entities(
     let mut entities = BTreeSet::new();
     let mut invalid_source_ips = 0usize;
     for source in &concentration.source_ips {
-        let Ok(address) = source.source_ip.parse::<IpAddr>() else {
+        let Some(address) = canonical_ip(&source.source_ip) else {
             invalid_source_ips += 1;
             continue;
         };
@@ -630,6 +631,35 @@ mod tests {
             &report,
         )
         .unwrap();
+    }
+
+    #[test]
+    fn candidate_entities_canonicalize_mapped_peers_for_prefixes_and_local_asns() {
+        let dir = tempdir().unwrap();
+        let run = dir.path().join("run");
+        write_run(
+            &run,
+            "fixture",
+            &["::ffff:203.0.113.7", "203.0.113.7", "invalid"],
+            0,
+        );
+        let report =
+            crate::production::load_private_concentration(&run.join("request-concentration.json"))
+                .unwrap();
+        let asn_path = dir.path().join("asn.tsv");
+        fs::write(&asn_path, "203.0.113.0\t203.0.113.255\t64501\tFixture\n").unwrap();
+        let database = crate::reputation::load_asn_database(&asn_path).unwrap();
+        let candidates =
+            candidate_entities(&report, FocusPrefixLengths::default(), Some(&database));
+        assert_eq!(
+            candidates.entities,
+            BTreeSet::from([
+                ("network-prefix".to_owned(), "203.0.113.0/24".to_owned()),
+                ("asn".to_owned(), "AS64501".to_owned()),
+            ])
+        );
+        assert_eq!(candidates.invalid_source_ips, 1);
+        assert_eq!(report.source_ips[0].source_ip, "::ffff:203.0.113.7");
     }
 
     #[test]

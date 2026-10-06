@@ -1,5 +1,11 @@
 # Temporal comparison and retro-hunting (design proposal)
 
+First-seen source/client comparisons treat IPv4-mapped IPv6 as IPv4 and compare
+canonical addresses (invalid values compare as exact raw strings). Each new
+address is counted once and listed using its lexicographically smallest current
+raw spelling; triage-view marks all equivalent raw connection-IP keys without
+rewriting those keys. Host, path and JA4 comparisons remain unchanged.
+
 Status: **implemented (Parts A and B)**. This document records the design
 decisions before any code is written, so that the implementation stays inside
 Shenron's pillars. The formerly open decisions on the robust statistic and the

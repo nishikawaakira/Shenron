@@ -21,7 +21,7 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     consistency::{compare_boolean_fact, ComparisonOutcome, ConsistencyAccumulator},
-    event::{TelemetryCapabilities, WebEvent},
+    event::{ip_matches_network, TelemetryCapabilities, WebEvent},
 };
 
 pub const BOT_RANGE_REPORT_KIND: &str = "PUBLISHED_BOT_RANGE_SNAPSHOT";
@@ -211,7 +211,10 @@ impl BotRangeDatabase {
             let source_ip = event.source_ip.as_deref();
             let address = source_ip.and_then(|value| value.parse::<IpAddr>().ok());
             let inside = address.is_some_and(|address| {
-                operator.ranges.iter().any(|range| range.contains(&address))
+                operator
+                    .ranges
+                    .iter()
+                    .any(|range| ip_matches_network(address, range))
             });
             let result = compare_boolean_fact(
                 capabilities.is_none_or(|item| item.source_ip),
@@ -534,6 +537,26 @@ mod tests {
             ],
         })
         .unwrap()
+    }
+
+    #[test]
+    fn published_ranges_match_mapped_peers_and_mapped_networks_without_accepting_invalid_ips() {
+        let mut database = database();
+        database.operators[1].ranges = vec!["::ffff:203.0.113.0/120".parse().unwrap()];
+        let mut accumulator = BotRangeAccumulator::default();
+        for item in [
+            event("::ffff:198.51.100.7", "AlphaBot"),
+            event("not-an-ip", "AlphaBot"),
+            event("203.0.113.7", "BetaBot"),
+            event("::ffff:203.0.113.7", "BetaBot"),
+        ] {
+            database.observe(&item, &mut accumulator);
+        }
+        let (summary, _) = accumulator.reports();
+        assert_eq!(summary[0].within_published_ranges_requests, 1);
+        assert_eq!(summary[0].source_ip_unavailable_requests, 1);
+        assert_eq!(summary[0].outside_published_ranges_requests, 0);
+        assert_eq!(summary[1].within_published_ranges_requests, 2);
     }
 
     #[test]

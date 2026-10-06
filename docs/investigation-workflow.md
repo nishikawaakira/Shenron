@@ -41,6 +41,10 @@ deduplicated selection, including peers with no retained records. This preserves
 the selection when there are no matches or the record cap is reached; it is never
 included in default counts-only stdout.
 
+Context selector matching treats IPv4-mapped IPv6 as IPv4 and consolidates
+equivalent address spellings internally; record peer values remain raw and the
+existing `selected_source_ips` representation is unchanged.
+
 Private records also include Host, User-Agent, country, JA3/JA4, WAF action and
 WAF labels when the selected telemetry profile supports them and the request
 records them. `field_availability` records that profile's capabilities, not

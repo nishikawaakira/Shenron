@@ -35,7 +35,7 @@ use shenron::{
         record_disposition_with_review, AnalystDisposition, DispositionKey, DispositionReview,
         DispositionStore, DISPOSITION_SAFETY_NOTE,
     },
-    event::{TelemetryCapabilities, TelemetryProfile, TrustedProxy, TrustedProxySet},
+    event::{canonical_ip, TelemetryCapabilities, TelemetryProfile, TrustedProxy, TrustedProxySet},
     lab_cli::{run as run_lab_command, LabCommand},
     nuclei::{path_distinctiveness, PathDistinctiveness},
     observation_store::{update_observation_store, ObservationStoreLimits},
@@ -68,7 +68,7 @@ use shenron::{
     },
     trend::{path_trend, PathTrendReport},
     triage::{
-        asn_entity_groups, canonical_ip, entity_groups, EntityDimension, TriagePolicy,
+        asn_entity_groups, entity_groups, EntityDimension, TriagePolicy,
         DEFAULT_MAX_SEQUENCE_OBSERVATIONS, DEFAULT_SEQUENCE_WINDOW_SECONDS,
     },
     triage_view::{build_triage_view, PrivateTriageView, SanitizedTriageSummary},

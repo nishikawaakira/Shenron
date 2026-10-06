@@ -18,6 +18,7 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     concentration::PrivateRequestConcentrationReport,
+    event::canonical_address_or_raw,
     production::{explain_private_findings, load_private_concentration, FindingExplanation},
 };
 
@@ -463,6 +464,37 @@ fn values(
 ) -> BTreeSet<String> {
     findings.iter().filter_map(field).cloned().collect()
 }
+
+/// Canonical identity -> lexically smallest current raw spelling. Invalid
+/// addresses remain exact strings; serialized lists retain raw lexical order.
+fn address_values(
+    findings: &[FindingExplanation],
+    field: fn(&FindingExplanation) -> Option<&String>,
+) -> BTreeMap<String, String> {
+    let mut addresses = BTreeMap::<String, String>::new();
+    for raw in findings.iter().filter_map(field) {
+        let representative = addresses
+            .entry(canonical_address_or_raw(raw))
+            .or_insert_with(|| raw.clone());
+        if raw < representative {
+            representative.clone_from(raw);
+        }
+    }
+    addresses
+}
+
+fn new_address_spellings(
+    baseline: &BTreeMap<String, String>,
+    current: &BTreeMap<String, String>,
+) -> Vec<String> {
+    let mut result = current
+        .iter()
+        .filter(|(key, _)| !baseline.contains_key(*key))
+        .map(|(_, raw)| raw.clone())
+        .collect::<Vec<_>>();
+    result.sort();
+    result
+}
 fn first_seen(
     b: Option<&[FindingExplanation]>,
     c: Option<&[FindingExplanation]>,
@@ -479,19 +511,19 @@ fn first_seen(
             .cloned()
             .collect::<Vec<_>>()
     };
-    let source = diff(|f| f.source_ip.as_ref());
+    let source = new_address_spellings(
+        &address_values(b, |f| f.source_ip.as_ref()),
+        &address_values(c, |f| f.source_ip.as_ref()),
+    );
     let hosts = diff(|f| f.host.as_ref());
     let paths = diff(|f| f.uri_path.as_ref());
     let ja4 = diff(|f| f.ja4.as_ref());
-    let b_clients = values(b, |f| f.client_ip.as_ref());
-    let c_clients = values(c, |f| f.client_ip.as_ref());
+    let b_clients = address_values(b, |f| f.client_ip.as_ref());
+    let c_clients = address_values(c, |f| f.client_ip.as_ref());
     let (client_ips, client_count, unavailable) = if b_clients.is_empty() || c_clients.is_empty() {
         (None,None,vec!["client_ip comparison unavailable because one or both runs have no validated client IPs".to_owned()])
     } else {
-        let items = c_clients
-            .difference(&b_clients)
-            .cloned()
-            .collect::<Vec<_>>();
+        let items = new_address_spellings(&b_clients, &c_clients);
         let count = Some(items.len());
         (Some(items), count, vec![])
     };
@@ -806,6 +838,42 @@ mod tests {
             rule_title: None,
             sigma_level: None,
         }
+    }
+
+    #[test]
+    fn first_seen_addresses_compare_canonical_identities_and_keep_smallest_raw_spelling() {
+        let make = |ip| {
+            let mut item = finding(ip, "host", "/path", "ja4");
+            item.client_ip = Some(ip.to_owned());
+            item
+        };
+        let baseline = [make("203.0.113.7"), make("same-invalid")];
+        let mut current = [
+            make("::ffff:203.0.113.7"),
+            make("::ffff:203.0.113.8"),
+            make("203.0.113.8"),
+            make("2001:db8::1"),
+            make("2001:DB8::1"),
+            make("same-invalid"),
+            make("new-invalid"),
+        ];
+        let (counts, private) = first_seen(Some(&baseline), Some(&current));
+        assert_eq!(counts.source_ips, 3);
+        assert_eq!(counts.client_ips, Some(3));
+        assert_eq!(
+            private.source_ips,
+            ["2001:DB8::1", "203.0.113.8", "new-invalid"]
+        );
+        assert_eq!(private.client_ips.as_ref().unwrap(), &private.source_ips);
+        assert!(private.hosts.is_empty());
+        assert!(private.uri_paths.is_empty());
+        assert!(private.ja4_fingerprints.is_empty());
+        current.reverse();
+        let (repeated_counts, repeated_private) = first_seen(Some(&baseline), Some(&current));
+        assert_eq!(
+            serde_json::to_vec(&(counts, private)).unwrap(),
+            serde_json::to_vec(&(repeated_counts, repeated_private)).unwrap()
+        );
     }
 
     #[test]

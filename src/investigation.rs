@@ -1,6 +1,6 @@
 //! Bounded private request context, independent of detection matches.
 use crate::{
-    event::{RawRetention, TelemetryCapabilities, TelemetryProfile},
+    event::{canonical_ip, RawRetention, TelemetryCapabilities, TelemetryProfile},
     production::{stream_referenced_events, PathProvenance},
 };
 use anyhow::{bail, Context};
@@ -129,6 +129,11 @@ pub fn request_context(
     {
         bail!("context requires ordered UTC bounds when both are specified, selected peers, and a positive finite record cap");
     }
+    let selected_addresses: BTreeSet<_> = options
+        .source_ips
+        .iter()
+        .map(|ip| ip.to_canonical())
+        .collect();
     let mut report = ContextReport {
         report_kind: "PRIVATE_REQUEST_CONTEXT", safety_note: SAFETY_NOTE,
         retention_note: "First eligible records in sorted input-file/physical-line order are retained; retained records are then sorted by UTC time, file, and line. Not necessarily the earliest records when capped. Query values are absent unless explicitly enabled. A field absent from a record is either unavailable in this telemetry profile (see field_availability) or unrecorded for that request. Absence is not a determination that a control did not act. Retained time bounds describe only the retained records. When records were omitted beyond the cap, they are a lower bound on the observed span.",
@@ -149,8 +154,8 @@ pub fn request_context(
                 let selected = event
                     .source_ip
                     .as_deref()
-                    .and_then(|ip| ip.parse::<IpAddr>().ok())
-                    .is_some_and(|ip| options.source_ips.contains(&ip));
+                    .and_then(canonical_ip)
+                    .is_some_and(|ip| selected_addresses.contains(&ip));
                 if !selected {
                     report.counts.nonselected_peers += 1;
                     return Ok(());
@@ -254,6 +259,31 @@ mod tests {
     use super::*;
     use sha2::{Digest, Sha256};
     use std::{fs, io::Write};
+
+    #[test]
+    fn context_matches_canonical_peers_in_both_directions_and_preserves_selected_values() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("access.log");
+        for (selector, peer) in [
+            ("203.0.113.7", "::ffff:203.0.113.7"),
+            ("::ffff:203.0.113.7", "203.0.113.7"),
+            ("2001:DB8::1", "2001:db8::1"),
+        ] {
+            fs::write(&input, format!("{peer} - - [24/Aug/2026:11:20:30 +0000] \"GET /ordinary HTTP/1.1\" 200 12 \"-\" \"-\"\n")).unwrap();
+            let options = ContextOptions {
+                source_ips: [selector.parse().unwrap()].into(),
+                from: None,
+                to: None,
+                maximum_records: 10,
+                include_query: false,
+            };
+            let result =
+                request_context(&input, TelemetryProfile::ApacheCombined, &options).unwrap();
+            assert_eq!(result.counts.eligible_records, 1);
+            assert_eq!(result.selected_source_ips, options.source_ips);
+            assert_eq!(result.records[0].source_ip, peer);
+        }
+    }
 
     #[test]
     fn window_missing_time_and_peer_exclusions_reconcile_and_corrupt_gzip_is_an_error() {

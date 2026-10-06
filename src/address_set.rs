@@ -1,5 +1,8 @@
 //! Frozen private address membership, not identity or ownership inference.
-use crate::production::{read_fingerprinted_input, PathProvenance};
+use crate::{
+    event::ip_matches_network,
+    production::{read_fingerprinted_input, PathProvenance},
+};
 use anyhow::{bail, Context, Result};
 use ipnet::IpNet;
 use serde::{Deserialize, Serialize};
@@ -73,10 +76,11 @@ impl FrozenAddressSet {
         Ok(())
     }
     pub fn matches(&self, source: &str) -> bool {
-        source
-            .parse::<IpAddr>()
-            .ok()
-            .is_some_and(|ip| self.networks.iter().any(|network| network.contains(&ip)))
+        source.parse::<IpAddr>().ok().is_some_and(|ip| {
+            self.networks
+                .iter()
+                .any(|network| ip_matches_network(ip, network))
+        })
     }
     pub fn has_v4(&self) -> bool {
         self.networks.iter().any(|net| matches!(net, IpNet::V4(_)))
@@ -121,6 +125,32 @@ impl FrozenAddressSet {
             }
         }
         reasons
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn canonical_membership_preserves_frozen_snapshots_and_native_family_boundaries() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("addresses.txt");
+        for (network, matching, nonmatching) in [
+            ("203.0.113.0/24", "::ffff:203.0.113.7", "::ffff:192.0.2.1"),
+            ("::ffff:203.0.113.0/120", "203.0.113.7", "192.0.2.1"),
+            ("::/0", "::ffff:203.0.113.7", "203.0.113.7"),
+            ("2001:db8::/32", "2001:DB8::1", "203.0.113.7"),
+        ] {
+            std::fs::write(&path, network).unwrap();
+            let frozen = FrozenAddressSet::load(&path, None, None).unwrap();
+            let before = serde_json::to_vec(&frozen).unwrap();
+            assert!(frozen.matches(matching));
+            assert!(!frozen.matches(nonmatching));
+            assert!(!frozen.matches("not-an-ip"));
+            frozen.validate_snapshot().unwrap();
+            assert_eq!(serde_json::to_vec(&frozen).unwrap(), before);
+        }
     }
 }
 

@@ -13,6 +13,9 @@ This is different evidence from a method, path, or header match: it tests
 membership in an operator-selected address snapshot, not identity, ownership,
 intent, or a finding of attack or abuse. No address set is used by default.
 Combined logs suffice; forwarded client headers are not used or inferred.
+Membership treats IPv4-mapped IPv6 as IPv4 and also preserves mapped IPv6 range
+membership; displayed peers and frozen snapshots retain their existing representation.
+Replay match counts can therefore increase for logs containing mapped peers.
 The operator must verify that the log's observed peer is the same address that
 the target WAF evaluates; proxy/CDN topologies can invalidate that assumption.
 

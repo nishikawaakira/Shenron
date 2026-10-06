@@ -7,6 +7,9 @@ default and COUNT-only; see the README for the full invariants.
 
 ### Fixed
 
+- Published bot ranges, frozen address sets and context selectors now match equivalent mapped IPv4 addresses without rewriting raw displays or frozen snapshots; candidate replay counts can increase for mapped peers.
+- Observation-store prefix/ASN lookup and source/client first-seen comparisons now canonicalize peer addresses; first-seen lists retain one raw representative and triage marks equivalent keys. Old observation-store keys are not migrated, so mapped-peer recurrence histories can restart.
+
 - Triage ASN, EXPLAIN and private triage-view ASN/reputation lookups now canonicalize mapped IPv4; ASN/JA4 distinct counts consolidate address spellings without merging identity populations or rewriting connection-IP keys, which can reduce spread and its behavior-score contribution.
 - Source-IP focuses now match mapped IPv4 and alternative IP spellings; focus ASN groups resolve canonical addresses and deduplicate resolved/unresolved peers without rewriting raw source rows or selector displays.
 - Focus prefix groups now treat IPv4-mapped IPv6 peers as IPv4 and count alternative spellings of the same address once, without rewriting private per-source rows.

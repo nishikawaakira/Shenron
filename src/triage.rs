@@ -22,7 +22,7 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 
 use crate::{
-    event::TelemetryCapabilities,
+    event::{canonical_address_or_raw, TelemetryCapabilities},
     nuclei::{path_distinctiveness, PathDistinctiveness, RequestSpecificity},
     production::FindingExplanation,
 };
@@ -67,11 +67,8 @@ pub trait AsnResolver {
     fn resolve(&self, ip: IpAddr) -> Option<ResolvedAsn>;
 }
 
-/// Parse an address for local enrichment and distinct-member accounting.
-/// IPv4-mapped IPv6 becomes IPv4; callers retain raw display/group keys.
-pub fn canonical_ip(value: &str) -> Option<IpAddr> {
-    value.parse::<IpAddr>().ok().map(|ip| ip.to_canonical())
-}
+// Preserve the existing public import path while sharing neutral event helpers.
+pub use crate::event::canonical_ip;
 
 /// Whether an IP group is a verified forwarded client or an observed peer.
 ///
@@ -947,12 +944,6 @@ fn finding_identity_and_address(finding: &FindingExplanation) -> Option<(Groupin
             .as_deref()
             .map(|source_ip| (GroupingIdentity::ObservedPeer, source_ip))
     }
-}
-
-fn canonical_address_or_raw(value: &str) -> String {
-    canonical_ip(value)
-        .map(|ip| ip.to_string())
-        .unwrap_or_else(|| value.to_owned())
 }
 
 fn add_finding_to_summary(

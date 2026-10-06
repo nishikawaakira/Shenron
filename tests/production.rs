@@ -3202,6 +3202,82 @@ fn hunt_rejects_baseline_and_baseline_latest_together() {
 }
 
 #[test]
+fn hunt_baseline_first_seen_normalizes_peer_spellings_without_rewriting_triage_keys() {
+    let directory = tempdir().unwrap();
+    let data = directory.path().join("empty-data");
+    let fixture = fs::read_to_string("tests/fixtures/production/waf.jsonl").unwrap();
+    let event: serde_json::Value = serde_json::from_str(fixture.lines().next().unwrap()).unwrap();
+    let baseline = directory.path().join("baseline");
+    let current = directory.path().join("current");
+    for (name, peers, output) in [
+        ("baseline", vec!["203.0.113.7"], &baseline),
+        (
+            "current",
+            vec!["::ffff:203.0.113.7", "::ffff:203.0.113.8", "203.0.113.8"],
+            &current,
+        ),
+    ] {
+        let input = directory.path().join(format!("{name}.jsonl"));
+        let records = peers
+            .iter()
+            .enumerate()
+            .map(|(index, peer)| {
+                let mut record = event.clone();
+                record["httpRequest"]["clientIp"] = (*peer).into();
+                record["httpRequest"]["requestId"] = format!("{name}-{index}").into();
+                record.to_string()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(&input, records).unwrap();
+        let mut command = source_prefix_command(&data);
+        command
+            .env_remove("SHENRON_SLACK_WEBHOOK")
+            .args([
+                "hunt",
+                "--format",
+                "aws-waf",
+                "--no-sigma",
+                "--nuclei-templates",
+                "tests/fixtures/nuclei",
+                "--nuclei-report",
+                "tests/fixtures/production/nuclei-report.json",
+                "--kev-report",
+                "tests/fixtures/production/kev-report.json",
+            ])
+            .arg("--input")
+            .arg(&input)
+            .arg("--output")
+            .arg(output);
+        if name == "current" {
+            command.arg("--baseline").arg(&baseline);
+        }
+        command.assert().success();
+    }
+    let read = |name| -> serde_json::Value {
+        serde_json::from_slice(&fs::read(current.join(name)).unwrap()).unwrap()
+    };
+    assert_eq!(
+        read("comparison-summary.json")["first_seen_counts"]["source_ips"],
+        1
+    );
+    assert_eq!(
+        read("comparison-detail.json")["first_seen_entities"]["source_ips"],
+        serde_json::json!(["203.0.113.8"])
+    );
+    let view = read("triage-view.json");
+    let entities = view["entities"].as_array().unwrap();
+    assert_eq!(entities.len(), 3);
+    for peer in ["::ffff:203.0.113.7", "::ffff:203.0.113.8", "203.0.113.8"] {
+        let entity = entities
+            .iter()
+            .find(|entity| entity["key"] == peer)
+            .unwrap();
+        assert_eq!(entity["first_seen"], peer != "::ffff:203.0.113.7");
+    }
+}
+
+#[test]
 fn hunt_triage_keeps_private_entities_gated_and_marks_baseline_first_seen_entities() {
     let directory = tempdir().unwrap();
     let baseline_input = directory.path().join("baseline-waf.jsonl");

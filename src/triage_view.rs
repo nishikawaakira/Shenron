@@ -10,10 +10,10 @@ use std::collections::BTreeSet;
 use serde::Serialize;
 
 use crate::{
-    event::TelemetryCapabilities,
+    event::{canonical_address_or_raw, canonical_ip, TelemetryCapabilities},
     production::FindingExplanation,
     reputation::{AsnDatabase, ReputationDatabase},
-    triage::{canonical_ip, entity_groups, EntityDimension, RequestSequenceSummary, TriagePolicy},
+    triage::{entity_groups, EntityDimension, RequestSequenceSummary, TriagePolicy},
 };
 
 const SAFETY_NOTE: &str = "This is a triage priority order (which entity to review first), not a threat severity or a probability of malice. A first-seen mark means new and worth review, never malicious. An ordered request sequence is an observation of what was requested and when; regular intervals or a short span can also result from automation, a crawler, page subresources, or a person clicking quickly. It does not determine automation, attack, exploitation, compromise, abuse, or attacker identity.";
@@ -116,6 +116,10 @@ pub fn build_triage_view(
     reputation_database: Option<&ReputationDatabase>,
     first_seen_source_ips: &BTreeSet<String>,
 ) -> (SanitizedTriageSummary, PrivateTriageView) {
+    let first_seen_addresses: BTreeSet<_> = first_seen_source_ips
+        .iter()
+        .map(|value| canonical_address_or_raw(value))
+        .collect();
     let mut entities = entity_groups(
         findings,
         EntityDimension::ConnectionIp,
@@ -146,7 +150,7 @@ pub fn build_triage_view(
             .expect("connection-IP groups always carry an identity");
         let requires_investigation = group.requires_investigation();
         TriageEntity {
-            first_seen: first_seen_source_ips.contains(&group.key),
+            first_seen: first_seen_addresses.contains(&canonical_address_or_raw(&group.key)),
             key: group.key,
             identity: identity.label(),
             behavior_score: TriageBehaviorScore {
@@ -304,6 +308,46 @@ mod tests {
             ),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn first_seen_marks_all_raw_groups_for_a_canonical_address() {
+        let peers = [
+            "203.0.113.7",
+            "::ffff:203.0.113.7",
+            "2001:DB8::1",
+            "2001:db8::1",
+            "invalid",
+            "other-invalid",
+            "192.0.2.1",
+        ];
+        let findings = peers
+            .iter()
+            .enumerate()
+            .map(|(index, ip)| finding(ip, "one", &index.to_string()))
+            .collect::<Vec<_>>();
+        for selected in ["203.0.113.7", "::ffff:203.0.113.7"] {
+            let (_, view) = build_triage_view(
+                &findings,
+                TelemetryProfile::AwsWaf.capabilities(),
+                TriagePolicy::default(),
+                None,
+                None,
+                &BTreeSet::from([
+                    selected.to_owned(),
+                    "2001:db8::1".to_owned(),
+                    "invalid".to_owned(),
+                ]),
+            );
+            assert_eq!(view.entities.len(), peers.len());
+            for entity in view.entities {
+                assert!(peers.contains(&entity.key.as_str()));
+                assert_eq!(
+                    entity.first_seen,
+                    !["other-invalid", "192.0.2.1"].contains(&entity.key.as_str())
+                );
+            }
+        }
     }
 
     #[test]
