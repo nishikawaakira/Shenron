@@ -4303,6 +4303,61 @@ fn hunt_resolves_a_forwarded_client_only_through_a_trusted_peer() {
 }
 
 #[test]
+fn explain_canonicalizes_mapped_ip_enrichment_without_rewriting_group_keys() {
+    let directory = tempdir().unwrap();
+    let findings = directory.path().join("private-findings.jsonl");
+    let asn = directory.path().join("asn-ranges.tsv");
+    fs::write(&asn, "203.0.113.0\t203.0.113.255\t64501\tEXAMPLE-NARROW\n").unwrap();
+    fs::write(&findings, concat!(
+        r#"{"template_id":"template-one","cves":["CVE-2024-10001"],"detectability":"HIGH","timestamp":"2026-08-24T00:00:01+00:00","source_ip":"::ffff:203.0.113.7","host":"example.test","method":"GET","uri_path":"/one","uri_query":"probe=1","headers":[],"ja3":null,"ja4":null,"waf_action":null,"request_id":null}"#,
+        "\n")).unwrap();
+    for format in ["text", "json"] {
+        let result = Command::cargo_bin("shenron")
+            .unwrap()
+            .env("SHENRON_DATA_DIR", directory.path().join("empty-data"))
+            .env_remove("XDG_DATA_HOME")
+            .args([
+                "explain",
+                "--show-source-ips",
+                "--output-format",
+                format,
+                "--reputation-dataset",
+                "tests/fixtures/reputation/reputation.jsonl",
+            ])
+            .arg("--asn-dataset")
+            .arg(&asn)
+            .arg("--findings")
+            .arg(&findings)
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        let text = String::from_utf8(result).unwrap();
+        assert!(text.contains("::ffff:203.0.113.7"));
+        if format == "json" {
+            let json: serde_json::Value = serde_json::from_str(&text).unwrap();
+            let group = &json["connection_ip_groups"][0];
+            assert_eq!(group["key"], "::ffff:203.0.113.7");
+            assert_eq!(group["reputation"]["resolved_asn"], 64501);
+            assert_eq!(group["reputation"]["score"], 90);
+            let scopes = group["reputation"]["hits"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|hit| hit["scope"].as_str().unwrap())
+                .collect::<Vec<_>>();
+            assert_eq!(scopes, ["ip", "cidr", "asn"]);
+        } else {
+            assert!(text.contains("Resolved ASN: 64501 (EXAMPLE-NARROW)"));
+            assert!(text.contains("Reputation: 90/100 (high) via ip"));
+            assert!(text.contains("- cidr 203.0.113.0/24"));
+            assert!(text.contains("- asn 64501"));
+        }
+    }
+}
+
+#[test]
 fn explain_enriches_private_ip_groups_from_offline_asn_and_reputation_datasets() {
     let directory = tempdir().unwrap();
     let findings = directory.path().join("private-findings.jsonl");

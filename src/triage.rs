@@ -67,6 +67,12 @@ pub trait AsnResolver {
     fn resolve(&self, ip: IpAddr) -> Option<ResolvedAsn>;
 }
 
+/// Parse an address for local enrichment and distinct-member accounting.
+/// IPv4-mapped IPv6 becomes IPv4; callers retain raw display/group keys.
+pub fn canonical_ip(value: &str) -> Option<IpAddr> {
+    value.parse::<IpAddr>().ok().map(|ip| ip.to_canonical())
+}
+
 /// Whether an IP group is a verified forwarded client or an observed peer.
 ///
 /// Validated-client and observed-peer groups are intentionally never merged:
@@ -903,10 +909,7 @@ pub fn asn_entity_groups(
             Some(value) => value,
             None => continue,
         };
-        let resolved = address
-            .parse::<IpAddr>()
-            .ok()
-            .and_then(|ip| resolver.resolve(ip));
+        let resolved = canonical_ip(address).and_then(|ip| resolver.resolve(ip));
         let Some(resolved) = resolved else {
             unresolved_findings += 1;
             continue;
@@ -946,6 +949,12 @@ fn finding_identity_and_address(finding: &FindingExplanation) -> Option<(Groupin
     }
 }
 
+fn canonical_address_or_raw(value: &str) -> String {
+    canonical_ip(value)
+        .map(|ip| ip.to_string())
+        .unwrap_or_else(|| value.to_owned())
+}
+
 fn add_finding_to_summary(
     summary: &mut EntitySummary,
     finding: &FindingExplanation,
@@ -961,11 +970,15 @@ fn add_finding_to_summary(
     summary.request_patterns.insert(request_pattern.clone());
     match &finding.client_ip {
         Some(client_ip) => {
-            summary.validated_clients.insert(client_ip.clone());
+            summary
+                .validated_clients
+                .insert(canonical_address_or_raw(client_ip));
         }
         None => {
             if let Some(source_ip) = &finding.source_ip {
-                summary.observed_peers.insert(source_ip.clone());
+                summary
+                    .observed_peers
+                    .insert(canonical_address_or_raw(source_ip));
             }
         }
     }
@@ -1163,6 +1176,19 @@ mod tests {
 
     use super::*;
     use crate::event::TelemetryProfile;
+
+    #[test]
+    fn canonical_ip_normalizes_mapped_and_ipv6_addresses_and_rejects_invalid_values() {
+        assert_eq!(
+            canonical_ip("::ffff:203.0.113.7"),
+            Some("203.0.113.7".parse::<IpAddr>().unwrap())
+        );
+        assert_eq!(
+            canonical_ip("2001:DB8::1").unwrap().to_string(),
+            "2001:db8::1"
+        );
+        assert_eq!(canonical_ip("not-an-ip"), None);
+    }
 
     struct TestAsnResolver;
 
@@ -1551,6 +1577,164 @@ mod tests {
         assert_eq!(group.distinct_validated_clients, 1);
         assert_eq!(group.distinct_observed_peers, 1);
         assert_eq!(group.spread, 1);
+    }
+
+    #[test]
+    fn asn_groups_resolve_mapped_peers_without_merging_client_identity() {
+        let findings = vec![
+            finding(
+                "mapped",
+                "template-a",
+                None,
+                RequestSpecificity::RequestSpecific,
+                None,
+                Some("::ffff:203.0.113.7"),
+                None,
+            ),
+            finding(
+                "native",
+                "template-a",
+                None,
+                RequestSpecificity::RequestSpecific,
+                None,
+                Some("203.0.113.7"),
+                None,
+            ),
+            finding(
+                "client",
+                "template-a",
+                None,
+                RequestSpecificity::RequestSpecific,
+                Some("203.0.113.7"),
+                Some("192.0.2.99"),
+                None,
+            ),
+        ];
+        let result = asn_entity_groups(
+            &findings,
+            TriagePolicy::default(),
+            &TestAsnResolver,
+            TelemetryProfile::AwsWaf.capabilities(),
+        );
+        assert_eq!(result.unresolved_findings, 0);
+        assert_eq!(result.groups.len(), 2);
+        let peer = result
+            .groups
+            .iter()
+            .find(|g| g.identity == Some(GroupingIdentity::ObservedPeer))
+            .unwrap();
+        assert_eq!(peer.key, "64501");
+        assert_eq!(peer.matching_records, 2);
+        assert_eq!(peer.distinct_observed_peers, 1);
+        assert_eq!(peer.distinct_validated_clients, 0);
+        assert_eq!(peer.spread, 1);
+        let client = result
+            .groups
+            .iter()
+            .find(|g| g.identity == Some(GroupingIdentity::ValidatedClient))
+            .unwrap();
+        assert_eq!(client.key, "64501");
+        assert_eq!(client.distinct_validated_clients, 1);
+        assert_eq!(client.distinct_observed_peers, 0);
+        let raw = entity_groups(
+            &findings,
+            EntityDimension::ConnectionIp,
+            TriagePolicy::default(),
+            TelemetryProfile::AwsWaf.capabilities(),
+        );
+        assert_eq!(raw.len(), 3);
+        assert!(raw.iter().any(|g| g.key == "::ffff:203.0.113.7"));
+        assert!(raw
+            .iter()
+            .any(|g| g.key == "203.0.113.7" && g.identity == Some(GroupingIdentity::ObservedPeer)));
+    }
+
+    #[test]
+    fn ja4_groups_canonicalize_member_spellings_and_preserve_invalid_values() {
+        for (addresses, expected) in [
+            (["::ffff:203.0.113.7", "203.0.113.7"], 1),
+            (["2001:DB8::1", "2001:db8::1"], 1),
+            (["not-an-ip", "not-an-ip"], 1),
+            (["not-an-ip", "NOT-AN-IP"], 2),
+        ] {
+            let mut findings = Vec::new();
+            for (index, address) in addresses.into_iter().enumerate() {
+                findings.push(finding(
+                    &format!("peer-{index}"),
+                    "template-a",
+                    None,
+                    RequestSpecificity::RequestSpecific,
+                    None,
+                    Some(address),
+                    Some("shared-ja4"),
+                ));
+                findings.push(finding(
+                    &format!("client-{index}"),
+                    "template-a",
+                    None,
+                    RequestSpecificity::RequestSpecific,
+                    Some(address),
+                    Some("192.0.2.99"),
+                    Some("shared-ja4"),
+                ));
+            }
+            let groups = entity_groups(
+                &findings,
+                EntityDimension::Ja4,
+                TriagePolicy::default(),
+                TelemetryProfile::AwsWaf.capabilities(),
+            );
+            assert_eq!(groups.len(), 1);
+            assert_eq!(groups[0].key, "shared-ja4");
+            assert_eq!(groups[0].distinct_observed_peers, expected);
+            assert_eq!(groups[0].distinct_validated_clients, expected);
+            assert_eq!(groups[0].spread, expected);
+            assert_eq!(groups[0].matching_records, 4);
+        }
+    }
+
+    #[test]
+    fn canonical_member_counts_change_only_the_spread_score_component() {
+        let mut summary = EntitySummary::default();
+        for (index, address) in ["::ffff:203.0.113.7", "203.0.113.7"]
+            .into_iter()
+            .enumerate()
+        {
+            add_finding_to_summary(
+                &mut summary,
+                &finding(
+                    &format!("request-{index}"),
+                    "template-a",
+                    None,
+                    RequestSpecificity::RequestSpecific,
+                    None,
+                    Some(address),
+                    Some("shared-ja4"),
+                ),
+                TriagePolicy::default().max_sequence_observations,
+            );
+        }
+        for dimension in [EntityDimension::Asn, EntityDimension::Ja4] {
+            let current = score(&summary.signals(dimension, Vec::new()));
+            // Reconstruct the old raw-string membership without changing observations.
+            summary
+                .observed_peers
+                .insert("::ffff:203.0.113.7".to_owned());
+            let previous = score(&summary.signals(dimension, Vec::new()));
+            summary.observed_peers.remove("::ffff:203.0.113.7");
+            assert_eq!(previous.total, current.total + 2);
+            assert_eq!(previous.reachable_max, current.reachable_max);
+            for (old, new) in previous.components.iter().zip(&current.components) {
+                if new.name == "spread" {
+                    assert_eq!((old.points, new.points), (4, 2));
+                } else {
+                    assert_eq!(
+                        serde_json::to_vec(old).unwrap(),
+                        serde_json::to_vec(new).unwrap()
+                    );
+                }
+            }
+        }
     }
 
     #[test]

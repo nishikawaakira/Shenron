@@ -67,7 +67,7 @@ use shenron::{
     },
     trend::{path_trend, PathTrendReport},
     triage::{
-        asn_entity_groups, entity_groups, EntityDimension, TriagePolicy,
+        asn_entity_groups, canonical_ip, entity_groups, EntityDimension, TriagePolicy,
         DEFAULT_MAX_SEQUENCE_OBSERVATIONS, DEFAULT_SEQUENCE_WINDOW_SECONDS,
     },
     triage_view::{build_triage_view, PrivateTriageView, SanitizedTriageSummary},
@@ -4412,7 +4412,7 @@ fn connection_ip_group_json(
     show_request: bool,
 ) -> GroupJson {
     let mut json = base_group_json(group, show_request);
-    if let Ok(ip) = group.key.parse::<IpAddr>() {
+    if let Some(ip) = canonical_ip(&group.key) {
         let asn = asn_database
             .and_then(|database| database.lookup(ip))
             .map(|info| (info.asn, info.org.clone()));
@@ -5081,7 +5081,7 @@ fn print_ip_reputation(
     if asn_database.is_none() && reputation_database.is_none() {
         return;
     }
-    let Ok(ip) = group.key.parse::<IpAddr>() else {
+    let Some(ip) = canonical_ip(&group.key) else {
         return;
     };
     let asn = asn_database.and_then(|database| database.lookup(ip));

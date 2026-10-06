@@ -630,6 +630,8 @@ The display records each supplied dataset's path, streaming SHA-256, and record 
 
 ### ASN grouping
 
+ASN and reputation lookups in EXPLAIN and the private triage view treat IPv4-mapped IPv6 as IPv4, and ASN/JA4 peer counts consolidate alternative spellings within each separate identity population; displayed connection-IP keys retain their raw spelling.
+
 Add `--show-asn` to group private findings by a locally resolved ASN. It uses the prepared default ASN file when available, or an explicit `--asn-dataset`; without either it prints a warning and no ASN groups. Like IP grouping, it keeps `validated-client` and `observed-peer` identities separate even when they resolve to the same ASN. Its spread is the number of distinct member IPs in the larger of those two separate identity populations; they are never merged. Findings whose selected client/peer IP is absent, malformed, or unresolved by the local ASN dataset are excluded from ASN aggregation and counted in the output.
 
 ```bash

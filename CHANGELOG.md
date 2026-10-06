@@ -7,6 +7,7 @@ default and COUNT-only; see the README for the full invariants.
 
 ### Fixed
 
+- Triage ASN, EXPLAIN and private triage-view ASN/reputation lookups now canonicalize mapped IPv4; ASN/JA4 distinct counts consolidate address spellings without merging identity populations or rewriting connection-IP keys, which can reduce spread and its behavior-score contribution.
 - Source-IP focuses now match mapped IPv4 and alternative IP spellings; focus ASN groups resolve canonical addresses and deduplicate resolved/unresolved peers without rewriting raw source rows or selector displays.
 - Focus prefix groups now treat IPv4-mapped IPv6 peers as IPv4 and count alternative spellings of the same address once, without rewriting private per-source rows.
 - Nuclei conversion now shares the generic-path heuristic with explain, preserving traversal-shaped paths and generic paths with query/header conditions; rerun `shenron nuclei update` to regenerate the frozen report.

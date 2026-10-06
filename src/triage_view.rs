@@ -5,7 +5,7 @@
 //! of malice, and a first-seen marker means new and worth review, never
 //! malicious.
 
-use std::{collections::BTreeSet, net::IpAddr};
+use std::collections::BTreeSet;
 
 use serde::Serialize;
 
@@ -13,7 +13,7 @@ use crate::{
     event::TelemetryCapabilities,
     production::FindingExplanation,
     reputation::{AsnDatabase, ReputationDatabase},
-    triage::{entity_groups, EntityDimension, RequestSequenceSummary, TriagePolicy},
+    triage::{canonical_ip, entity_groups, EntityDimension, RequestSequenceSummary, TriagePolicy},
 };
 
 const SAFETY_NOTE: &str = "This is a triage priority order (which entity to review first), not a threat severity or a probability of malice. A first-seen mark means new and worth review, never malicious. An ordered request sequence is an observation of what was requested and when; regular intervals or a short span can also result from automation, a crawler, page subresources, or a person clicking quickly. It does not determine automation, attack, exploitation, compromise, abuse, or attacker identity.";
@@ -124,7 +124,7 @@ pub fn build_triage_view(
     )
     .into_iter()
     .map(|group| {
-        let ip = group.key.parse::<IpAddr>().ok();
+        let ip = canonical_ip(&group.key);
         let asn = ip.and_then(|ip| asn_database.and_then(|database| database.lookup(ip)));
         let resolved_asn = asn.map(|info| TriageAsn {
             asn: info.asn,
@@ -304,6 +304,64 @@ mod tests {
             ),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn mapped_peer_enrichment_preserves_raw_keys_and_sanitized_summary() {
+        let directory = tempdir().unwrap();
+        let asn_path = directory.path().join("asn-ranges.tsv");
+        fs::write(
+            &asn_path,
+            "203.0.113.0\t203.0.113.255\t64501\tEXAMPLE-ASN\n",
+        )
+        .unwrap();
+        let asn = load_asn_database(&asn_path).unwrap();
+        let reputation_path = directory.path().join("reputation.jsonl");
+        let first_seen = BTreeSet::new();
+        for (scope, value) in [
+            ("ip", "203.0.113.7"),
+            ("cidr", "203.0.113.0/24"),
+            ("asn", "64501"),
+        ] {
+            fs::write(
+                &reputation_path,
+                format!(
+                    "{{\"scope\":\"{scope}\",\"value\":\"{value}\",\"score\":90,\"source\":\"fixture\"}}\n"
+                ),
+            )
+            .unwrap();
+            let reputation = load_reputation_database(&reputation_path).unwrap();
+            let build = |address| {
+                build_triage_view(
+                    &[finding(address, "one", "one")],
+                    TelemetryProfile::AwsWaf.capabilities(),
+                    TriagePolicy::default(),
+                    Some(&asn),
+                    Some(&reputation),
+                    &first_seen,
+                )
+            };
+            let (mapped_summary, mapped_view) = build("::ffff:203.0.113.7");
+            let (native_summary, native_view) = build("203.0.113.7");
+            assert_eq!(mapped_view.entities.len(), 1);
+            let entity = &mapped_view.entities[0];
+            assert_eq!(entity.key, "::ffff:203.0.113.7");
+            let resolved = entity.resolved_asn.as_ref().unwrap();
+            assert_eq!(resolved.asn, 64501);
+            assert_eq!(resolved.org, "EXAMPLE-ASN");
+            let opinion = entity.reputation.as_ref().unwrap();
+            assert_eq!(opinion.score, 90);
+            assert_eq!(opinion.scope, scope);
+            assert_eq!(
+                serde_json::to_vec(&entity.behavior_score).unwrap(),
+                serde_json::to_vec(&native_view.entities[0].behavior_score).unwrap()
+            );
+            let sanitized = serde_json::to_string(&mapped_summary).unwrap();
+            assert_eq!(sanitized, serde_json::to_string(&native_summary).unwrap());
+            for private_value in ["203.0.113.7", "EXAMPLE-ASN", "/distinctive-one"] {
+                assert!(!sanitized.contains(private_value));
+            }
+        }
     }
 
     #[test]
