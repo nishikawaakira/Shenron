@@ -7,6 +7,8 @@ default and COUNT-only; see the README for the full invariants.
 
 ### Changed
 
+- Prefix path counts now intern names once and use integer IDs per prefix; the global pair default is 10,000,000 with an independent bounded `--max-source-prefix-paths` table. Private retained-count diagnostics and actionable omission text expose the current limits and affected prefixes; existing fixed-cap measurements and sanitized artifacts are unchanged.
+
 - Prefix path detail now retains `uri_paths_requested_once` at exact capacity when neither path cap has rejected any requests for that prefix.
 
 ### Fixed

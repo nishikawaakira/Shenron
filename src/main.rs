@@ -376,10 +376,14 @@ struct SourcePrefixArgs {
     /// source-prefix aggregation; higher caps use more memory.
     #[arg(long, value_parser = parse_positive_usize)]
     max_paths_per_source_prefix: Option<usize>,
-    /// Maximum retained prefix/path pairs overall (default: 2000000).
+    /// Maximum retained prefix/path pairs overall (default: 10000000).
     /// Requires source-prefix aggregation; zero never means unlimited.
     #[arg(long, value_parser = parse_positive_usize)]
     max_source_prefix_path_pairs: Option<usize>,
+    /// Maximum distinct names in the shared prefix path table (default: 10000000).
+    /// Independent of --max-paths; requires source-prefix aggregation.
+    #[arg(long, value_parser = parse_positive_usize)]
+    max_source_prefix_paths: Option<usize>,
 }
 
 impl SourcePrefixArgs {
@@ -387,7 +391,9 @@ impl SourcePrefixArgs {
         &self,
         tracking: Option<ConcentrationTrackingLimits>,
     ) -> anyhow::Result<Option<ConcentrationTrackingLimits>> {
-        if self.max_paths_per_source_prefix.is_none() && self.max_source_prefix_path_pairs.is_none()
+        if self.max_paths_per_source_prefix.is_none()
+            && self.max_source_prefix_path_pairs.is_none()
+            && self.max_source_prefix_paths.is_none()
         {
             return Ok(tracking);
         }
@@ -399,6 +405,7 @@ impl SourcePrefixArgs {
         let mut tracking = tracking.unwrap_or_default();
         tracking.max_paths_per_source_prefix = self.max_paths_per_source_prefix;
         tracking.max_source_prefix_path_pairs = self.max_source_prefix_path_pairs;
+        tracking.max_source_prefix_paths = self.max_source_prefix_paths;
         Ok(Some(tracking))
     }
 
@@ -1161,6 +1168,8 @@ struct DailyVolumeSummary {
     source_path_pairs_beyond_tracking_cap: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     source_prefix_path_pairs_beyond_tracking_cap: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_prefix_path_tracking: Option<shenron::concentration::SourcePrefixPathTracking>,
     processed_index_enabled: bool,
     files_skipped_as_processed: usize,
     response_outcomes: Option<ResponseOutcomeSummary>,
@@ -1198,6 +1207,7 @@ impl DailyVolumeSummary {
             source_path_pairs_beyond_tracking_cap: concentration
                 .source_path_pairs_beyond_tracking_cap,
             source_prefix_path_pairs_beyond_tracking_cap: None,
+            source_prefix_path_tracking: None,
             processed_index_enabled,
             files_skipped_as_processed: report.files_skipped_as_processed,
             response_outcomes: concentration.response_outcomes.clone(),
@@ -1820,6 +1830,7 @@ fn main() -> Result<()> {
                 summary.source_prefix_path_pairs_beyond_tracking_cap = outcome
                     .prefix_path_pairs_beyond_cap
                     .filter(|count| *count > 0);
+                summary.source_prefix_path_tracking = outcome.prefix_path_tracking;
                 match output_format {
                     DailyOutputFormat::Text => {
                         print_daily_volume_summary(&summary, output.as_deref())
@@ -3188,6 +3199,7 @@ fn print_concentration(
             print_prefix_path_omissions(
                 (disclosure.requests_beyond_prefix_path_pair_cap > 0)
                     .then_some(disclosure.requests_beyond_prefix_path_pair_cap),
+                Some(&disclosure.path_tracking),
             );
         }
         if show_paths {
@@ -3646,7 +3658,10 @@ fn print_daily_volume_summary(summary: &DailyVolumeSummary, output: Option<&Path
         summary.source_ips_beyond_tracking_cap,
         summary.source_path_pairs_beyond_tracking_cap,
     );
-    print_prefix_path_omissions(summary.source_prefix_path_pairs_beyond_tracking_cap);
+    print_prefix_path_omissions(
+        summary.source_prefix_path_pairs_beyond_tracking_cap,
+        summary.source_prefix_path_tracking.as_ref(),
+    );
     if let Some(segments) = &summary.source_segment_diversity {
         let unavailable_reason = match segments.corpus_4xx_requests {
             None => "; status unavailable",
@@ -4021,9 +4036,24 @@ fn print_request_concentration_summary(
     print_windowed_request_rates("  Simultaneous rate windows", &concentration.request_rates);
 }
 
-fn print_prefix_path_omissions(omitted: Option<u64>) {
+fn print_prefix_path_omissions(
+    omitted: Option<u64>,
+    tracking: Option<&shenron::concentration::SourcePrefixPathTracking>,
+) {
     if let Some(count) = omitted {
-        println!("  Source-prefix path-pair cap: {count} requests omitted (global pair cap; affected once-requested counts unavailable)");
+        let limit = tracking
+            .filter(|detail| detail.maximum_prefix_path_pairs > 0)
+            .map(|detail| detail.maximum_prefix_path_pairs.to_string())
+            .unwrap_or_else(|| "unavailable".to_owned());
+        let affected = tracking
+            .filter(|detail| detail.maximum_prefix_path_pairs > 0)
+            .map(|detail| detail.prefixes_beyond_prefix_path_pair_cap.to_string())
+            .unwrap_or_else(|| "unavailable".to_owned());
+        println!("  Source-prefix path-pair cap: {count} requests omitted (global pair cap; current --max-source-prefix-path-pairs: {limit}; prefixes with once-requested counts unavailable due to this cap: {affected}; increase --max-source-prefix-path-pairs and rerun)");
+    }
+    if let Some(detail) = tracking.filter(|detail| detail.requests_beyond_prefix_path_table_cap > 0)
+    {
+        println!("  Source-prefix path-table cap: {} requests omitted (current --max-source-prefix-paths: {}; prefixes with once-requested counts unavailable due to this cap: {}; increase --max-source-prefix-paths and rerun)", detail.requests_beyond_prefix_path_table_cap, detail.maximum_prefix_paths, detail.prefixes_beyond_prefix_path_table_cap);
     }
 }
 

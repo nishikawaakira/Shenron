@@ -1662,6 +1662,8 @@ pub struct ConcentrationTrackingLimits {
     pub max_paths_per_source_prefix: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_source_prefix_path_pairs: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_source_prefix_paths: Option<usize>,
 }
 
 impl Default for ConcentrationTrackingLimits {
@@ -1674,6 +1676,7 @@ impl Default for ConcentrationTrackingLimits {
             max_source_segments: limits.max_source_segments,
             max_paths_per_source_prefix: None,
             max_source_prefix_path_pairs: None,
+            max_source_prefix_paths: None,
         }
     }
 }
@@ -1695,6 +1698,9 @@ fn resolve_tracking_limits(
         limits
             .max_source_prefix_path_pairs
             .unwrap_or(crate::concentration::DEFAULT_MAX_SOURCE_PREFIX_PATH_PAIRS),
+        limits
+            .max_source_prefix_paths
+            .unwrap_or(crate::concentration::DEFAULT_MAX_SOURCE_PREFIX_PATHS),
     ]
     .contains(&0)
     {
@@ -1713,6 +1719,9 @@ fn resolve_tracking_limits(
         max_source_prefix_path_pairs: limits
             .max_source_prefix_path_pairs
             .unwrap_or(crate::concentration::DEFAULT_MAX_SOURCE_PREFIX_PATH_PAIRS),
+        max_source_prefix_paths: limits
+            .max_source_prefix_paths
+            .unwrap_or(crate::concentration::DEFAULT_MAX_SOURCE_PREFIX_PATHS),
         ..crate::concentration::ConcentrationLimits::default()
     })
 }
@@ -1804,6 +1813,7 @@ pub struct ConcentrationRunOutcome {
     /// The count written to private prefix detail: None without prefix opt-in,
     /// Some(0) when enabled but no requests exceeded the global path-pair cap.
     pub prefix_path_pairs_beyond_cap: Option<u64>,
+    pub prefix_path_tracking: Option<crate::concentration::SourcePrefixPathTracking>,
 }
 
 /// Return sanitized output and private aggregate metadata directly from the
@@ -1963,6 +1973,7 @@ fn concentration_run(
     }
     report.request_concentration = accumulator.summary();
     let mut prefix_path_pairs_beyond_cap = None;
+    let mut prefix_path_tracking = None;
     if let Some(output) = output {
         let prefix_asn = source_prefix_lengths.and(asn_database.or(default_prefix_asn.as_ref()));
         let mut asn_used_for = Vec::new();
@@ -1974,6 +1985,10 @@ fn concentration_run(
             .source_prefix_aggregation
             .as_ref()
             .map(|detail| detail.requests_beyond_prefix_path_pair_cap);
+        prefix_path_tracking = private_report
+            .source_prefix_aggregation
+            .as_ref()
+            .map(|detail| detail.path_tracking.clone());
         if let Some(focus) = private_report.focus.as_mut() {
             add_focus_prefix_groups(focus, focus_prefix_lengths);
             if let Some(asn_database) = asn_database {
@@ -2026,6 +2041,7 @@ fn concentration_run(
     Ok(ConcentrationRunOutcome {
         sanitized: report,
         prefix_path_pairs_beyond_cap,
+        prefix_path_tracking,
     })
 }
 
@@ -2091,6 +2107,7 @@ fn write_concentration_run_manifest(
         let resolved = resolve_tracking_limits(Some(configured))?;
         configured.max_paths_per_source_prefix = Some(resolved.max_paths_per_source_prefix);
         configured.max_source_prefix_path_pairs = Some(resolved.max_source_prefix_path_pairs);
+        configured.max_source_prefix_paths = Some(resolved.max_source_prefix_paths);
         Some(configured)
     } else {
         tracking_limits
@@ -3421,6 +3438,7 @@ mod corpus_provenance_tests {
         let limits = old.tracking_limits.unwrap();
         assert!(limits.max_paths_per_source_prefix.is_none());
         assert!(limits.max_source_prefix_path_pairs.is_none());
+        assert!(limits.max_source_prefix_paths.is_none());
         assert_eq!(limits.max_paths, 12);
         assert_eq!(
             limits.max_source_segments,
@@ -3440,6 +3458,7 @@ mod corpus_provenance_tests {
             "max_source_segments",
             "max_paths_per_source_prefix",
             "max_source_prefix_path_pairs",
+            "max_source_prefix_paths",
         ] {
             let mut limits = serde_json::to_value(ConcentrationTrackingLimits::default()).unwrap();
             limits[field] = serde_json::json!(0);

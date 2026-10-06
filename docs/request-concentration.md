@@ -164,45 +164,100 @@ existing most-requested-path field and all pre-existing metrics retain their
 meaning. Missing/invalid sources and source-cap omissions remain disclosed in
 `source_prefix_aggregation`; no count reconstructs traffic from omitted peers.
 
-`--max-paths-per-source-prefix` defaults to **5,000**, and
-`--max-source-prefix-path-pairs` defaults to **2,000,000** pairs across all
-prefixes. Both require prefix aggregation, accept positive finite counts only,
-and are recorded as effective values in the private run manifest, even when
-the defaults are used. Raising them consumes more memory in addition to the
-existing trackers. No allocation for retained prefix paths occurs without
-prefix opt-in. Admission follows input order; existing paths continue to be
-counted exactly after either cap is reached.
-As a rough memory guide, each pair holds the path's byte length plus tens of
-bytes of bookkeeping, so reaching the default cap can add hundreds of MB to
-existing tracking; increasing the cap increases this budget proportionally
-for a similar path-length distribution.
+`--max-paths-per-source-prefix` defaults to **5,000**;
+`--max-source-prefix-path-pairs` defaults to **10,000,000** pairs across all
+prefixes. Path names are now stored once in a separate shared table; each
+prefix holds integer IDs and exact request counts. IDs follow first admission
+in input order and never appear in artifacts or determine report row order.
+`--max-source-prefix-paths` bounds the shared name table, also at **10,000,000**
+by default: the same conservative budget because there can be at most one new
+name per retained pair. This is independent of the legacy `--max-paths` cap.
+All three flags require prefix opt-in, accept positive finite counts only
+(zero never means unlimited), and are recorded as effective values in the
+private run manifest. Names rejected by a pair cap are not interned.
+No shared-name or pair entries are allocated without prefix opt-in.
 
-Requests for unretained paths are counted in `uri_paths_beyond_prefix_cap` or
-the per-prefix `uri_paths_beyond_global_cap`. When both caps prevent admission,
-the per-prefix reason takes precedence, so each omitted request is counted
-once. Distinct counts are lower bounds if either omission count is nonzero.
+As a sizing reference, a one-day corpus of roughly 50 million requests needed
+about 8 million retained pairs (roughly one per six requests); a 2,000,000-pair
+cap left a large share of requests out of path counts. A per-prefix cap can
+be reached by peers that request many distinct paths; Shenron does not infer
+why. The 10,000,000-pair default provides some headroom at that scale, not a
+guarantee for every site. Admission remains input-ordered: once a cap is full,
+later new pairs cannot be counted, while retained pairs keep exact counts.
+Thus incomplete coverage depends on log order. If omissions are reported,
+raise the named cap and rerun the same frozen corpus; no later prefix replaces
+an earlier admitted one.
+
+Requests for unretained paths are counted in `uri_paths_beyond_prefix_cap`,
+`uri_paths_beyond_global_cap`, or `uri_paths_beyond_path_table_cap` (the last
+key is absent when zero). If several caps prevent admission, per-prefix takes
+precedence, then global pairs, then the shared path table, so each rejected
+request has exactly one reason. A known shared name can still enter another
+prefix when the name table is full, if both pair caps permit it. Distinct
+counts are lower bounds if any of these omission counts is nonzero.
 `uri_paths_requested_once` is unavailable (its key is omitted, not zero) only
-when either cap has rejected a request for that prefix, even though counters
+when any cap has rejected a request for that prefix, even though counters
 for retained paths continue to increase. Filling a cap exactly without any
 rejection still reports the exact once-requested count. A prefix without any
 path observations has zero distinct and once-requested paths.
 
 Global path-count omissions appear in private detail as
 `source_prefix_aggregation.requests_beyond_prefix_path_pair_cap`, including zero.
+The same private section adds `prefix_path_pairs_retained`,
+`maximum_prefix_path_pairs`, `prefixes_beyond_prefix_path_pair_cap`,
+`prefix_paths_retained`, `maximum_prefix_paths`,
+`requests_beyond_prefix_path_table_cap`, and
+`prefixes_beyond_prefix_path_table_cap`. Retained pair counts equal the sum of
+per-prefix distinct path counts; shared names are counted once across prefixes.
 These requests remain in prefix request totals: do not add this count to the
 three request-volume omission counts when reconciling the corpus total.
 `daily` text/JSON displays the same nonzero count returned directly by the
 streaming aggregation; it never rereads the private artifact. Concentration
 text continues to read its private detail for the same disclosure.
+Both text views name the flag to raise, its current limit, and the number of
+prefixes whose once-requested counts are unavailable due to that cap.
+Daily JSON also exposes these counts/configuration in `source_prefix_path_tracking`
+only with prefix opt-in; it contains no paths or prefixes.
 The new path map itself is never serialized. Sanitized artifacts remain
 byte-for-byte unchanged even with prefix opt-in and cap omissions; default
 non-opt-in private artifacts and manifests are also unchanged.
+At fixed limits with no shared-name rejections, the existing private fields
+and their ordering retain the same bytes as before path interning; new tracking
+diagnostics are additive.
 
 ```sh
 shenron concentration --input ./logs --format apache --output ./private-volume \
   --source-prefix-bits 24 --max-paths-per-source-prefix 5000 \
-  --max-source-prefix-path-pairs 2000000
+  --max-source-prefix-path-pairs 10000000 --max-source-prefix-paths 10000000
 ```
+
+#### Memory sizing (synthetic, not a throughput guarantee)
+
+`examples/prefix_path_memory.rs` generates 250,000 prefixes with 30 shared paths
+each, and 5,000 paths for each of the first ten prefixes: 7,549,700 distinct
+pairs and 5,000 names of 48 bytes. It uses release builds, no input file or
+network, and explicit 5,000/10,000,000 per-prefix/global caps. Legacy path and
+source/path-pair caps are both 1 to isolate this feature's increment; the
+measurement stops before private-report construction/serialization. It is a
+manual benchmark, not a timing test:
+
+```sh
+cargo build --release --example prefix_path_memory
+/usr/bin/time -l target/release/examples/prefix_path_memory --disabled
+/usr/bin/time -l target/release/examples/prefix_path_memory
+# On Linux use /usr/bin/time -v instead.
+```
+
+On macOS arm64, maximum RSS fell from **1,243,004,928 bytes (1,185.4 MiB)**
+before interning to **632,324,096 bytes (603.0 MiB)** after it, about **49.1%**.
+Disabled controls were 322,224,128 and 322,240,512 bytes respectively. Subtracting
+each control and dividing by the pair count gives a rough incremental **122 →
+41 bytes/pair** for this shared-path sample, not an allocator guarantee. Wall
+times were 3.96 and 4.11 seconds; this measurement does not establish a speedup.
+Pair maps now hold integers/counts rather than duplicated path strings, while
+the shared table costs each distinct name's byte length plus map bookkeeping.
+Millions of mostly unique long paths, legacy trackers and output materialization
+can still require substantial memory; larger caps increase the bounded budget.
 
 No prefix, source IP, or path is added to sanitized artifacts. CLI prefix rows
 and byte detail require `--show-source-ips`, respect `--limit` (0 means all),

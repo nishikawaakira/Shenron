@@ -30,6 +30,154 @@ fn source_prefix_command(data_dir: &Path) -> Command {
 }
 
 #[test]
+fn interned_prefix_paths_preserve_pre_interning_bytes_except_additive_tracking_diagnostics() {
+    use sha2::{Digest, Sha256};
+    let directory = tempdir().unwrap();
+    let output = directory.path().join("run");
+    source_prefix_command(&directory.path().join("empty-data"))
+        .args([
+            "concentration",
+            "--format",
+            "aws-waf",
+            "--input",
+            "tests/fixtures/production/waf.jsonl",
+            "--source-prefix-bits",
+            "24",
+            "--max-paths-per-source-prefix",
+            "2",
+            "--max-source-prefix-path-pairs",
+            "3",
+        ])
+        .arg("--output")
+        .arg(&output)
+        .assert()
+        .success();
+    let private = fs::read_to_string(output.join("request-concentration.json")).unwrap();
+    let added_fields = [
+        "prefix_path_pairs_retained",
+        "maximum_prefix_path_pairs",
+        "prefixes_beyond_prefix_path_pair_cap",
+        "prefix_paths_retained",
+        "maximum_prefix_paths",
+        "requests_beyond_prefix_path_table_cap",
+        "prefixes_beyond_prefix_path_table_cap",
+    ];
+    // Project away only new flat diagnostics, preserving every existing byte,
+    // field order and whitespace (including the old final field's comma).
+    let legacy = private
+        .lines()
+        .filter(|line| {
+            !added_fields
+                .iter()
+                .any(|field| line.trim_start().starts_with(&format!("\"{field}\":")))
+        })
+        .map(|line| {
+            if line
+                .trim_start()
+                .starts_with("\"requests_beyond_prefix_path_pair_cap\":")
+            {
+                line.trim_end_matches(',')
+            } else {
+                line
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    // Captured from the pre-interning binary at 9c55def, same fixture/caps.
+    assert_eq!(
+        format!("{:x}", Sha256::digest(legacy.as_bytes())),
+        "876b68c0582d34584db6a4db75118bf3ca54dccded8b08795b3389899f19b333"
+    );
+    assert_eq!(
+        format!(
+            "{:x}",
+            Sha256::digest(fs::read(output.join("sanitized-research.json")).unwrap())
+        ),
+        "79bf8081f9eba363c39fd2e35a695836acf32491d7293fc5eb395bbbd0b5e71d"
+    );
+}
+
+#[test]
+fn shared_prefix_path_table_cap_is_private_and_actionable_in_concentration_and_daily() {
+    let directory = tempdir().unwrap();
+    let input = directory.path().join("combined.log");
+    fs::write(&input, ["/private-one", "/private-two", "/private-one"].iter().map(|path|
+        format!("192.0.2.1 - - [01/Jan/2026:00:00:00 +0000] \"GET {path} HTTP/1.1\" 200 10 \"-\" \"-\"\n")
+    ).collect::<String>()).unwrap();
+    let mut original_sanitized = None;
+    let mut original_private = None;
+    for (name, subcommand, opt_in, json) in [
+        ("disabled", "concentration", false, false),
+        ("concentration", "concentration", true, false),
+        ("daily", "daily", true, false),
+        ("daily-json", "daily", true, true),
+    ] {
+        let output = directory.path().join(name);
+        let mut command = source_prefix_command(&directory.path().join("empty-data"));
+        command
+            .args([subcommand, "--format", "apache"])
+            .arg("--input")
+            .arg(&input)
+            .arg("--output")
+            .arg(&output);
+        if opt_in {
+            command.args([
+                "--source-prefix-bits",
+                "24",
+                "--max-source-prefix-paths",
+                "1",
+            ]);
+        }
+        if json {
+            command.args(["--output-format", "json"]);
+        }
+        let stdout = command.assert().success().get_output().stdout.clone();
+        let sanitized = fs::read(output.join("sanitized-research.json")).unwrap();
+        if !opt_in {
+            original_sanitized = Some(sanitized);
+            continue;
+        }
+        assert_eq!(&sanitized, original_sanitized.as_ref().unwrap());
+        let bytes = fs::read(output.join("request-concentration.json")).unwrap();
+        if let Some(previous) = &original_private {
+            assert_eq!(&bytes, previous);
+        }
+        original_private = Some(bytes.clone());
+        let private: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let detail = &private["source_prefix_aggregation"];
+        assert_eq!(detail["prefix_path_pairs_retained"], 1);
+        assert_eq!(detail["prefix_paths_retained"], 1);
+        assert_eq!(detail["requests_beyond_prefix_path_table_cap"], 1);
+        assert_eq!(detail["prefixes_beyond_prefix_path_table_cap"], 1);
+        assert_eq!(detail["requests_beyond_prefix_path_pair_cap"], 0);
+        assert_eq!(
+            private["source_prefixes"][0]["uri_paths_beyond_path_table_cap"],
+            1
+        );
+        assert!(private["source_prefixes"][0]
+            .get("uri_paths_requested_once")
+            .is_none());
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(output.join("run-manifest.json")).unwrap()).unwrap();
+        assert_eq!(manifest["tracking_limits"]["max_source_prefix_paths"], 1);
+        if json {
+            let summary: serde_json::Value = serde_json::from_slice(&stdout).unwrap();
+            assert_eq!(
+                summary["source_prefix_path_tracking"]["requests_beyond_prefix_path_table_cap"],
+                1
+            );
+        } else {
+            let text = String::from_utf8(stdout).unwrap();
+            assert!(text.contains("current --max-source-prefix-paths: 1"));
+            assert!(
+                text.contains("prefixes with once-requested counts unavailable due to this cap: 1")
+            );
+            assert!(text.contains("increase --max-source-prefix-paths and rerun"));
+        }
+    }
+}
+
+#[test]
 fn source_prefix_path_counts_caps_manifest_and_privacy_are_reproducible() {
     let directory = tempdir().unwrap();
     let input = directory.path().join("combined.log");
@@ -141,9 +289,17 @@ fn source_prefix_path_counts_caps_manifest_and_privacy_are_reproducible() {
             );
             assert_eq!(
                 manifest["tracking_limits"]["max_source_prefix_path_pairs"],
-                if caps { 3 } else { 2_000_000 }
+                if caps { 3 } else { 10_000_000 }
             );
             if caps {
+                let text = String::from_utf8_lossy(&stdout);
+                assert!(text.contains("current --max-source-prefix-path-pairs: 3"));
+                assert!(text.contains(
+                    "prefixes with once-requested counts unavailable due to this cap: 1"
+                ));
+                assert!(text.contains("increase --max-source-prefix-path-pairs and rerun"));
+                assert_eq!(disclosure["prefix_path_pairs_retained"], 3);
+                assert_eq!(disclosure["maximum_prefix_path_pairs"], 3);
                 assert!(groups[0].get("uri_paths_requested_once").is_none());
                 assert!(groups[1].get("uri_paths_requested_once").is_none());
                 assert_eq!(groups[1]["distinct_uri_paths"], 1);
@@ -226,6 +382,7 @@ fn source_prefix_path_limits_reject_zero_and_require_prefix_opt_in() {
         for flag in [
             "--max-paths-per-source-prefix",
             "--max-source-prefix-path-pairs",
+            "--max-source-prefix-paths",
         ] {
             for (value, prefixes, error) in [
                 ("0", true, "positive"),
