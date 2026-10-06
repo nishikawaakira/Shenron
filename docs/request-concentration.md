@@ -181,10 +181,11 @@ Requests for unretained paths are counted in `uri_paths_beyond_prefix_cap` or
 the per-prefix `uri_paths_beyond_global_cap`. When both caps prevent admission,
 the per-prefix reason takes precedence, so each omitted request is counted
 once. Distinct counts are lower bounds if either omission count is nonzero.
-At per-prefix capacity, or after a global rejection for that prefix,
-`uri_paths_requested_once` is unavailable (its key is omitted, not zero),
-even though counters for retained paths continue to increase. A prefix without
-any path observations has zero distinct and once-requested paths.
+`uri_paths_requested_once` is unavailable (its key is omitted, not zero) only
+when either cap has rejected a request for that prefix, even though counters
+for retained paths continue to increase. Filling a cap exactly without any
+rejection still reports the exact once-requested count. A prefix without any
+path observations has zero distinct and once-requested paths.
 
 Global path-count omissions appear in private detail as
 `source_prefix_aggregation.requests_beyond_prefix_path_pair_cap`, including zero.

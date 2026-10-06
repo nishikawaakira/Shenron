@@ -534,7 +534,7 @@ pub struct PrivateSourcePrefix {
     /// Exact over retained peers unless either prefix/path cap omitted requests.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub distinct_uri_paths: Option<u64>,
-    /// Unavailable at the per-prefix capacity or after a global pair rejection.
+    /// Unavailable only after a per-prefix or global pair rejection.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub uri_paths_requested_once: Option<u64>,
     /// Requests rejected by the per-prefix cap (global omissions are separate).
@@ -754,6 +754,7 @@ struct PathAccumulator {
 
 #[derive(Debug, Default)]
 struct SourceAccumulator {
+    prefix: Option<IpNet>,
     response_bytes: u64,
     response_bytes_observations: u64,
     waf: Option<Box<WafEntityAccumulator>>,
@@ -1151,12 +1152,13 @@ impl RequestConcentration {
         let path_tracked = path.is_some_and(|path| self.track_path(path, event));
         let source_tracked =
             source_ip.is_some_and(|source_ip| self.track_source_ip(source_ip, event.status, path));
-        if let (Some(prefixes), Some(source), Some(path)) = (
+        if let (Some(_), Some(source), Some(path)) = (
             self.source_prefix_lengths,
             source_ip.filter(|_| source_tracked),
             path,
         ) {
-            self.track_prefix_path(prefixes, source, path);
+            let prefix = self.source_ips.get(source).and_then(|item| item.prefix);
+            self.track_prefix_path(prefix, path);
         }
         if self.source_prefix_lengths.is_some() && self.response_bytes_available {
             if let (Some(source), Some(bytes)) =
@@ -1352,19 +1354,10 @@ impl RequestConcentration {
 
     /// Count paths from retained valid peers in input order, independently of
     /// the legacy path/source-pair trackers. Never infer omitted observations.
-    fn track_prefix_path(&mut self, prefixes: FocusPrefixLengths, source: &str, path: &str) {
-        let Ok(address) = source.parse::<IpAddr>() else {
+    fn track_prefix_path(&mut self, prefix: Option<IpNet>, path: &str) {
+        let Some(network) = prefix else {
             return;
         };
-        let address = address.to_canonical();
-        let bits = if address.is_ipv4() {
-            prefixes.ipv4
-        } else {
-            prefixes.ipv6
-        };
-        let network = IpNet::new(address, bits)
-            .expect("validated source prefix length")
-            .trunc();
         let item = self.prefix_paths.entry(network).or_default();
         if let Some(count) = item.paths.get_mut(path) {
             *count += 1;
@@ -1529,9 +1522,7 @@ impl RequestConcentration {
                     unresolved_source_ips: resolver.map(|_| group.unresolved_source_ips),
                     unresolved_requests: resolver.map(|_| group.unresolved_requests),
                     distinct_uri_paths: Some(paths.paths.len() as u64),
-                    uri_paths_requested_once: (paths.paths.len()
-                        < self.limits.max_paths_per_source_prefix
-                        && paths.beyond_prefix_cap == 0
+                    uri_paths_requested_once: (paths.beyond_prefix_cap == 0
                         && paths.beyond_global_cap == 0)
                         .then(|| paths.paths.values().filter(|count| **count == 1).count() as u64),
                     uri_paths_beyond_prefix_cap: Some(paths.beyond_prefix_cap),
@@ -1863,6 +1854,19 @@ impl RequestConcentration {
             return false;
         }
         let mut item = SourceAccumulator {
+            // Prefix configuration cannot change after observation starts.
+            prefix: self.source_prefix_lengths.and_then(|prefixes| {
+                crate::event::canonical_ip(source_ip).map(|address| {
+                    let bits = if address.is_ipv4() {
+                        prefixes.ipv4
+                    } else {
+                        prefixes.ipv6
+                    };
+                    IpNet::new(address, bits)
+                        .expect("validated source prefix length")
+                        .trunc()
+                })
+            }),
             requests: 1,
             ..SourceAccumulator::default()
         };
@@ -2857,7 +2861,7 @@ mod tests {
     }
 
     #[test]
-    fn prefix_path_capacity_omits_singletons_and_old_prefix_json_remains_readable() {
+    fn prefix_path_capacity_preserves_exact_singletons_until_rejection_and_reads_old_json() {
         let mut accumulator = RequestConcentration::with_limits(
             true,
             ConcentrationLimits {
@@ -2877,7 +2881,12 @@ mod tests {
             .remove(0);
         assert_eq!(group.distinct_uri_paths, Some(1));
         assert_eq!(group.uri_paths_beyond_prefix_cap, Some(0));
-        assert_eq!(group.uri_paths_requested_once, None);
+        assert_eq!(group.uri_paths_requested_once, Some(1));
+        assert_eq!(group.uri_paths_beyond_global_cap, Some(0));
+        assert_eq!(
+            serde_json::to_value(&group).unwrap()["uri_paths_requested_once"],
+            1
+        );
         let mut old = serde_json::to_value(&group).unwrap();
         for key in [
             "distinct_uri_paths",
@@ -2890,6 +2899,134 @@ mod tests {
         let decoded: PrivateSourcePrefix = serde_json::from_value(old.clone()).unwrap();
         assert!(decoded.distinct_uri_paths.is_none());
         assert_eq!(serde_json::to_value(decoded).unwrap(), old);
+
+        accumulator.observe(&event(Some("/one"), Some("192.0.2.1"), None));
+        assert_eq!(
+            accumulator.private_report().source_prefixes.unwrap()[0].uri_paths_requested_once,
+            Some(0)
+        );
+        accumulator.observe(&event(Some("/two"), Some("192.0.2.1"), None));
+        let rejected = accumulator
+            .private_report()
+            .source_prefixes
+            .unwrap()
+            .remove(0);
+        assert_eq!(rejected.uri_paths_beyond_prefix_cap, Some(1));
+        assert_eq!(rejected.uri_paths_requested_once, None);
+        assert!(serde_json::to_value(rejected)
+            .unwrap()
+            .get("uri_paths_requested_once")
+            .is_none());
+    }
+
+    #[test]
+    fn cached_prefix_paths_match_hand_counted_reports_for_aliases_invalid_peers_and_both_caps() {
+        let limits = ConcentrationLimits {
+            max_source_ips: 6,
+            max_paths_per_source_prefix: 2,
+            max_source_prefix_path_pairs: 3,
+            ..ConcentrationLimits::default()
+        };
+        let mut enabled = RequestConcentration::with_limits(true, limits);
+        enabled
+            .enable_source_prefixes(FocusPrefixLengths::default())
+            .unwrap();
+        let mut disabled = RequestConcentration::with_limits(true, limits);
+        for (ip, path) in [
+            (Some("::ffff:192.0.2.1"), Some("/a")),
+            (Some("192.0.2.1"), Some("/b")),
+            (Some("192.0.2.1"), Some("/a")),
+            (Some("::ffff:192.0.2.1"), Some("/c")),
+            (Some("2001:DB8::1"), Some("/x")),
+            (Some("2001:db8::1"), Some("/y")),
+            (Some("2001:db8::1"), Some("/x")),
+            (Some("invalid"), Some("/invalid")),
+            (Some("198.51.100.1"), Some("/z")),
+            (Some("192.0.2.1"), Some("/b")),
+            (Some("::ffff:192.0.2.1"), None),
+            (None, Some("/missing-source")),
+            (Some("203.0.113.1"), Some("/capped-source")),
+        ] {
+            let request = event(path, ip, Some(0));
+            enabled.observe(&request);
+            disabled.observe(&request);
+        }
+        // Hand-counted groups include legacy volumes and status/byte detail,
+        // not just the new path counters. Raw aliases remain separate rows.
+        let expected = [
+            ("192.0.2.0/24", 6, None, 1, 2, 1, 0),
+            ("2001:db8::/48", 3, Some("/x"), 0, 1, 0, 1),
+            ("198.51.100.0/24", 1, Some("/z"), 0, 0, 0, 1),
+        ]
+        .into_iter()
+        .map(
+            |(prefix, requests, top_path, missing_paths, distinct, per_cap, global_cap)| {
+                PrivateSourcePrefix {
+                    prefix: prefix.to_owned(),
+                    requests,
+                    response_bytes: Some(requests * 10),
+                    response_bytes_unavailable: 0,
+                    distinct_source_ips: 1,
+                    max_requests_per_source_ip: requests,
+                    most_requested_uri_path: top_path.map(str::to_owned),
+                    path_observations_unavailable: missing_paths,
+                    response_status_classes: StatusClassCounts {
+                        client_error: requests,
+                        ..Default::default()
+                    },
+                    asns: None,
+                    unresolved_source_ips: None,
+                    unresolved_requests: None,
+                    distinct_uri_paths: Some(distinct),
+                    uri_paths_requested_once: None,
+                    uri_paths_beyond_prefix_cap: Some(per_cap),
+                    uri_paths_beyond_global_cap: Some(global_cap),
+                }
+            },
+        )
+        .collect::<Vec<_>>();
+        let report = enabled.private_report();
+        assert_eq!(
+            serde_json::to_value(&report.source_prefixes).unwrap(),
+            serde_json::to_value(&expected).unwrap()
+        );
+        let disclosure = report.source_prefix_aggregation.unwrap();
+        assert_eq!(disclosure.requests_beyond_prefix_path_pair_cap, 2);
+        assert_eq!(disclosure.requests_without_source_ip, 1);
+        assert_eq!(disclosure.requests_with_invalid_source_ip, 1);
+        assert_eq!(disclosure.requests_beyond_source_tracking_cap, 1);
+        for (peer, prefix) in [
+            ("192.0.2.1", "192.0.2.0/24"),
+            ("::ffff:192.0.2.1", "192.0.2.0/24"),
+            ("2001:DB8::1", "2001:db8::/48"),
+            ("2001:db8::1", "2001:db8::/48"),
+        ] {
+            assert_eq!(
+                enabled.source_ips[peer].prefix,
+                Some(prefix.parse().unwrap())
+            );
+        }
+        assert!(enabled.source_ips["invalid"].prefix.is_none());
+        assert!(disabled
+            .source_ips
+            .values()
+            .all(|item| item.prefix.is_none()));
+        assert!(disabled.prefix_paths.is_empty());
+        assert!(enabled
+            .enable_source_prefixes(FocusPrefixLengths::default())
+            .is_err());
+        assert_eq!(
+            serde_json::to_vec(&enabled.summary()).unwrap(),
+            serde_json::to_vec(&disabled.summary()).unwrap()
+        );
+        assert_eq!(
+            enabled.prefix_paths[&"192.0.2.0/24".parse().unwrap()].paths,
+            BTreeMap::from([("/a".to_owned(), 2), ("/b".to_owned(), 2)])
+        );
+        assert_eq!(
+            enabled.prefix_paths[&"2001:db8::/48".parse().unwrap()].paths["/x"],
+            2
+        );
     }
 
     fn event_with_query(path: &str, source_ip: &str, query: Option<String>) -> WebEvent {

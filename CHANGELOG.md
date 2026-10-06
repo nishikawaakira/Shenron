@@ -5,6 +5,10 @@ default and COUNT-only; see the README for the full invariants.
 
 ## [Unreleased]
 
+### Changed
+
+- Prefix path detail now retains `uri_paths_requested_once` at exact capacity when neither path cap has rejected any requests for that prefix.
+
 ### Fixed
 
 - Published bot ranges, frozen address sets and context selectors now match equivalent mapped IPv4 addresses without rewriting raw displays or frozen snapshots; candidate replay counts can increase for mapped peers.
