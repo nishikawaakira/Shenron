@@ -45,7 +45,7 @@ use shenron::{
     },
     production::{
         ablation_with_optional_kev_and_filter as production_ablation,
-        concentration_with_optional_output as production_daily_concentration,
+        concentration_with_optional_output_and_source_prefixes as production_daily_concentration,
         count_hypotheses_with_optional_kev_and_filter as production_count_hypotheses,
         explain_private_findings,
         historical_replay_with_optional_kev_and_filter as production_historical_replay,
@@ -361,6 +361,31 @@ struct ConcentrationLimitArgs {
     max_source_segments: Option<usize>,
 }
 
+#[derive(Debug, Clone, Default, Args)]
+struct SourcePrefixArgs {
+    /// Enable private corpus-wide peer-prefix aggregation, using this IPv4
+    /// length (0..=32). If only IPv6 is specified, IPv4 defaults to 24.
+    #[arg(long, value_parser = parse_ipv4_prefix_length, requires = "output")]
+    source_prefix_bits: Option<u8>,
+    /// Enable private corpus-wide peer-prefix aggregation, using this IPv6
+    /// length (0..=128). If only IPv4 is specified, IPv6 defaults to 48.
+    #[arg(long, value_parser = parse_ipv6_prefix_length, requires = "output")]
+    source_prefix_bits_v6: Option<u8>,
+}
+
+impl SourcePrefixArgs {
+    fn resolve(&self) -> Option<FocusPrefixLengths> {
+        if self.source_prefix_bits.is_none() && self.source_prefix_bits_v6.is_none() {
+            return None;
+        }
+        let defaults = FocusPrefixLengths::default();
+        Some(FocusPrefixLengths {
+            ipv4: self.source_prefix_bits.unwrap_or(defaults.ipv4),
+            ipv6: self.source_prefix_bits_v6.unwrap_or(defaults.ipv6),
+        })
+    }
+}
+
 impl ConcentrationLimitArgs {
     fn resolve(&self) -> Option<ConcentrationTrackingLimits> {
         if self.max_paths.is_none()
@@ -616,6 +641,8 @@ enum ProductionCommand {
     /// Measure bounded request-volume distribution without CTI inputs or detector matching.
     Concentration {
         #[command(flatten)]
+        source_prefixes: SourcePrefixArgs,
+        #[command(flatten)]
         tracking_limits: ConcentrationLimitArgs,
         #[arg(long)]
         input: PathBuf,
@@ -687,6 +714,8 @@ enum ProductionCommand {
     /// Print a lightweight aggregate-only daily volume summary. No artifacts
     /// are written unless --output is explicitly supplied.
     Daily {
+        #[command(flatten)]
+        source_prefixes: SourcePrefixArgs,
         #[command(flatten)]
         tracking_limits: ConcentrationLimitArgs,
         #[arg(long)]
@@ -1606,6 +1635,7 @@ fn main() -> Result<()> {
                 Ok(())
             }
             ProductionCommand::Concentration {
+                source_prefixes,
                 tracking_limits,
                 input,
                 format,
@@ -1682,11 +1712,15 @@ fn main() -> Result<()> {
                     response_success_share_threshold_percent,
                     corpus_label,
                     tracking_limits.resolve(),
+                    source_prefixes.resolve(),
                 )?;
                 let private_path = output.join("request-concentration.json");
-                let private = (show_paths || show_source_ips || focus.is_some())
-                    .then(|| load_private_concentration(&private_path))
-                    .transpose()?;
+                let private = (show_paths
+                    || show_source_ips
+                    || focus.is_some()
+                    || source_prefixes.resolve().is_some())
+                .then(|| load_private_concentration(&private_path))
+                .transpose()?;
                 print_concentration(
                     &report,
                     &output.join("sanitized-research.json"),
@@ -1703,6 +1737,7 @@ fn main() -> Result<()> {
                 Ok(())
             }
             ProductionCommand::Daily {
+                source_prefixes,
                 tracking_limits,
                 input,
                 format,
@@ -1735,6 +1770,7 @@ fn main() -> Result<()> {
                     response_success_share_threshold_percent,
                     corpus_label,
                     tracking_limits.resolve(),
+                    source_prefixes.resolve(),
                 )?;
                 let summary = DailyVolumeSummary::from_report(&report, processed_index.is_some());
                 match output_format {
@@ -3098,6 +3134,11 @@ fn print_concentration(
         }
     }
     if let Some(private) = private {
+        if let Some(disclosure) = &private.source_prefix_aggregation {
+            println!("  Source-prefix omissions (missing IP / invalid IP / source-cap observations): {} / {} / {} (group cap: {}; retained-source counts only)",
+                disclosure.requests_without_source_ip, disclosure.requests_with_invalid_source_ip,
+                disclosure.requests_beyond_source_tracking_cap, disclosure.maximum_prefixes);
+        }
         if show_paths {
             println!("\nPrivate top request paths:");
             for item in private.paths.iter().take(display_limit(limit)) {
@@ -3188,6 +3229,39 @@ fn print_concentration(
             );
         }
         if show_source_ips {
+            if let Some(groups) = &private.source_prefixes {
+                println!("\nPrivate observed source-prefix volumes:");
+                println!("  {}", shenron::concentration::SOURCE_PREFIX_NOTE);
+                for group in groups.iter().take(display_limit(limit)) {
+                    println!("  {}: requests {} / distinct source IPs {} / max requests per source IP {} / response bytes {} (byte values unavailable: {}; path observations unavailable: {})",
+                        terminal_safe(&group.prefix), group.requests, group.distinct_source_ips,
+                        group.max_requests_per_source_ip,
+                        group.response_bytes.map(|bytes| bytes.to_string()).unwrap_or_else(|| "unavailable".to_owned()),
+                        group.response_bytes_unavailable, group.path_observations_unavailable);
+                    println!(
+                        "    Response status classes: {}",
+                        format_status_classes(&group.response_status_classes)
+                    );
+                    if show_paths {
+                        println!(
+                            "    Most-requested retained path: {}",
+                            group
+                                .most_requested_uri_path
+                                .as_deref()
+                                .map(terminal_safe)
+                                .unwrap_or_else(|| {
+                                    "unavailable (missing or capped path observations)".to_owned()
+                                })
+                        );
+                    }
+                }
+                if groups.len() > display_limit(limit) {
+                    println!(
+                        "  {} prefix groups omitted by --limit.",
+                        groups.len() - display_limit(limit)
+                    );
+                }
+            }
             println!("\nPrivate top observed connection-peer IPs:");
             for item in private.source_ips.iter().take(display_limit(limit)) {
                 println!(
@@ -3206,6 +3280,15 @@ fn print_concentration(
                     item.response_status_codes.as_ref(),
                     item.response_outcomes.as_ref(),
                 );
+                if let Some(unavailable) = item.response_bytes_unavailable {
+                    println!(
+                        "    Response bytes: {} (byte values unavailable: {})",
+                        item.response_bytes
+                            .map(|bytes| bytes.to_string())
+                            .unwrap_or_else(|| "unavailable".to_owned()),
+                        unavailable
+                    );
+                }
             }
             if let Some(focus) = &private.focus {
                 let source_ip_selection_count = focus

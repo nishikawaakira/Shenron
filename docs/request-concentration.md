@@ -63,6 +63,71 @@ edge itself answered, so a corpus can contain no status at all. Shares are
 reported as unavailable in that case rather than as zero. This is not a
 determination of an outage, degraded availability, an attack, or abuse.
 
+## Opt-in corpus-wide source-prefix volumes
+
+```sh
+shenron concentration --input ./logs --format apache --output ./private-volume \
+  --source-prefix-bits 24
+shenron daily --input ./logs --format apache --output ./private-daily \
+  --source-prefix-bits-v6 48
+```
+
+Either flag enables both address families. `--source-prefix-bits <0..32>` is
+the IPv4 length; `--source-prefix-bits-v6 <0..128>` is the IPv6 length. The
+unspecified family uses the same defaults as existing peer grouping: IPv4 /24
+and IPv6 /48. Without either flag, no new fields are serialized and existing
+artifacts are unchanged. `daily` requires `--output` for this private detail.
+This corpus-wide aggregation is independent of a path/source focus and does
+not change observation-store recurrence records or perform ASN lookups.
+
+Prefix aggregation treats IPv4-mapped IPv6 addresses as IPv4 and combines
+different spellings of the same address into one source before calculating
+distinct counts and per-source maxima. Per-source rows retain their raw IP
+spelling; canonicalization does not change streaming admission or tracking caps.
+
+The private `request-concentration.json` gains `source_prefixes`, ordered by
+requests descending and then prefix spelling ascending. Each group includes
+requests, recorded response bytes, distinct retained sources, the maximum
+requests from any one retained source, the most-requested URI path, and
+response status classes. Equal path counts select the lexically smallest
+path. The per-source maximum preserves the distinction between a few sources
+with many requests and many sources with few requests, even at equal totals;
+it is a measurement, not a classification or threshold decision.
+
+Only with this opt-in, `source_ips[]` also gains `response_bytes` and
+`response_bytes_unavailable`. Like path byte totals, byte totals sum recorded
+response-byte values, not estimates of network transfer. Missing byte values
+are counted rather than inferred. When none are available (including a profile
+without response bytes), a source's byte field is absent and a prefix's byte
+field is `null`; a recorded zero remains `0`. Partial sums are accompanied by
+the count of observations missing bytes. Existing path byte fields are unchanged.
+
+Groups derive from retained sources and retained source/path pairs; there is
+no extra log pass or unbounded tracker. At most `--max-source-ips` groups can
+exist (default 1,000,000). `source_prefix_aggregation` records the family lengths,
+this bound, and disjoint omission counts for missing source IPs, invalid
+retained IPs, and observations beyond the source cap. Group request totals plus
+these omissions equal the corpus total. Counts and maxima cover retained
+sources only; after a cap they are lower bounds, not reconstructed totals.
+Path detail remains bounded by `--max-paths` and `--max-source-path-pairs`.
+When a group's path observations are missing or omitted by either cap,
+`path_observations_unavailable` discloses their count and
+`most_requested_uri_path` is `null`, rather than a guessed winner.
+Resolved prefix lengths also enter the private run manifest.
+
+No prefix, source IP, or path is added to sanitized artifacts. CLI prefix rows
+and byte detail require `--show-source-ips`, respect `--limit` (0 means all),
+and disclose display truncation. Prefix path values additionally require
+`--show-paths`. Concentration prints aggregate omission counts without these
+gates; daily keeps its aggregate-only summary and writes this detail privately.
+
+Grouping observed peers by address prefix is an arithmetic aggregation, not a
+claim of shared operator, ownership, or coordination. Carrier-grade NAT and
+mobile ranges place unrelated visitors in one prefix; a high prefix total can
+be many ordinary visitors. The per-source maximum is reported alongside the
+total for that reason. Request-volume distribution is not a determination of
+a denial-of-service attempt, attack, abuse, compromise, or attacker identity.
+
 ## Configurable bounded tracking
 
 `hunt`, `concentration`, and `daily` accept positive, finite integer limits:
@@ -510,6 +575,12 @@ as a count.
 To review what one or more observed connection peers requested, use
 `--source-ip`. This is the reverse of a path focus: it lists the union of URI
 paths those peers sent, with request counts.
+
+Source-IP selectors match IPv4-mapped forms and alternative spellings as the
+same address, while selector displays and output rows retain the analyst's
+input and the log's raw spelling, respectively. ASN groups apply the same
+canonicalization before local resolution and distinct-source counting;
+unparseable selectors continue to match only their exact text.
 
 ```bash
 shenron concentration \

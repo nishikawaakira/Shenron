@@ -684,6 +684,8 @@ mod tests {
         median: f64,
     ) -> PrivateRequestConcentrationReport {
         PrivateRequestConcentrationReport {
+            source_prefixes: None,
+            source_prefix_aggregation: None,
             waf: None,
             ja4_sources: None,
             report_kind: "REQUEST_CONCENTRATION_PRIVATE".into(),
@@ -739,6 +741,8 @@ mod tests {
             source_ips: sources
                 .into_iter()
                 .map(|(ip, n)| PrivateSourceConcentration {
+                    response_bytes: None,
+                    response_bytes_unavailable: None,
                     waf: None,
                     path_segment_diversity: None,
                     response_status_codes: None,

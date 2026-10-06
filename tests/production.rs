@@ -22,6 +22,185 @@ const GITHUB_TEMPLATE_SEARCH_PREFIX: &str =
     "https://github.com/search?q=repo:projectdiscovery/nuclei-templates";
 
 #[test]
+fn corpus_source_prefixes_are_private_opt_in_bounded_and_byte_reproducible() {
+    let directory = tempdir().unwrap();
+    let input = directory.path().join("combined.log");
+    let lines = ["192.0.2.1", "192.0.2.1", "192.0.2.2", "2001:db8:1234:1::1", "2001:db8:1234:2::2"]
+        .iter().map(|ip| format!("{ip} - - [01/Jan/2026:00:00:00 +0000] \"GET /private-prefix?token=private-query HTTP/1.1\" 200 10 \"-\" \"agent\"\n")).collect::<String>();
+    fs::write(&input, lines).unwrap();
+    for subcommand in ["concentration", "daily"] {
+        let mut sanitized_before = None;
+        let mut private_enabled = None;
+        for (name, flags) in [
+            ("default", vec![]),
+            ("enabled", vec!["--source-prefix-bits", "24"]),
+            ("repeat", vec!["--source-prefix-bits-v6", "48"]),
+            (
+                "capped",
+                vec!["--source-prefix-bits", "24", "--max-source-ips", "1"],
+            ),
+            (
+                "custom",
+                vec![
+                    "--source-prefix-bits",
+                    "32",
+                    "--source-prefix-bits-v6",
+                    "128",
+                ],
+            ),
+        ] {
+            let output = directory.path().join(format!("{subcommand}-{name}"));
+            let stdout = Command::cargo_bin("shenron")
+                .unwrap()
+                .args([
+                    subcommand,
+                    "--input",
+                    input.to_str().unwrap(),
+                    "--format",
+                    "apache",
+                    "--output",
+                    output.to_str().unwrap(),
+                ])
+                .args(flags)
+                .assert()
+                .success()
+                .get_output()
+                .stdout
+                .clone();
+            let stdout = String::from_utf8(stdout).unwrap();
+            for secret in ["192.0.2.", "2001:db8", "/private-prefix", "private-query"] {
+                assert!(!stdout.contains(secret));
+            }
+            let sanitized = fs::read(output.join("sanitized-research.json")).unwrap();
+            let text = String::from_utf8(sanitized.clone()).unwrap();
+            for secret in [
+                "192.0.2.",
+                "2001:db8",
+                "/private-prefix",
+                "private-query",
+                "source_prefixes",
+            ] {
+                assert!(!text.contains(secret));
+            }
+            let private_bytes = fs::read(output.join("request-concentration.json")).unwrap();
+            let private: serde_json::Value = serde_json::from_slice(&private_bytes).unwrap();
+            let manifest: serde_json::Value =
+                serde_json::from_slice(&fs::read(output.join("run-manifest.json")).unwrap())
+                    .unwrap();
+            if name == "default" {
+                assert!(private.get("source_prefixes").is_none());
+                assert!(private.get("source_prefix_aggregation").is_none());
+                assert!(private["source_ips"][0].get("response_bytes").is_none());
+                assert!(manifest.get("source_prefix_lengths").is_none());
+                sanitized_before = Some(sanitized);
+                continue;
+            }
+            let groups = private["source_prefixes"].as_array().unwrap();
+            assert!(private["source_prefix_aggregation"]["safety_note"]
+                .as_str()
+                .unwrap()
+                .contains("not a claim of shared operator"));
+            assert_eq!(private["source_ips"][0]["response_bytes"], 20);
+            if name == "capped" {
+                assert_eq!(groups.len(), 1);
+                assert_eq!(groups[0]["requests"], 2);
+                assert_eq!(
+                    private["source_prefix_aggregation"]["requests_beyond_source_tracking_cap"],
+                    3
+                );
+                assert_eq!(private["source_prefix_aggregation"]["maximum_prefixes"], 1);
+                continue;
+            }
+            assert_eq!(sanitized, *sanitized_before.as_ref().unwrap());
+            assert_eq!(
+                groups
+                    .iter()
+                    .map(|g| g["requests"].as_u64().unwrap())
+                    .sum::<u64>(),
+                private["summary"]["total_requests"].as_u64().unwrap()
+            );
+            if name == "custom" {
+                assert_eq!(groups.len(), 4);
+                assert_eq!(manifest["source_prefix_lengths"]["ipv4"], 32);
+                assert_eq!(manifest["source_prefix_lengths"]["ipv6"], 128);
+                continue;
+            }
+            assert_eq!(groups.len(), 2);
+            assert_eq!(groups[0]["prefix"], "192.0.2.0/24");
+            assert_eq!(groups[0]["max_requests_per_source_ip"], 2);
+            assert_eq!(groups[0]["response_bytes"], 30);
+            assert_eq!(groups[1]["prefix"], "2001:db8:1234::/48");
+            assert_eq!(manifest["source_prefix_lengths"]["ipv4"], 24);
+            assert_eq!(manifest["source_prefix_lengths"]["ipv6"], 48);
+            if let Some(previous) = &private_enabled {
+                assert_eq!(&private_bytes, previous);
+            } else {
+                private_enabled = Some(private_bytes);
+            }
+        }
+    }
+    let output = directory.path().join("shown");
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "concentration",
+            "--input",
+            input.to_str().unwrap(),
+            "--format",
+            "apache",
+            "--output",
+            output.to_str().unwrap(),
+            "--source-prefix-bits",
+            "24",
+            "--show-source-ips",
+            "--limit",
+            "1",
+        ])
+        .assert()
+        .success()
+        .stdout(
+            contains("192.0.2.0/24")
+                .and(contains("max requests per source IP 2"))
+                .and(contains("1 prefix groups omitted by --limit")),
+        );
+}
+
+#[test]
+fn source_prefix_lengths_validate_family_bounds_and_require_a_private_output() {
+    for (flag, value) in [
+        ("--source-prefix-bits", "33"),
+        ("--source-prefix-bits-v6", "129"),
+    ] {
+        Command::cargo_bin("shenron")
+            .unwrap()
+            .args([
+                "daily",
+                "--input",
+                "tests/fixtures/production/waf.jsonl",
+                "--output",
+                "unused",
+                flag,
+                value,
+            ])
+            .assert()
+            .failure()
+            .stderr(contains("prefix"));
+    }
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .args([
+            "daily",
+            "--input",
+            "tests/fixtures/production/waf.jsonl",
+            "--source-prefix-bits",
+            "24",
+        ])
+        .assert()
+        .failure()
+        .stderr(contains("--output"));
+}
+
+#[test]
 fn waf_counts_reach_daily_and_include_both_finding_engines_without_leaks() {
     let directory = tempdir().unwrap();
     let rules = directory.path().join("rules");

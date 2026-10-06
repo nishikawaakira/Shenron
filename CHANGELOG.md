@@ -7,6 +7,8 @@ default and COUNT-only; see the README for the full invariants.
 
 ### Fixed
 
+- Source-IP focuses now match mapped IPv4 and alternative IP spellings; focus ASN groups resolve canonical addresses and deduplicate resolved/unresolved peers without rewriting raw source rows or selector displays.
+- Focus prefix groups now treat IPv4-mapped IPv6 peers as IPv4 and count alternative spellings of the same address once, without rewriting private per-source rows.
 - Nuclei conversion now shares the generic-path heuristic with explain, preserving traversal-shaped paths and generic paths with query/header conditions; rerun `shenron nuclei update` to regenerate the frozen report.
 - Corrected the context retained-span addition: aggregate UTC bounds now appear in default counts-only stdout when records are retained, without requiring `--show-request`.
 - Concatenated gzip input is now fully decoded. Previously a `.gz` file holding
@@ -18,6 +20,7 @@ default and COUNT-only; see the README for the full invariants.
 
 ### Added
 
+- Opt-in concentration/daily `--source-prefix-bits` and `--source-prefix-bits-v6` add private prefix volumes, per-source maxima and response-byte totals with missing/capped-observation disclosures; defaults and sanitized artifacts are unchanged.
 - Bundled Sigma rules now include AI developer tooling configuration requests and expanded secret/configuration paths; public Firebase initialization, AI-crawler convention files and standalone `/mcp` remain excluded. Matches do not establish an attack, compromise or a vulnerable product.
 - `context` records now include capability-gated host, user agent, country,
   JA3/JA4, WAF action and labels, and (behind `--show-query`) Referer, with the

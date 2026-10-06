@@ -569,6 +569,8 @@ mod tests {
         )
         .unwrap();
         let report = PrivateRequestConcentrationReport {
+            source_prefixes: None,
+            source_prefix_aggregation: None,
             waf: None,
             ja4_sources: None,
             report_kind: "REQUEST_CONCENTRATION_PRIVATE".to_owned(),
@@ -603,6 +605,8 @@ mod tests {
             source_ips: ips
                 .iter()
                 .map(|ip| PrivateSourceConcentration {
+                    response_bytes: None,
+                    response_bytes_unavailable: None,
                     waf: None,
                     path_segment_diversity: None,
                     response_status_codes: None,

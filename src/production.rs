@@ -1644,6 +1644,7 @@ pub fn concentration_with_asn_rate_windows_and_query_keys(
         crate::concentration::DEFAULT_RESPONSE_SUCCESS_SHARE_THRESHOLD_PERCENT,
         None,
         None,
+        None,
     )
 }
 
@@ -1715,6 +1716,46 @@ pub fn concentration_with_optional_output(
     corpus_label: Option<String>,
     tracking_limits: Option<ConcentrationTrackingLimits>,
 ) -> anyhow::Result<SanitizedConcentrationReport> {
+    concentration_with_optional_output_and_source_prefixes(
+        input,
+        output,
+        telemetry_profile,
+        time_range,
+        focus,
+        focus_prefix_lengths,
+        asn_database,
+        rate_window_seconds,
+        include_private_query_keys,
+        processed_index,
+        reprocess_all,
+        response_bucket_minimum_requests,
+        response_success_share_threshold_percent,
+        corpus_label,
+        tracking_limits,
+        None,
+    )
+}
+
+/// Opt-in private corpus-wide prefix aggregates; existing callers stay disabled.
+#[allow(clippy::too_many_arguments)]
+pub fn concentration_with_optional_output_and_source_prefixes(
+    input: &Path,
+    output: Option<&Path>,
+    telemetry_profile: TelemetryProfile,
+    time_range: HuntTimeRange,
+    focus: Option<FocusSelector>,
+    focus_prefix_lengths: FocusPrefixLengths,
+    asn_database: Option<&AsnDatabase>,
+    rate_window_seconds: &[u64],
+    include_private_query_keys: bool,
+    processed_index: Option<&Path>,
+    reprocess_all: bool,
+    response_bucket_minimum_requests: u64,
+    response_success_share_threshold_percent: u8,
+    corpus_label: Option<String>,
+    tracking_limits: Option<ConcentrationTrackingLimits>,
+    source_prefix_lengths: Option<FocusPrefixLengths>,
+) -> anyhow::Result<SanitizedConcentrationReport> {
     concentration_run(
         input,
         output,
@@ -1731,6 +1772,7 @@ pub fn concentration_with_optional_output(
         response_success_share_threshold_percent,
         corpus_label,
         tracking_limits,
+        source_prefix_lengths,
     )
 }
 
@@ -1751,10 +1793,14 @@ fn concentration_run(
     response_success_share_threshold_percent: u8,
     corpus_label: Option<String>,
     tracking_limits: Option<ConcentrationTrackingLimits>,
+    source_prefix_lengths: Option<FocusPrefixLengths>,
 ) -> anyhow::Result<SanitizedConcentrationReport> {
     let limits = resolve_tracking_limits(tracking_limits)?;
     if corpus_label.is_some() && output.is_none() {
         anyhow::bail!("--corpus-label requires --output to record the private analyst annotation");
+    }
+    if source_prefix_lengths.is_some() && output.is_none() {
+        anyhow::bail!("source prefix aggregation requires --output for its private artifact");
     }
     time_range.validate()?;
     if let Some(output) = output {
@@ -1791,6 +1837,11 @@ fn concentration_run(
         rate_window_seconds,
     );
     accumulator.set_response_bucket_minimum_requests(response_bucket_minimum_requests);
+    if let Some(prefixes) = source_prefix_lengths {
+        accumulator
+            .enable_source_prefixes(prefixes)
+            .map_err(anyhow::Error::msg)?;
+    }
     accumulator.configure_waf(telemetry_profile.capabilities());
     accumulator
         .set_response_success_share_threshold_percent(response_success_share_threshold_percent)
@@ -1853,6 +1904,7 @@ fn concentration_run(
             corpus,
             corpus_label,
             tracking_limits,
+            source_prefix_lengths,
         )?;
     }
     plan.commit()?;
@@ -1879,6 +1931,8 @@ struct ConcentrationRunManifest {
     corpus_label: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     tracking_limits: Option<ConcentrationTrackingLimits>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source_prefix_lengths: Option<FocusPrefixLengths>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -1894,6 +1948,7 @@ fn write_concentration_run_manifest(
     mut corpus: Vec<PathProvenance>,
     corpus_label: Option<String>,
     tracking_limits: Option<ConcentrationTrackingLimits>,
+    source_prefix_lengths: Option<FocusPrefixLengths>,
 ) -> anyhow::Result<()> {
     corpus.sort_by(|left, right| left.path.cmp(&right.path));
     let manifest = ConcentrationRunManifest {
@@ -1910,6 +1965,7 @@ fn write_concentration_run_manifest(
         corpus,
         corpus_label,
         tracking_limits,
+        source_prefix_lengths,
     };
     let path = output.join("run-manifest.json");
     serde_json::to_writer_pretty(
