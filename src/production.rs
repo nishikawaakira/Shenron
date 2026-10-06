@@ -1628,7 +1628,7 @@ pub fn concentration_with_asn_rate_windows_and_query_keys(
     rate_window_seconds: &[u64],
     include_private_query_keys: bool,
 ) -> anyhow::Result<SanitizedConcentrationReport> {
-    concentration_run(
+    concentration_with_optional_output_and_source_prefixes_detailed(
         input,
         Some(output),
         telemetry_profile,
@@ -1646,6 +1646,7 @@ pub fn concentration_with_asn_rate_windows_and_query_keys(
         None,
         None,
     )
+    .map(|outcome| outcome.sanitized)
 }
 
 /// Explicit bounded tracking configuration for hunt/concentration/daily provenance.
@@ -1657,6 +1658,10 @@ pub struct ConcentrationTrackingLimits {
     pub max_source_ips: usize,
     pub max_source_path_pairs: usize,
     pub max_source_segments: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_paths_per_source_prefix: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_source_prefix_path_pairs: Option<usize>,
 }
 
 impl Default for ConcentrationTrackingLimits {
@@ -1667,6 +1672,8 @@ impl Default for ConcentrationTrackingLimits {
             max_source_ips: limits.max_source_ips,
             max_source_path_pairs: limits.max_source_path_pairs,
             max_source_segments: limits.max_source_segments,
+            max_paths_per_source_prefix: None,
+            max_source_prefix_path_pairs: None,
         }
     }
 }
@@ -1682,6 +1689,12 @@ fn resolve_tracking_limits(
         limits.max_source_ips,
         limits.max_source_path_pairs,
         limits.max_source_segments,
+        limits
+            .max_paths_per_source_prefix
+            .unwrap_or(crate::concentration::DEFAULT_MAX_PATHS_PER_SOURCE_PREFIX),
+        limits
+            .max_source_prefix_path_pairs
+            .unwrap_or(crate::concentration::DEFAULT_MAX_SOURCE_PREFIX_PATH_PAIRS),
     ]
     .contains(&0)
     {
@@ -1694,6 +1707,12 @@ fn resolve_tracking_limits(
         max_source_ips: limits.max_source_ips,
         max_source_path_pairs: limits.max_source_path_pairs,
         max_source_segments: limits.max_source_segments,
+        max_paths_per_source_prefix: limits
+            .max_paths_per_source_prefix
+            .unwrap_or(crate::concentration::DEFAULT_MAX_PATHS_PER_SOURCE_PREFIX),
+        max_source_prefix_path_pairs: limits
+            .max_source_prefix_path_pairs
+            .unwrap_or(crate::concentration::DEFAULT_MAX_SOURCE_PREFIX_PATH_PAIRS),
         ..crate::concentration::ConcentrationLimits::default()
     })
 }
@@ -1756,6 +1775,58 @@ pub fn concentration_with_optional_output_and_source_prefixes(
     tracking_limits: Option<ConcentrationTrackingLimits>,
     source_prefix_lengths: Option<FocusPrefixLengths>,
 ) -> anyhow::Result<SanitizedConcentrationReport> {
+    concentration_with_optional_output_and_source_prefixes_detailed(
+        input,
+        output,
+        telemetry_profile,
+        time_range,
+        focus,
+        focus_prefix_lengths,
+        asn_database,
+        rate_window_seconds,
+        include_private_query_keys,
+        processed_index,
+        reprocess_all,
+        response_bucket_minimum_requests,
+        response_success_share_threshold_percent,
+        corpus_label,
+        tracking_limits,
+        source_prefix_lengths,
+    )
+    .map(|outcome| outcome.sanitized)
+}
+
+/// In-memory completion data, deliberately not a serialized artifact. Private
+/// reporting metadata stays separate from the unchanged sanitized schema.
+#[derive(Debug)]
+pub struct ConcentrationRunOutcome {
+    pub sanitized: SanitizedConcentrationReport,
+    /// The count written to private prefix detail: None without prefix opt-in,
+    /// Some(0) when enabled but no requests exceeded the global path-pair cap.
+    pub prefix_path_pairs_beyond_cap: Option<u64>,
+}
+
+/// Return sanitized output and private aggregate metadata directly from the
+/// single streaming run, without reopening the potentially large private JSON.
+#[allow(clippy::too_many_arguments)]
+pub fn concentration_with_optional_output_and_source_prefixes_detailed(
+    input: &Path,
+    output: Option<&Path>,
+    telemetry_profile: TelemetryProfile,
+    time_range: HuntTimeRange,
+    focus: Option<FocusSelector>,
+    focus_prefix_lengths: FocusPrefixLengths,
+    asn_database: Option<&AsnDatabase>,
+    rate_window_seconds: &[u64],
+    include_private_query_keys: bool,
+    processed_index: Option<&Path>,
+    reprocess_all: bool,
+    response_bucket_minimum_requests: u64,
+    response_success_share_threshold_percent: u8,
+    corpus_label: Option<String>,
+    tracking_limits: Option<ConcentrationTrackingLimits>,
+    source_prefix_lengths: Option<FocusPrefixLengths>,
+) -> anyhow::Result<ConcentrationRunOutcome> {
     concentration_run(
         input,
         output,
@@ -1794,7 +1865,7 @@ fn concentration_run(
     corpus_label: Option<String>,
     tracking_limits: Option<ConcentrationTrackingLimits>,
     source_prefix_lengths: Option<FocusPrefixLengths>,
-) -> anyhow::Result<SanitizedConcentrationReport> {
+) -> anyhow::Result<ConcentrationRunOutcome> {
     let limits = resolve_tracking_limits(tracking_limits)?;
     if corpus_label.is_some() && output.is_none() {
         anyhow::bail!("--corpus-label requires --output to record the private analyst annotation");
@@ -1891,6 +1962,7 @@ fn concentration_run(
         )?);
     }
     report.request_concentration = accumulator.summary();
+    let mut prefix_path_pairs_beyond_cap = None;
     if let Some(output) = output {
         let prefix_asn = source_prefix_lengths.and(asn_database.or(default_prefix_asn.as_ref()));
         let mut asn_used_for = Vec::new();
@@ -1898,6 +1970,10 @@ fn concentration_run(
             include_private_query_keys,
             prefix_asn.map(|database| database as &dyn crate::triage::AsnResolver),
         );
+        prefix_path_pairs_beyond_cap = private_report
+            .source_prefix_aggregation
+            .as_ref()
+            .map(|detail| detail.requests_beyond_prefix_path_pair_cap);
         if let Some(focus) = private_report.focus.as_mut() {
             add_focus_prefix_groups(focus, focus_prefix_lengths);
             if let Some(asn_database) = asn_database {
@@ -1947,7 +2023,10 @@ fn concentration_run(
         )?;
     }
     plan.commit()?;
-    Ok(report)
+    Ok(ConcentrationRunOutcome {
+        sanitized: report,
+        prefix_path_pairs_beyond_cap,
+    })
 }
 
 /// Provenance manifest for a `concentration` run. It records the same
@@ -2005,6 +2084,17 @@ fn write_concentration_run_manifest(
     asn_dataset: Option<ConcentrationAsnProvenance>,
 ) -> anyhow::Result<()> {
     corpus.sort_by(|left, right| left.path.cmp(&right.path));
+    // Record both effective opt-in path caps, including their defaults, without
+    // adding any fields to manifests when prefix aggregation is disabled.
+    let tracking_limits = if source_prefix_lengths.is_some() {
+        let mut configured = tracking_limits.unwrap_or_default();
+        let resolved = resolve_tracking_limits(Some(configured))?;
+        configured.max_paths_per_source_prefix = Some(resolved.max_paths_per_source_prefix);
+        configured.max_source_prefix_path_pairs = Some(resolved.max_source_prefix_path_pairs);
+        Some(configured)
+    } else {
+        tracking_limits
+    };
     let manifest = ConcentrationRunManifest {
         report_kind: "RUN_MANIFEST".to_owned(),
         safety_note: "PRIVATE run provenance: corpus paths and verbatim analyst labels may contain private information. Do not share without review. No log record values are copied. SHA-256 values identify the stored input bytes for reproducibility; labels are analyst annotations, not Shenron determinations.".to_owned(),
@@ -3168,6 +3258,80 @@ mod corpus_provenance_tests {
     use super::*;
 
     #[test]
+    fn detailed_concentration_outcome_matches_private_prefix_counts_without_enabling_sanitized_fields(
+    ) {
+        let directory = tempfile::tempdir().unwrap();
+        let input = directory.path().join("combined.log");
+        fs::write(&input, ["/one", "/two", "/three", "/one"].iter().map(|path|
+            format!("192.0.2.1 - - [01/Jan/2026:00:00:00 +0000] \"GET {path} HTTP/1.1\" 200 10 \"-\" \"agent\"\n")
+        ).collect::<String>()).unwrap();
+        // An explicit local fixture avoids loading a developer's default ASN data.
+        let asn_path = directory.path().join("asn.tsv");
+        fs::write(&asn_path, "192.0.2.0\t192.0.2.255\t64501\tFixture\n").unwrap();
+        let asn = load_asn_database(&asn_path).unwrap();
+        let mut baseline = None;
+        for (name, write_output, prefixes, expected) in [
+            ("stdout-only", false, false, None),
+            ("disabled", true, false, None),
+            ("enabled", true, true, Some(0)),
+            ("capped", true, true, Some(2)),
+        ] {
+            let output = directory.path().join(name);
+            let outcome = concentration_with_optional_output_and_source_prefixes_detailed(
+                &input,
+                write_output.then_some(output.as_path()),
+                TelemetryProfile::ApacheCombined,
+                HuntTimeRange::default(),
+                None,
+                FocusPrefixLengths::default(),
+                Some(&asn),
+                &DEFAULT_RATE_WINDOW_SECONDS,
+                false,
+                None,
+                false,
+                crate::concentration::DEFAULT_RESPONSE_BUCKET_MINIMUM_REQUESTS,
+                crate::concentration::DEFAULT_RESPONSE_SUCCESS_SHARE_THRESHOLD_PERCENT,
+                None,
+                (expected == Some(2)).then_some(ConcentrationTrackingLimits {
+                    max_source_prefix_path_pairs: Some(1),
+                    ..ConcentrationTrackingLimits::default()
+                }),
+                prefixes.then_some(FocusPrefixLengths::default()),
+            )
+            .unwrap();
+            assert_eq!(outcome.prefix_path_pairs_beyond_cap, expected);
+            let sanitized = serde_json::to_vec(&outcome.sanitized).unwrap();
+            if let Some(baseline) = &baseline {
+                assert_eq!(&sanitized, baseline);
+            } else {
+                baseline = Some(sanitized);
+            }
+            if write_output {
+                // Reading is only for the assertion: the run returns the value
+                // directly from the report it wrote, not a deserialized copy.
+                let private =
+                    load_private_concentration(&output.join("request-concentration.json")).unwrap();
+                assert_eq!(
+                    outcome.prefix_path_pairs_beyond_cap,
+                    private
+                        .source_prefix_aggregation
+                        .as_ref()
+                        .map(|detail| detail.requests_beyond_prefix_path_pair_cap)
+                );
+                assert_eq!(
+                    outcome.prefix_path_pairs_beyond_cap,
+                    private.source_prefixes.as_ref().map(|groups| groups
+                        .iter()
+                        .map(|group| group.uri_paths_beyond_global_cap.unwrap())
+                        .sum::<u64>())
+                );
+            } else {
+                assert!(!output.exists());
+            }
+        }
+    }
+
+    #[test]
     fn fingerprint_consumes_each_stored_byte_once_without_a_second_reader() {
         struct Counted {
             inner: std::io::Cursor<Vec<u8>>,
@@ -3255,6 +3419,8 @@ mod corpus_provenance_tests {
         });
         let old: ConcentrationRunManifest = serde_json::from_value(old).unwrap();
         let limits = old.tracking_limits.unwrap();
+        assert!(limits.max_paths_per_source_prefix.is_none());
+        assert!(limits.max_source_prefix_path_pairs.is_none());
         assert_eq!(limits.max_paths, 12);
         assert_eq!(
             limits.max_source_segments,
@@ -3272,6 +3438,8 @@ mod corpus_provenance_tests {
             "max_source_ips",
             "max_source_path_pairs",
             "max_source_segments",
+            "max_paths_per_source_prefix",
+            "max_source_prefix_path_pairs",
         ] {
             let mut limits = serde_json::to_value(ConcentrationTrackingLimits::default()).unwrap();
             limits[field] = serde_json::json!(0);

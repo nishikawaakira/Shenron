@@ -46,6 +46,7 @@ use shenron::{
     production::{
         ablation_with_optional_kev_and_filter as production_ablation,
         concentration_with_optional_output_and_source_prefixes as production_daily_concentration,
+        concentration_with_optional_output_and_source_prefixes_detailed as production_daily_concentration_detailed,
         count_hypotheses_with_optional_kev_and_filter as production_count_hypotheses,
         explain_private_findings,
         historical_replay_with_optional_kev_and_filter as production_historical_replay,
@@ -371,9 +372,36 @@ struct SourcePrefixArgs {
     /// length (0..=128). If only IPv4 is specified, IPv6 defaults to 48.
     #[arg(long, value_parser = parse_ipv6_prefix_length, requires = "output")]
     source_prefix_bits_v6: Option<u8>,
+    /// Maximum distinct paths per source prefix (default: 5000). Requires
+    /// source-prefix aggregation; higher caps use more memory.
+    #[arg(long, value_parser = parse_positive_usize)]
+    max_paths_per_source_prefix: Option<usize>,
+    /// Maximum retained prefix/path pairs overall (default: 2000000).
+    /// Requires source-prefix aggregation; zero never means unlimited.
+    #[arg(long, value_parser = parse_positive_usize)]
+    max_source_prefix_path_pairs: Option<usize>,
 }
 
 impl SourcePrefixArgs {
+    fn tracking_limits(
+        &self,
+        tracking: Option<ConcentrationTrackingLimits>,
+    ) -> anyhow::Result<Option<ConcentrationTrackingLimits>> {
+        if self.max_paths_per_source_prefix.is_none() && self.max_source_prefix_path_pairs.is_none()
+        {
+            return Ok(tracking);
+        }
+        if self.resolve().is_none() {
+            anyhow::bail!(
+                "prefix path limits require --source-prefix-bits or --source-prefix-bits-v6"
+            );
+        }
+        let mut tracking = tracking.unwrap_or_default();
+        tracking.max_paths_per_source_prefix = self.max_paths_per_source_prefix;
+        tracking.max_source_prefix_path_pairs = self.max_source_prefix_path_pairs;
+        Ok(Some(tracking))
+    }
+
     fn resolve(&self) -> Option<FocusPrefixLengths> {
         if self.source_prefix_bits.is_none() && self.source_prefix_bits_v6.is_none() {
             return None;
@@ -405,6 +433,7 @@ impl ConcentrationLimitArgs {
             max_source_segments: self
                 .max_source_segments
                 .unwrap_or(defaults.max_source_segments),
+            ..defaults
         })
     }
 }
@@ -1130,6 +1159,8 @@ struct DailyVolumeSummary {
     paths_beyond_tracking_cap: u64,
     source_ips_beyond_tracking_cap: u64,
     source_path_pairs_beyond_tracking_cap: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_prefix_path_pairs_beyond_tracking_cap: Option<u64>,
     processed_index_enabled: bool,
     files_skipped_as_processed: usize,
     response_outcomes: Option<ResponseOutcomeSummary>,
@@ -1166,6 +1197,7 @@ impl DailyVolumeSummary {
             source_ips_beyond_tracking_cap: concentration.source_ips_beyond_tracking_cap,
             source_path_pairs_beyond_tracking_cap: concentration
                 .source_path_pairs_beyond_tracking_cap,
+            source_prefix_path_pairs_beyond_tracking_cap: None,
             processed_index_enabled,
             files_skipped_as_processed: report.files_skipped_as_processed,
             response_outcomes: concentration.response_outcomes.clone(),
@@ -1717,7 +1749,7 @@ fn main() -> Result<()> {
                     response_bucket_min_requests,
                     response_success_share_threshold_percent,
                     corpus_label,
-                    tracking_limits.resolve(),
+                    source_prefixes.tracking_limits(tracking_limits.resolve())?,
                     source_prefixes.resolve(),
                 )?;
                 let private_path = output.join("request-concentration.json");
@@ -1765,7 +1797,7 @@ fn main() -> Result<()> {
                 let asn_database = asn_dataset.as_deref().map(load_asn_database).transpose()?;
                 let rate_window_seconds = normalized_rate_windows(rate_window);
                 let telemetry_profile = format.telemetry_profile_for_input(&input)?;
-                let report = production_daily_concentration(
+                let outcome = production_daily_concentration_detailed(
                     &input,
                     output.as_deref(),
                     telemetry_profile,
@@ -1780,10 +1812,14 @@ fn main() -> Result<()> {
                     response_bucket_min_requests,
                     response_success_share_threshold_percent,
                     corpus_label,
-                    tracking_limits.resolve(),
+                    source_prefixes.tracking_limits(tracking_limits.resolve())?,
                     source_prefixes.resolve(),
                 )?;
-                let summary = DailyVolumeSummary::from_report(&report, processed_index.is_some());
+                let mut summary =
+                    DailyVolumeSummary::from_report(&outcome.sanitized, processed_index.is_some());
+                summary.source_prefix_path_pairs_beyond_tracking_cap = outcome
+                    .prefix_path_pairs_beyond_cap
+                    .filter(|count| *count > 0);
                 match output_format {
                     DailyOutputFormat::Text => {
                         print_daily_volume_summary(&summary, output.as_deref())
@@ -3149,6 +3185,10 @@ fn print_concentration(
             println!("  Source-prefix omissions (missing IP / invalid IP / source-cap observations): {} / {} / {} (group cap: {}; retained-source counts only)",
                 disclosure.requests_without_source_ip, disclosure.requests_with_invalid_source_ip,
                 disclosure.requests_beyond_source_tracking_cap, disclosure.maximum_prefixes);
+            print_prefix_path_omissions(
+                (disclosure.requests_beyond_prefix_path_pair_cap > 0)
+                    .then_some(disclosure.requests_beyond_prefix_path_pair_cap),
+            );
         }
         if show_paths {
             println!("\nPrivate top request paths:");
@@ -3262,6 +3302,12 @@ fn print_concentration(
                         "    Response status classes: {}",
                         format_status_classes(&group.response_status_classes)
                     );
+                    if let Some(distinct) = group.distinct_uri_paths {
+                        println!("    Distinct / once-requested paths: {} / {} (requests omitted at per-prefix / global pair cap: {} / {}; capped distinct counts are lower bounds)",
+                            distinct,
+                            group.uri_paths_requested_once.map(|count| count.to_string()).unwrap_or_else(|| "unavailable".to_owned()),
+                            group.uri_paths_beyond_prefix_cap.unwrap_or(0), group.uri_paths_beyond_global_cap.unwrap_or(0));
+                    }
                     if let Some(asns) = &group.asns {
                         for asn in asns {
                             println!(
@@ -3600,6 +3646,7 @@ fn print_daily_volume_summary(summary: &DailyVolumeSummary, output: Option<&Path
         summary.source_ips_beyond_tracking_cap,
         summary.source_path_pairs_beyond_tracking_cap,
     );
+    print_prefix_path_omissions(summary.source_prefix_path_pairs_beyond_tracking_cap);
     if let Some(segments) = &summary.source_segment_diversity {
         let unavailable_reason = match segments.corpus_4xx_requests {
             None => "; status unavailable",
@@ -3972,6 +4019,12 @@ fn print_request_concentration_summary(
         private_artifact_name,
     );
     print_windowed_request_rates("  Simultaneous rate windows", &concentration.request_rates);
+}
+
+fn print_prefix_path_omissions(omitted: Option<u64>) {
+    if let Some(count) = omitted {
+        println!("  Source-prefix path-pair cap: {count} requests omitted (global pair cap; affected once-requested counts unavailable)");
+    }
 }
 
 fn print_windowed_request_rates(

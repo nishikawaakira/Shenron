@@ -132,18 +132,76 @@ without response bytes), a source's byte field is absent and a prefix's byte
 field is `null`; a recorded zero remains `0`. Partial sums are accompanied by
 the count of observations missing bytes. Existing path byte fields are unchanged.
 
-Groups derive from retained sources and retained source/path pairs; there is
+Group volumes derive from retained sources and retained source/path pairs; there is
 no extra log pass or unbounded tracker. At most `--max-source-ips` groups can
 exist (default 1,000,000). `source_prefix_aggregation` records the family lengths,
 this bound, and disjoint omission counts for missing source IPs, invalid
 retained IPs, and observations beyond the source cap. Group request totals plus
 these omissions equal the corpus total. Counts and maxima cover retained
 sources only; after a cap they are lower bounds, not reconstructed totals.
-Path detail remains bounded by `--max-paths` and `--max-source-path-pairs`.
+The existing most-requested-path detail remains bounded by `--max-paths` and `--max-source-path-pairs`.
 When a group's path observations are missing or omitted by either cap,
 `path_observations_unavailable` discloses their count and
 `most_requested_uri_path` is `null`, rather than a guessed winner.
 Resolved prefix lengths also enter the private run manifest.
+
+### Opt-in prefix path counts
+
+With either source-prefix flag, each private prefix row also contains
+`distinct_uri_paths`, `uri_paths_requested_once`, and
+`uri_paths_beyond_prefix_cap`. Paths use the same `uri_path` as `paths[]`,
+without query values, decoding, case folding or a static/dynamic distinction.
+The once-requested count is the number of retained paths with exactly one
+request across the entire prefix, not one request per source. No ratio or
+classification is produced. Missing paths are not inserted as synthetic values.
+
+These measurements use the existing event stream and retained valid sources,
+but a separate bounded path map: they do not inherit omissions from the legacy
+`--max-paths` or `--max-source-path-pairs` trackers. Consequently the existing
+`path_observations_unavailable` (missing paths plus legacy tracking omissions)
+may be nonzero while the new counts are complete over retained peers. The
+existing most-requested-path field and all pre-existing metrics retain their
+meaning. Missing/invalid sources and source-cap omissions remain disclosed in
+`source_prefix_aggregation`; no count reconstructs traffic from omitted peers.
+
+`--max-paths-per-source-prefix` defaults to **5,000**, and
+`--max-source-prefix-path-pairs` defaults to **2,000,000** pairs across all
+prefixes. Both require prefix aggregation, accept positive finite counts only,
+and are recorded as effective values in the private run manifest, even when
+the defaults are used. Raising them consumes more memory in addition to the
+existing trackers. No allocation for retained prefix paths occurs without
+prefix opt-in. Admission follows input order; existing paths continue to be
+counted exactly after either cap is reached.
+As a rough memory guide, each pair holds the path's byte length plus tens of
+bytes of bookkeeping, so reaching the default cap can add hundreds of MB to
+existing tracking; increasing the cap increases this budget proportionally
+for a similar path-length distribution.
+
+Requests for unretained paths are counted in `uri_paths_beyond_prefix_cap` or
+the per-prefix `uri_paths_beyond_global_cap`. When both caps prevent admission,
+the per-prefix reason takes precedence, so each omitted request is counted
+once. Distinct counts are lower bounds if either omission count is nonzero.
+At per-prefix capacity, or after a global rejection for that prefix,
+`uri_paths_requested_once` is unavailable (its key is omitted, not zero),
+even though counters for retained paths continue to increase. A prefix without
+any path observations has zero distinct and once-requested paths.
+
+Global path-count omissions appear in private detail as
+`source_prefix_aggregation.requests_beyond_prefix_path_pair_cap`, including zero.
+These requests remain in prefix request totals: do not add this count to the
+three request-volume omission counts when reconciling the corpus total.
+`daily` text/JSON displays the same nonzero count returned directly by the
+streaming aggregation; it never rereads the private artifact. Concentration
+text continues to read its private detail for the same disclosure.
+The new path map itself is never serialized. Sanitized artifacts remain
+byte-for-byte unchanged even with prefix opt-in and cap omissions; default
+non-opt-in private artifacts and manifests are also unchanged.
+
+```sh
+shenron concentration --input ./logs --format apache --output ./private-volume \
+  --source-prefix-bits 24 --max-paths-per-source-prefix 5000 \
+  --max-source-prefix-path-pairs 2000000
+```
 
 No prefix, source IP, or path is added to sanitized artifacts. CLI prefix rows
 and byte detail require `--show-source-ips`, respect `--limit` (0 means all),
@@ -162,6 +220,8 @@ A resolved ASN is a registry attribute of the address range, not a statement
 about who sent the requests. Consumer ISP, hosting, CDN and cloud ranges all
 appear here; separating them is an operator judgement that depends on country
 and period, and Shenron does not make it.
+
+Distinct and once-requested path counts describe how a prefix moved through the site, not why. Search and social crawlers visit many paths once; ordinary visitors behind one carrier address revisit popular pages. Neither count, alone or together, identifies automation, scraping or an attack.
 
 ## Configurable bounded tracking
 

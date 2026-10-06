@@ -30,6 +30,234 @@ fn source_prefix_command(data_dir: &Path) -> Command {
 }
 
 #[test]
+fn source_prefix_path_counts_caps_manifest_and_privacy_are_reproducible() {
+    let directory = tempdir().unwrap();
+    let input = directory.path().join("combined.log");
+    let mut records = String::new();
+    for (ip, paths) in [
+        (
+            "192.0.2.1",
+            vec!["/private-a", "/private-b", "/private-a", "/private-c"],
+        ),
+        (
+            "198.51.100.1",
+            vec!["/private-x", "/private-y", "/private-x"],
+        ),
+    ] {
+        for (query, path) in paths.iter().enumerate() {
+            records.push_str(&format!("{ip} - - [01/Jan/2026:00:00:00 +0000] \"GET {path}?private-token={query} HTTP/1.1\" 200 10 \"-\" \"agent\"\n"));
+        }
+    }
+    fs::write(&input, records).unwrap();
+    for subcommand in ["concentration", "daily"] {
+        let mut previous = None;
+        let mut sanitized_without_prefixes = None;
+        for (name, caps) in [
+            ("disabled", false),
+            ("defaults", false),
+            ("capped", true),
+            ("repeat", true),
+        ] {
+            let output = directory.path().join(format!("{subcommand}-{name}"));
+            let mut command = source_prefix_command(&directory.path().join("absent"));
+            command
+                .args([subcommand, "--format", "apache"])
+                .arg("--input")
+                .arg(&input)
+                .arg("--output")
+                .arg(&output);
+            if name != "disabled" {
+                command.args(["--source-prefix-bits", "24"]);
+            }
+            if caps {
+                command.args([
+                    "--max-paths-per-source-prefix",
+                    "2",
+                    "--max-source-prefix-path-pairs",
+                    "3",
+                ]);
+            }
+            let stdout = command.assert().success().get_output().stdout.clone();
+            let private_bytes = fs::read(output.join("request-concentration.json")).unwrap();
+            let private: serde_json::Value = serde_json::from_slice(&private_bytes).unwrap();
+            let sanitized_bytes = fs::read(output.join("sanitized-research.json")).unwrap();
+            let sanitized: serde_json::Value = serde_json::from_slice(&sanitized_bytes).unwrap();
+            assert!(sanitized["request_concentration"]
+                .get("source_prefix_path_pairs_beyond_tracking_cap")
+                .is_none());
+            assert!(private["summary"]
+                .get("source_prefix_path_pairs_beyond_tracking_cap")
+                .is_none());
+            if name == "disabled" {
+                assert!(private.get("source_prefix_aggregation").is_none());
+                assert!(!String::from_utf8_lossy(&stdout).contains("global pair cap"));
+                sanitized_without_prefixes = Some(sanitized_bytes);
+                continue;
+            }
+            assert_eq!(
+                &sanitized_bytes,
+                sanitized_without_prefixes.as_ref().unwrap()
+            );
+            let manifest: serde_json::Value =
+                serde_json::from_slice(&fs::read(output.join("run-manifest.json")).unwrap())
+                    .unwrap();
+            let groups = private["source_prefixes"].as_array().unwrap();
+            let disclosure = &private["source_prefix_aggregation"];
+            assert_eq!(
+                disclosure["requests_beyond_prefix_path_pair_cap"],
+                if caps { 1 } else { 0 }
+            );
+            assert_eq!(
+                disclosure["requests_beyond_prefix_path_pair_cap"]
+                    .as_u64()
+                    .unwrap(),
+                groups
+                    .iter()
+                    .map(|group| group["uri_paths_beyond_global_cap"].as_u64().unwrap())
+                    .sum::<u64>()
+            );
+            assert_eq!(
+                groups
+                    .iter()
+                    .map(|group| group["requests"].as_u64().unwrap())
+                    .sum::<u64>()
+                    + disclosure["requests_without_source_ip"].as_u64().unwrap()
+                    + disclosure["requests_with_invalid_source_ip"]
+                        .as_u64()
+                        .unwrap()
+                    + disclosure["requests_beyond_source_tracking_cap"]
+                        .as_u64()
+                        .unwrap(),
+                private["summary"]["total_requests"].as_u64().unwrap()
+            );
+            assert_eq!(
+                groups[0]["uri_paths_beyond_prefix_cap"],
+                if caps { 1 } else { 0 }
+            );
+            assert_eq!(groups[0]["distinct_uri_paths"], if caps { 2 } else { 3 });
+            assert_eq!(
+                manifest["tracking_limits"]["max_paths_per_source_prefix"],
+                if caps { 2 } else { 5000 }
+            );
+            assert_eq!(
+                manifest["tracking_limits"]["max_source_prefix_path_pairs"],
+                if caps { 3 } else { 2_000_000 }
+            );
+            if caps {
+                assert!(groups[0].get("uri_paths_requested_once").is_none());
+                assert!(groups[1].get("uri_paths_requested_once").is_none());
+                assert_eq!(groups[1]["distinct_uri_paths"], 1);
+                assert_eq!(groups[1]["uri_paths_beyond_global_cap"], 1);
+                assert!(String::from_utf8_lossy(&stdout)
+                    .contains("Source-prefix path-pair cap: 1 requests omitted"));
+                if let Some((previous_private, previous_sanitized)) = &previous {
+                    assert_eq!(&private_bytes, previous_private);
+                    assert_eq!(&sanitized_bytes, previous_sanitized);
+                }
+                previous = Some((private_bytes, sanitized_bytes.clone()));
+            } else {
+                assert!(!String::from_utf8_lossy(&stdout).contains("global pair cap"));
+                assert_eq!(groups[0]["uri_paths_requested_once"], 2);
+                assert_eq!(groups[1]["uri_paths_requested_once"], 1);
+            }
+            for raw in ["192.0.2.", "198.51.100.", "/private-", "private-token"] {
+                assert!(!String::from_utf8_lossy(&sanitized_bytes).contains(raw));
+                assert!(!String::from_utf8_lossy(&stdout).contains(raw));
+            }
+        }
+    }
+}
+
+#[test]
+fn daily_prefix_path_omissions_json_matches_run_counts_and_is_opt_in_only() {
+    let directory = tempdir().unwrap();
+    let input = directory.path().join("combined.log");
+    fs::write(&input, ["/one", "/two"].iter().map(|path|
+        format!("192.0.2.1 - - [01/Jan/2026:00:00:00 +0000] \"GET {path} HTTP/1.1\" 200 10 \"-\" \"agent\"\n")
+    ).collect::<String>()).unwrap();
+    let mut baseline = None;
+    for (name, output_enabled, prefix_enabled, capped) in [
+        ("stdout-only", false, false, false),
+        ("disabled", true, false, false),
+        ("uncapped", true, true, false),
+        ("capped", true, true, true),
+    ] {
+        let output = directory.path().join(name);
+        let mut command = source_prefix_command(&directory.path().join("absent"));
+        command
+            .args(["daily", "--format", "apache", "--output-format", "json"])
+            .arg("--input")
+            .arg(&input);
+        if output_enabled {
+            command.arg("--output").arg(&output);
+        }
+        if prefix_enabled {
+            command.args(["--source-prefix-bits", "24"]);
+        }
+        if capped {
+            command.args(["--max-source-prefix-path-pairs", "1"]);
+        }
+        let stdout = command.assert().success().get_output().stdout.clone();
+        let summary: serde_json::Value = serde_json::from_slice(&stdout).unwrap();
+        if capped {
+            assert_eq!(summary["source_prefix_path_pairs_beyond_tracking_cap"], 1);
+        } else {
+            assert!(summary
+                .get("source_prefix_path_pairs_beyond_tracking_cap")
+                .is_none());
+        }
+        if output_enabled {
+            let sanitized = fs::read(output.join("sanitized-research.json")).unwrap();
+            if let Some(previous) = &baseline {
+                assert_eq!(&sanitized, previous);
+            } else {
+                baseline = Some(sanitized);
+            }
+        } else {
+            assert!(!output.exists());
+        }
+    }
+}
+
+#[test]
+fn source_prefix_path_limits_reject_zero_and_require_prefix_opt_in() {
+    let directory = tempdir().unwrap();
+    for subcommand in ["concentration", "daily"] {
+        for flag in [
+            "--max-paths-per-source-prefix",
+            "--max-source-prefix-path-pairs",
+        ] {
+            for (value, prefixes, error) in [
+                ("0", true, "positive"),
+                (
+                    "2",
+                    false,
+                    "require --source-prefix-bits or --source-prefix-bits-v6",
+                ),
+            ] {
+                let mut command = source_prefix_command(directory.path());
+                command
+                    .args([
+                        subcommand,
+                        "--input",
+                        "tests/fixtures/production/waf.jsonl",
+                        "--format",
+                        "aws-waf",
+                        flag,
+                        value,
+                    ])
+                    .arg("--output")
+                    .arg(directory.path().join("output"));
+                if prefixes {
+                    command.args(["--source-prefix-bits-v6", "48"]);
+                }
+                command.assert().failure().stderr(contains(error));
+            }
+        }
+    }
+}
+
+#[test]
 fn source_prefix_asns_use_only_local_opt_in_data_and_keep_sanitized_bytes_unchanged() {
     use sha2::{Digest, Sha256};
 
