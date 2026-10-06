@@ -8,6 +8,7 @@ use shenron::{
 
 fn main() {
     let disabled = std::env::args().any(|arg| arg == "--disabled");
+    let unique = std::env::args().any(|arg| arg == "--unique");
     let limits = ConcentrationLimits {
         // Keep unrelated path/source-pair tracking small to measure the opt-in
         // increment, not the memory of multiple full legacy detail tables.
@@ -37,8 +38,15 @@ fn main() {
         // Synthetic distinct /24s only: no network requests or real log input.
         event.source_ip = Some(std::net::Ipv4Addr::from((prefix << 8) | 1).to_string());
         let path_count = if prefix < 10 { 5_000 } else { 30 };
-        for path in paths.iter().take(path_count) {
-            event.uri_path = Some(path.clone());
+        for (index, path) in paths.iter().take(path_count).enumerate() {
+            // Generate unique names on demand, not in a second retained table.
+            let path = if unique {
+                format!("/unique/static/assets/p{prefix:06}/resource-r-{index:04}.js")
+            } else {
+                path.clone()
+            };
+            assert_eq!(path.len(), 48);
+            event.uri_path = Some(path);
             event.uri.clone_from(&event.uri_path);
             accumulator.observe(&event);
             requests += 1;
@@ -47,5 +55,8 @@ fn main() {
     // Keep all tracking live until the peak-RSS measurement. No private report
     // materialization or JSON I/O is included in this accumulator-only exercise.
     std::hint::black_box(&accumulator);
-    println!("prefix_opt_in={} prefixes=250000 requests={requests} expected_pairs_if_enabled={requests} shared_paths={} path_bytes={}", !disabled, paths.len(), paths[0].len());
+    let mode = if unique { "unique" } else { "shared" };
+    // Count generated names even in the disabled control, which retains none.
+    let path_names = if unique { requests } else { paths.len() as u64 };
+    println!("prefix_opt_in={} prefixes=250000 requests={requests} expected_pairs_if_enabled={requests} shared_paths={} path_bytes={} mode={mode} path_names={path_names}", !disabled, if unique { 0 } else { paths.len() }, paths[0].len());
 }

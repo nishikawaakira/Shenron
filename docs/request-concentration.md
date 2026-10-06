@@ -239,13 +239,21 @@ pairs and 5,000 names of 48 bytes. It uses release builds, no input file or
 network, and explicit 5,000/10,000,000 per-prefix/global caps. Legacy path and
 source/path-pair caps are both 1 to isolate this feature's increment; the
 measurement stops before private-report construction/serialization. It is a
-manual benchmark, not a timing test:
+manual benchmark, not a timing test. `--unique` keeps the same prefix/path
+counts and 48-byte path length, but generates 7,549,700 names without reuse
+between prefixes. Names are generated on demand rather than retained in a
+second benchmark-side table, and their byte length is asserted. `--disabled`
+works in either mode. The output identifies the mode and generated name count,
+including names that the disabled control does not retain:
 
 ```sh
 cargo build --release --example prefix_path_memory
 /usr/bin/time -l target/release/examples/prefix_path_memory --disabled
 /usr/bin/time -l target/release/examples/prefix_path_memory
+/usr/bin/time -l target/release/examples/prefix_path_memory --unique --disabled
+/usr/bin/time -l target/release/examples/prefix_path_memory --unique
 # On Linux use /usr/bin/time -v instead.
+# Run each condition three times separately and take the median peak RSS.
 ```
 
 On macOS arm64, maximum RSS fell from **1,243,004,928 bytes (1,185.4 MiB)**
@@ -258,6 +266,26 @@ Pair maps now hold integers/counts rather than duplicated path strings, while
 the shared table costs each distinct name's byte length plus map bookkeeping.
 Millions of mostly unique long paths, legacy trackers and output materialization
 can still require substantial memory; larger caps increase the bounded budget.
+
+For the non-sharing synthetic case, three runs per condition on **macOS 26.6.2
+arm64, Rust 1.97.1, release builds**, with the retained `BTreeMap` name table,
+gave these median peak RSS values:
+
+| Unique-path condition | Median peak RSS (bytes) | MiB |
+| --- | ---: | ---: |
+| Prefix tracking enabled | 1,477,214,208 | 1,408.8 |
+| `--disabled` control | 288,456,704 | 275.1 |
+
+Subtracting the disabled control and dividing by 7,549,700 retained pairs gives
+approximately **157.5 incremental bytes per pair**, including the shared-name
+table's cost when each name belongs to only one pair. Non-reused paths add each
+name's byte length plus table bookkeeping; extrapolating this 48-byte-path
+sample to the default 10,000,000 pairs and 10,000,000 names suggests roughly
+**1.6 GB of incremental memory**, or **1.9 GB including this control's baseline**
+(decimal GB). This is a sizing estimate, not a universal worst-case bound:
+longer names, allocator behavior, other tracking tables and report serialization
+can increase the peak. These measurements exclude report materialization and
+are reproducible synthetic observations, not measurements of operational logs.
 
 No prefix, source IP, or path is added to sanitized artifacts. CLI prefix rows
 and byte detail require `--show-source-ips`, respect `--limit` (0 means all),
