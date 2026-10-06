@@ -672,8 +672,10 @@ enum ProductionCommand {
         /// IPv6 prefix length for private focus-path address-block aggregation (default: 48).
         #[arg(long, value_parser = parse_ipv6_prefix_length)]
         ipv6_group_prefix: Option<u8>,
-        /// Local GeoLite2-ASN-compatible CSV or Shenron ASN range TSV used only
-        /// for private focus grouping. No network lookup is performed.
+        /// Local GeoLite2-ASN-compatible CSV or Shenron ASN range TSV for private
+        /// focus/prefix grouping. Prefix groups also use an existing default dataset.
+        /// The default TSV covers IPv4 only; use CSV with IPv6 networks for IPv6.
+        /// No network lookup is performed.
         #[arg(long)]
         asn_dataset: Option<PathBuf>,
         /// UTC bucket widths evaluated simultaneously for request-rate shape.
@@ -718,6 +720,10 @@ enum ProductionCommand {
         source_prefixes: SourcePrefixArgs,
         #[command(flatten)]
         tracking_limits: ConcentrationLimitArgs,
+        /// Local ASN dataset for explicitly enabled private source-prefix groups.
+        /// The default TSV covers IPv4 only; use CSV with IPv6 networks for IPv6.
+        #[arg(long, requires = "output")]
+        asn_dataset: Option<PathBuf>,
         #[arg(long)]
         input: PathBuf,
         #[arg(long, value_enum, default_value_t = InputFormat::Auto)]
@@ -1739,6 +1745,7 @@ fn main() -> Result<()> {
             ProductionCommand::Daily {
                 source_prefixes,
                 tracking_limits,
+                asn_dataset,
                 input,
                 format,
                 output,
@@ -1752,6 +1759,10 @@ fn main() -> Result<()> {
                 processed_index,
                 reprocess_all,
             } => {
+                if asn_dataset.is_some() && source_prefixes.resolve().is_none() {
+                    anyhow::bail!("--asn-dataset requires --source-prefix-bits or --source-prefix-bits-v6 for daily");
+                }
+                let asn_database = asn_dataset.as_deref().map(load_asn_database).transpose()?;
                 let rate_window_seconds = normalized_rate_windows(rate_window);
                 let telemetry_profile = format.telemetry_profile_for_input(&input)?;
                 let report = production_daily_concentration(
@@ -1761,7 +1772,7 @@ fn main() -> Result<()> {
                     HuntTimeRange { from, to },
                     None,
                     FocusPrefixLengths::default(),
-                    None,
+                    asn_database.as_ref(),
                     &rate_window_seconds,
                     false,
                     processed_index.as_deref(),
@@ -3231,7 +3242,16 @@ fn print_concentration(
         if show_source_ips {
             if let Some(groups) = &private.source_prefixes {
                 println!("\nPrivate observed source-prefix volumes:");
-                println!("  {}", shenron::concentration::SOURCE_PREFIX_NOTE);
+                println!(
+                    "  {}",
+                    terminal_safe(
+                        private
+                            .source_prefix_aggregation
+                            .as_ref()
+                            .map(|detail| detail.safety_note.as_str())
+                            .unwrap_or(shenron::concentration::SOURCE_PREFIX_NOTE)
+                    )
+                );
                 for group in groups.iter().take(display_limit(limit)) {
                     println!("  {}: requests {} / distinct source IPs {} / max requests per source IP {} / response bytes {} (byte values unavailable: {}; path observations unavailable: {})",
                         terminal_safe(&group.prefix), group.requests, group.distinct_source_ips,
@@ -3242,6 +3262,22 @@ fn print_concentration(
                         "    Response status classes: {}",
                         format_status_classes(&group.response_status_classes)
                     );
+                    if let Some(asns) = &group.asns {
+                        for asn in asns {
+                            println!(
+                                "    ASN {} ({}): requests {} / distinct source IPs {}",
+                                asn.asn,
+                                terminal_safe(&asn.organization),
+                                asn.requests,
+                                asn.distinct_source_ips
+                            );
+                        }
+                        println!(
+                            "    ASN unresolved sources / requests: {} / {}",
+                            group.unresolved_source_ips.unwrap_or(0),
+                            group.unresolved_requests.unwrap_or(0)
+                        );
+                    }
                     if show_paths {
                         println!(
                             "    Most-requested retained path: {}",

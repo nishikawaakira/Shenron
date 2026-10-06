@@ -493,6 +493,16 @@ pub struct PrivateSourceConcentration {
 
 pub const SOURCE_PREFIX_NOTE: &str = "Grouping observed peers by address prefix is an arithmetic aggregation, not a claim of shared operator, ownership, or coordination. Carrier-grade NAT and mobile ranges place unrelated visitors in one prefix; a high prefix total can be many ordinary visitors. The per-source maximum is reported alongside the total for that reason.";
 
+pub const SOURCE_PREFIX_ASN_NOTE: &str = "A resolved ASN is a registry attribute of the address range, not a statement about who sent the requests. Consumer ISP, hosting, CDN and cloud ranges all appear here; separating them is an operator judgement that depends on country and period, and Shenron does not make it.";
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SourcePrefixAsn {
+    pub asn: u32,
+    pub organization: String,
+    pub distinct_source_ips: usize,
+    pub requests: u64,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PrivateSourcePrefix {
     pub prefix: String,
@@ -505,6 +515,14 @@ pub struct PrivateSourcePrefix {
     pub most_requested_uri_path: Option<String>,
     pub path_observations_unavailable: u64,
     pub response_status_classes: StatusClassCounts,
+    /// Routing-level attributes of observed addresses, not evidence that one
+    /// operator controls the traffic. Absent without a local ASN resolver.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asns: Option<Vec<SourcePrefixAsn>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unresolved_source_ips: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unresolved_requests: Option<u64>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -1225,9 +1243,19 @@ impl RequestConcentration {
         &self,
         include_query_keys: bool,
     ) -> PrivateRequestConcentrationReport {
+        self.private_report_with_query_keys_and_source_asns(include_query_keys, None)
+    }
+
+    /// Enrich only opt-in corpus-wide prefix groups using an existing local
+    /// resolver. Per-source rows and sanitized summaries remain unchanged.
+    pub fn private_report_with_query_keys_and_source_asns(
+        &self,
+        include_query_keys: bool,
+        resolver: Option<&dyn AsnResolver>,
+    ) -> PrivateRequestConcentrationReport {
         let prefix_detail = self
             .source_prefix_lengths
-            .map(|prefixes| self.source_prefix_report(prefixes));
+            .map(|prefixes| self.source_prefix_report(prefixes, resolver));
         let (source_prefixes, source_prefix_aggregation) = match prefix_detail {
             Some((groups, disclosure)) => (Some(groups), Some(disclosure)),
             None => (None, None),
@@ -1283,6 +1311,7 @@ impl RequestConcentration {
     fn source_prefix_report(
         &self,
         prefixes: FocusPrefixLengths,
+        resolver: Option<&dyn AsnResolver>,
     ) -> (Vec<PrivateSourcePrefix>, SourcePrefixAggregation) {
         #[derive(Default)]
         struct PeerTotals<'a> {
@@ -1297,6 +1326,9 @@ impl RequestConcentration {
             totals: PeerTotals<'a>,
             sources: usize,
             maximum: u64,
+            asns: BTreeMap<u32, SourcePrefixAsn>,
+            unresolved_source_ips: usize,
+            unresolved_requests: u64,
         }
         let mut peers = BTreeMap::<IpAddr, PeerTotals<'_>>::new();
         let mut groups = BTreeMap::<String, Group<'_>>::new();
@@ -1309,6 +1341,10 @@ impl RequestConcentration {
             requests_with_invalid_source_ip: 0,
             requests_beyond_source_tracking_cap: self.source_ips_beyond_tracking_cap,
         };
+        if resolver.is_some() {
+            disclosure.safety_note.push(' ');
+            disclosure.safety_note.push_str(SOURCE_PREFIX_ASN_NOTE);
+        }
         for (source, item) in &self.source_ips {
             let Ok(address) = source.parse::<IpAddr>() else {
                 disclosure.requests_with_invalid_source_ip += item.requests;
@@ -1345,6 +1381,29 @@ impl RequestConcentration {
             group.sources += 1;
             group.maximum = group.maximum.max(peer.requests);
             group.totals.classes.merge(&peer.classes);
+            if let Some(resolver) = resolver {
+                // Each address has already been canonicalized and merged.
+                // Resolve observed addresses, never a prefix representative.
+                if let Some(resolved) = resolver.resolve(address) {
+                    let entry = group
+                        .asns
+                        .entry(resolved.asn)
+                        .or_insert_with(|| SourcePrefixAsn {
+                            asn: resolved.asn,
+                            organization: resolved.org.clone(),
+                            distinct_source_ips: 0,
+                            requests: 0,
+                        });
+                    if resolved.org < entry.organization {
+                        entry.organization = resolved.org;
+                    }
+                    entry.distinct_source_ips += 1;
+                    entry.requests += peer.requests;
+                } else {
+                    group.unresolved_source_ips += 1;
+                    group.unresolved_requests += peer.requests;
+                }
+            }
             for (path, count) in peer.paths {
                 *group.totals.paths.entry(path).or_default() += count;
             }
@@ -1374,6 +1433,18 @@ impl RequestConcentration {
                     most_requested_uri_path,
                     path_observations_unavailable,
                     response_status_classes: totals.classes,
+                    asns: resolver.map(|_| {
+                        let mut asns = group.asns.into_values().collect::<Vec<_>>();
+                        asns.sort_by(|left, right| {
+                            right
+                                .requests
+                                .cmp(&left.requests)
+                                .then_with(|| left.asn.cmp(&right.asn))
+                        });
+                        asns
+                    }),
+                    unresolved_source_ips: resolver.map(|_| group.unresolved_source_ips),
+                    unresolved_requests: resolver.map(|_| group.unresolved_requests),
                 }
             })
             .collect::<Vec<_>>();
@@ -2733,6 +2804,147 @@ mod tests {
         let before = serde_json::to_vec(&focus).unwrap();
         add_focus_asn_groups(&mut focus, &resolver);
         assert_eq!(serde_json::to_vec(&focus).unwrap(), before);
+    }
+
+    #[test]
+    fn source_prefix_asns_resolve_canonical_peers_and_disclose_unresolved_totals() {
+        let mut accumulator = RequestConcentration::new(true);
+        accumulator
+            .enable_source_prefixes(FocusPrefixLengths::default())
+            .unwrap();
+        for (ip, requests) in [
+            ("::ffff:192.0.2.1", 2),
+            ("192.0.2.1", 1),
+            ("192.0.2.2", 1),
+            ("192.0.2.3", 2),
+            ("192.0.2.4", 2),
+            ("192.0.2.5", 1),
+            ("::ffff:192.0.2.5", 1),
+            ("2001:DB8::1", 1),
+            ("2001:db8::1", 1),
+        ] {
+            for _ in 0..requests {
+                accumulator.observe(&event(Some("/private-prefix"), Some(ip), Some(0)));
+            }
+        }
+        let resolver = TestAsnResolver(
+            [
+                ("192.0.2.1", 64503, "Z Example"),
+                ("192.0.2.2", 64503, "A Example"),
+                ("192.0.2.3", 64502, "Second Example"),
+                ("192.0.2.4", 64501, "First Example"),
+                ("2001:db8::1", 64504, "IPv6 Example"),
+            ]
+            .into_iter()
+            .map(|(ip, asn, org)| {
+                (
+                    ip.parse().unwrap(),
+                    ResolvedAsn {
+                        asn,
+                        org: org.to_owned(),
+                    },
+                )
+            })
+            .collect(),
+        );
+        let plain = accumulator.private_report();
+        let enriched =
+            accumulator.private_report_with_query_keys_and_source_asns(false, Some(&resolver));
+        let groups = enriched.source_prefixes.as_ref().unwrap();
+        assert_eq!(groups.len(), 2);
+        let ipv4 = &groups[0];
+        assert_eq!(ipv4.prefix, "192.0.2.0/24");
+        let asns = ipv4.asns.as_ref().unwrap();
+        assert_eq!(
+            asns.iter()
+                .map(|item| (item.asn, item.requests, item.distinct_source_ips))
+                .collect::<Vec<_>>(),
+            [(64503, 4, 2), (64501, 2, 1), (64502, 2, 1)]
+        );
+        assert_eq!(asns[0].organization, "A Example");
+        assert_eq!(ipv4.unresolved_source_ips, Some(1));
+        assert_eq!(ipv4.unresolved_requests, Some(2));
+        assert_eq!(groups[1].asns.as_ref().unwrap()[0].distinct_source_ips, 1);
+        assert_eq!(groups[1].asns.as_ref().unwrap()[0].requests, 2);
+        for group in groups {
+            assert_eq!(
+                group
+                    .asns
+                    .as_ref()
+                    .unwrap()
+                    .iter()
+                    .map(|item| item.requests)
+                    .sum::<u64>()
+                    + group.unresolved_requests.unwrap(),
+                group.requests
+            );
+        }
+        assert_eq!(
+            serde_json::to_vec(&plain.source_ips).unwrap(),
+            serde_json::to_vec(&enriched.source_ips).unwrap()
+        );
+        assert_eq!(
+            serde_json::to_vec(&plain.summary).unwrap(),
+            serde_json::to_vec(&enriched.summary).unwrap()
+        );
+        assert_eq!(
+            serde_json::to_vec(&enriched).unwrap(),
+            serde_json::to_vec(
+                &accumulator.private_report_with_query_keys_and_source_asns(false, Some(&resolver))
+            )
+            .unwrap()
+        );
+        assert!(enriched
+            .source_prefix_aggregation
+            .unwrap()
+            .safety_note
+            .contains(SOURCE_PREFIX_ASN_NOTE));
+
+        let unresolved = accumulator.private_report_with_query_keys_and_source_asns(
+            false,
+            Some(&TestAsnResolver(BTreeMap::new())),
+        );
+        for group in unresolved.source_prefixes.unwrap() {
+            assert!(group.asns.unwrap().is_empty());
+            assert_eq!(group.unresolved_requests, Some(group.requests));
+            assert_eq!(group.unresolved_source_ips, Some(group.distinct_source_ips));
+        }
+    }
+
+    #[test]
+    fn source_prefix_asns_are_absent_without_a_resolver_or_prefix_opt_in() {
+        struct UnexpectedResolver;
+        impl AsnResolver for UnexpectedResolver {
+            fn resolve(&self, _ip: IpAddr) -> Option<ResolvedAsn> {
+                panic!("a default report must not resolve ASNs");
+            }
+        }
+        let mut accumulator = RequestConcentration::new(true);
+        accumulator.observe(&event(Some("/private-prefix"), Some("192.0.2.1"), Some(0)));
+        assert_eq!(
+            serde_json::to_vec(&accumulator.private_report()).unwrap(),
+            serde_json::to_vec(
+                &accumulator.private_report_with_query_keys_and_source_asns(
+                    false,
+                    Some(&UnexpectedResolver)
+                )
+            )
+            .unwrap()
+        );
+        let mut accumulator = RequestConcentration::new(true);
+        accumulator
+            .enable_source_prefixes(FocusPrefixLengths::default())
+            .unwrap();
+        accumulator.observe(&event(Some("/private-prefix"), Some("192.0.2.1"), Some(0)));
+        let report = accumulator.private_report();
+        let group = &report.source_prefixes.as_ref().unwrap()[0];
+        let encoded = serde_json::to_string(group).unwrap();
+        for key in ["asns", "unresolved_source_ips", "unresolved_requests"] {
+            assert!(!encoded.contains(key));
+        }
+        // Older prefix artifacts round-trip without introducing optional keys.
+        let decoded: PrivateSourcePrefix = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(serde_json::to_string(&decoded).unwrap(), encoded);
     }
 
     #[test]

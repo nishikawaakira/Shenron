@@ -20,6 +20,7 @@ default and COUNT-only; see the README for the full invariants.
 
 ### Added
 
+- Opt-in source-prefix volumes can include local ASN memberships, per-ASN counts and unresolved counts using an explicit or existing default dataset; the private run manifest records the used ASN dataset and its provenance for prefix/focus enrichment, with no network lookup, operator classification or sanitized ASN detail added.
 - Opt-in concentration/daily `--source-prefix-bits` and `--source-prefix-bits-v6` add private prefix volumes, per-source maxima and response-byte totals with missing/capped-observation disclosures; defaults and sanitized artifacts are unchanged.
 - Bundled Sigma rules now include AI developer tooling configuration requests and expanded secret/configuration paths; public Firebase initialization, AI-crawler convention files and standalone `/mcp` remain excluded. Matches do not establish an attack, compromise or a vulnerable product.
 - `context` records now include capability-gated host, user agent, country,

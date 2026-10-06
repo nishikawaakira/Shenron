@@ -78,12 +78,42 @@ unspecified family uses the same defaults as existing peer grouping: IPv4 /24
 and IPv6 /48. Without either flag, no new fields are serialized and existing
 artifacts are unchanged. `daily` requires `--output` for this private detail.
 This corpus-wide aggregation is independent of a path/source focus and does
-not change observation-store recurrence records or perform ASN lookups.
+not change observation-store recurrence records. ASN enrichment, when enabled,
+uses only an existing local dataset; it never performs a network lookup.
 
 Prefix aggregation treats IPv4-mapped IPv6 addresses as IPv4 and combines
 different spellings of the same address into one source before calculating
 distinct counts and per-source maxima. Per-source rows retain their raw IP
 spelling; canonicalization does not change streaming admission or tracking caps.
+
+With either prefix flag, `concentration` and `daily` use `--asn-dataset <PATH>`
+when supplied, otherwise the existing default `asn-ranges.tsv` in the Shenron
+data directory. A missing default dataset is optional: `asns`,
+`unresolved_source_ips`, and `unresolved_requests` are omitted, not serialized
+as null. An existing default dataset is treated like an explicit dataset:
+unreadable or malformed data fails the run; only an absent default dataset
+allows continuation without ASN fields. Without prefix flags, default ASN data
+is not opened and artifacts are unchanged; existing explicit focus ASN
+enrichment is independent.
+The default `asn-ranges.tsv` produced by `shenron reputation update` contains
+only IPv4 ranges, so IPv6 peers are always counted as unresolved with that
+dataset, which does not mean their ASN is unknown. To resolve IPv6 too, supply
+a GeoLite2-compatible CSV containing IPv6 networks with `--asn-dataset`.
+The private run manifest records the dataset path, SHA-256, record count,
+explicit/default origin and actual uses (`focus`, then `source_prefixes`) when
+ASN enrichment is used. Updating that dataset can change results for the same
+input corpus.
+
+Each prefix's `asns` array describes its observed canonical addresses, not a
+lookup of a representative address. A split prefix can contain multiple ASNs,
+ordered by requests descending and then ASN ascending. Entries contain the
+ASN, registered organization, distinct source count and requests. Conflicting
+organization spellings for one ASN select the lexically smallest spelling.
+Unresolved addresses and requests are counted without inference; ASN request
+totals plus `unresolved_requests` equal the prefix's requests. With a dataset
+but no resolutions, `asns` is empty and all retained addresses are unresolved.
+These fields appear only in private prefix detail, never in `source_ips[]` or
+sanitized artifacts. CLI ASN detail requires `--show-source-ips`.
 
 The private `request-concentration.json` gains `source_prefixes`, ordered by
 requests descending and then prefix spelling ascending. Each group includes
@@ -127,6 +157,11 @@ mobile ranges place unrelated visitors in one prefix; a high prefix total can
 be many ordinary visitors. The per-source maximum is reported alongside the
 total for that reason. Request-volume distribution is not a determination of
 a denial-of-service attempt, attack, abuse, compromise, or attacker identity.
+
+A resolved ASN is a registry attribute of the address range, not a statement
+about who sent the requests. Consumer ISP, hosting, CDN and cloud ranges all
+appear here; separating them is an operator judgement that depends on country
+and period, and Shenron does not make it.
 
 ## Configurable bounded tracking
 

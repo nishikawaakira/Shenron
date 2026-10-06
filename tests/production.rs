@@ -21,6 +21,287 @@ use walkdir::WalkDir;
 const GITHUB_TEMPLATE_SEARCH_PREFIX: &str =
     "https://github.com/search?q=repo:projectdiscovery/nuclei-templates";
 
+fn source_prefix_command(data_dir: &Path) -> Command {
+    let mut command = Command::cargo_bin("shenron").unwrap();
+    command
+        .env("SHENRON_DATA_DIR", data_dir)
+        .env_remove("XDG_DATA_HOME");
+    command
+}
+
+#[test]
+fn source_prefix_asns_use_only_local_opt_in_data_and_keep_sanitized_bytes_unchanged() {
+    use sha2::{Digest, Sha256};
+
+    let directory = tempdir().unwrap();
+    let input = directory.path().join("combined.log");
+    fs::write(&input, ["::ffff:192.0.2.1", "192.0.2.1", "192.0.2.2", "192.0.2.3"]
+        .iter().map(|ip| format!("{ip} - - [01/Jan/2026:00:00:00 +0000] \"GET /private-prefix HTTP/1.1\" 200 10 \"-\" \"agent\"\n"))
+        .collect::<String>()).unwrap();
+    let absent_data = directory.path().join("absent-data");
+    let default_data = directory.path().join("data");
+    fs::create_dir(&default_data).unwrap();
+    fs::write(default_data.join("asn-ranges.tsv"),
+        "192.0.2.1\t192.0.2.1\t64501\tPrivate Registry One\n192.0.2.2\t192.0.2.2\t64502\tPrivate Registry Two\n").unwrap();
+    let explicit = directory.path().join("explicit.tsv");
+    fs::write(
+        &explicit,
+        "192.0.2.0\t192.0.2.255\t64503\tExplicit Registry\n",
+    )
+    .unwrap();
+    for subcommand in ["concentration", "daily"] {
+        let mut sanitized_before = None;
+        let mut disabled_before = None;
+        let mut enriched_before = None;
+        let mut default_provenance = None;
+        for (name, data, prefixes, override_path) in [
+            ("disabled", &absent_data, false, None),
+            ("disabled-with-data", &default_data, false, None),
+            ("missing", &absent_data, true, None),
+            ("default", &default_data, true, None),
+            ("repeat", &default_data, true, None),
+            ("explicit", &default_data, true, Some(&explicit)),
+        ] {
+            let output = directory.path().join(format!("{subcommand}-{name}"));
+            let mut command = source_prefix_command(data);
+            command
+                .args([subcommand, "--format", "apache"])
+                .arg("--input")
+                .arg(&input)
+                .arg("--output")
+                .arg(&output);
+            if prefixes {
+                command.args(["--source-prefix-bits", "24"]);
+            }
+            if let Some(path) = override_path {
+                command.arg("--asn-dataset").arg(path);
+            }
+            let stdout = command.assert().success().get_output().stdout.clone();
+            let stdout = String::from_utf8(stdout).unwrap();
+            assert!(!stdout.contains("Registry"));
+            assert!(!stdout.contains("64501"));
+            let manifest: serde_json::Value =
+                serde_json::from_slice(&fs::read(output.join("run-manifest.json")).unwrap())
+                    .unwrap();
+            if matches!(name, "disabled" | "disabled-with-data" | "missing") {
+                assert!(manifest.get("asn_dataset").is_none());
+            } else {
+                let (path, records, origin) = if name == "explicit" {
+                    (explicit.clone(), 1, "explicit")
+                } else {
+                    (default_data.join("asn-ranges.tsv"), 2, "default")
+                };
+                assert_eq!(
+                    manifest["asn_dataset"],
+                    serde_json::json!({
+                        "path": path.to_str().unwrap(),
+                        "sha256": format!("{:x}", Sha256::digest(fs::read(&path).unwrap())),
+                        "records": records,
+                        "origin": origin,
+                        "used_for": ["source_prefixes"]
+                    })
+                );
+                if name == "default" {
+                    default_provenance = Some(manifest["asn_dataset"].clone());
+                } else if name == "repeat" {
+                    assert_eq!(Some(&manifest["asn_dataset"]), default_provenance.as_ref());
+                }
+            }
+            let sanitized = fs::read(output.join("sanitized-research.json")).unwrap();
+            let sanitized_text = String::from_utf8(sanitized.clone()).unwrap();
+            for private in [
+                "Registry",
+                "64501",
+                "64502",
+                "64503",
+                "192.0.2.",
+                "/private-prefix",
+                "\"asns\"",
+                "\"asn_dataset\"",
+                "asn-ranges.tsv",
+                "explicit.tsv",
+            ] {
+                assert!(!sanitized_text.contains(private));
+            }
+            if let Some(previous) = &sanitized_before {
+                assert_eq!(&sanitized, previous);
+            } else {
+                sanitized_before = Some(sanitized);
+            }
+            let bytes = fs::read(output.join("request-concentration.json")).unwrap();
+            let private: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert!(private["source_ips"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|source| source.get("asns").is_none()));
+            if !prefixes {
+                assert!(private.get("source_prefixes").is_none());
+                if let Some(previous) = &disabled_before {
+                    assert_eq!(&bytes, previous);
+                } else {
+                    disabled_before = Some(bytes);
+                }
+                continue;
+            }
+            let group = &private["source_prefixes"][0];
+            if name == "missing" {
+                assert!(group.get("asns").is_none());
+                assert!(group.get("unresolved_requests").is_none());
+                continue;
+            }
+            if name == "explicit" {
+                assert_eq!(group["asns"].as_array().unwrap().len(), 1);
+                assert_eq!(group["asns"][0]["asn"], 64503);
+                assert_eq!(group["asns"][0]["requests"], 4);
+                assert_eq!(group["unresolved_requests"], 0);
+            } else {
+                assert_eq!(group["asns"].as_array().unwrap().len(), 2);
+                assert_eq!(group["asns"][0]["asn"], 64501);
+                assert_eq!(group["asns"][0]["distinct_source_ips"], 1);
+                assert_eq!(group["asns"][0]["requests"], 2);
+                assert_eq!(group["asns"][1]["asn"], 64502);
+                assert_eq!(group["asns"][1]["requests"], 1);
+                assert_eq!(group["unresolved_source_ips"], 1);
+                assert_eq!(group["unresolved_requests"], 1);
+                if let Some(previous) = &enriched_before {
+                    assert_eq!(&bytes, previous);
+                } else {
+                    enriched_before = Some(bytes.clone());
+                }
+            }
+            assert_eq!(
+                group["asns"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|asn| asn["requests"].as_u64().unwrap())
+                    .sum::<u64>()
+                    + group["unresolved_requests"].as_u64().unwrap(),
+                group["requests"].as_u64().unwrap()
+            );
+        }
+    }
+    source_prefix_command(&default_data)
+        .args([
+            "concentration",
+            "--format",
+            "apache",
+            "--source-prefix-bits",
+            "24",
+            "--show-source-ips",
+        ])
+        .arg("--input")
+        .arg(&input)
+        .arg("--output")
+        .arg(directory.path().join("shown"))
+        .assert()
+        .success()
+        .stdout(
+            contains("ASN 64501 (Private Registry One)")
+                .and(contains("ASN unresolved sources / requests: 1 / 1"))
+                .and(contains("not a statement about who sent the requests")),
+        );
+}
+
+#[test]
+fn source_prefix_asns_reject_a_malformed_existing_default_dataset() {
+    let directory = tempdir().unwrap();
+    let dataset = directory.path().join("asn-ranges.tsv");
+    fs::write(&dataset, "not a valid ASN range\n").unwrap();
+    for subcommand in ["concentration", "daily"] {
+        source_prefix_command(directory.path())
+            .args([
+                subcommand,
+                "--input",
+                "tests/fixtures/production/waf.jsonl",
+                "--format",
+                "aws-waf",
+                "--source-prefix-bits",
+                "24",
+            ])
+            .arg("--output")
+            .arg(directory.path().join(subcommand))
+            .assert()
+            .failure()
+            .stderr(
+                contains(dataset.to_str().unwrap())
+                    .and(contains("invalid ASN range"))
+                    .and(contains("line 1")),
+            );
+    }
+}
+
+#[test]
+fn concentration_asn_manifest_records_only_actual_focus_and_prefix_uses() {
+    use sha2::{Digest, Sha256};
+
+    let directory = tempdir().unwrap();
+    let data_dir = directory.path().join("data");
+    fs::create_dir(&data_dir).unwrap();
+    let dataset = data_dir.join("asn-ranges.tsv");
+    fs::write(
+        &dataset,
+        "198.51.100.0\t198.51.100.255\t64501\tTest Registry\n",
+    )
+    .unwrap();
+    let digest = format!("{:x}", Sha256::digest(fs::read(&dataset).unwrap()));
+    for (name, focus, prefixes, explicit, used_for) in [
+        ("unused", false, false, true, vec![]),
+        ("focus", true, false, true, vec!["focus"]),
+        ("both", true, true, true, vec!["focus", "source_prefixes"]),
+        ("implicit", true, true, false, vec!["source_prefixes"]),
+    ] {
+        let output = directory.path().join(name);
+        let mut command = source_prefix_command(&data_dir);
+        command
+            .args([
+                "concentration",
+                "--input",
+                "tests/fixtures/production/waf.jsonl",
+                "--format",
+                "aws-waf",
+            ])
+            .arg("--output")
+            .arg(&output);
+        if focus {
+            command.args(["--path", "/vulnerable/execute"]);
+        }
+        if prefixes {
+            command.args(["--source-prefix-bits", "24"]);
+        }
+        if explicit {
+            command.arg("--asn-dataset").arg(&dataset);
+        }
+        command.assert().success();
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(output.join("run-manifest.json")).unwrap()).unwrap();
+        if used_for.is_empty() {
+            assert!(manifest.get("asn_dataset").is_none());
+        } else {
+            assert_eq!(
+                manifest["asn_dataset"],
+                serde_json::json!({
+                    "path": dataset.to_str().unwrap(),
+                    "sha256": digest,
+                    "records": 1,
+                    "origin": if explicit { "explicit" } else { "default" },
+                    "used_for": used_for
+                })
+            );
+        }
+        let sanitized = fs::read_to_string(output.join("sanitized-research.json")).unwrap();
+        for private in [
+            "asn_dataset",
+            "Test Registry",
+            dataset.to_str().unwrap(),
+            digest.as_str(),
+        ] {
+            assert!(!sanitized.contains(private));
+        }
+    }
+}
+
 #[test]
 fn corpus_source_prefixes_are_private_opt_in_bounded_and_byte_reproducible() {
     let directory = tempdir().unwrap();
@@ -50,8 +331,7 @@ fn corpus_source_prefixes_are_private_opt_in_bounded_and_byte_reproducible() {
             ),
         ] {
             let output = directory.path().join(format!("{subcommand}-{name}"));
-            let stdout = Command::cargo_bin("shenron")
-                .unwrap()
+            let stdout = source_prefix_command(&directory.path().join("empty-data"))
                 .args([
                     subcommand,
                     "--input",
@@ -96,6 +376,12 @@ fn corpus_source_prefixes_are_private_opt_in_bounded_and_byte_reproducible() {
                 continue;
             }
             let groups = private["source_prefixes"].as_array().unwrap();
+            for group in groups {
+                for key in ["asns", "unresolved_source_ips", "unresolved_requests"] {
+                    assert!(group.get(key).is_none());
+                }
+            }
+            assert!(manifest.get("asn_dataset").is_none());
             assert!(private["source_prefix_aggregation"]["safety_note"]
                 .as_str()
                 .unwrap()
@@ -140,8 +426,7 @@ fn corpus_source_prefixes_are_private_opt_in_bounded_and_byte_reproducible() {
         }
     }
     let output = directory.path().join("shown");
-    Command::cargo_bin("shenron")
-        .unwrap()
+    source_prefix_command(&directory.path().join("empty-data"))
         .args([
             "concentration",
             "--input",
@@ -167,12 +452,12 @@ fn corpus_source_prefixes_are_private_opt_in_bounded_and_byte_reproducible() {
 
 #[test]
 fn source_prefix_lengths_validate_family_bounds_and_require_a_private_output() {
+    let directory = tempdir().unwrap();
     for (flag, value) in [
         ("--source-prefix-bits", "33"),
         ("--source-prefix-bits-v6", "129"),
     ] {
-        Command::cargo_bin("shenron")
-            .unwrap()
+        source_prefix_command(&directory.path().join("empty-data"))
             .args([
                 "daily",
                 "--input",
@@ -186,8 +471,7 @@ fn source_prefix_lengths_validate_family_bounds_and_require_a_private_output() {
             .failure()
             .stderr(contains("prefix"));
     }
-    Command::cargo_bin("shenron")
-        .unwrap()
+    source_prefix_command(&directory.path().join("empty-data"))
         .args([
             "daily",
             "--input",

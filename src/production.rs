@@ -40,7 +40,7 @@ use crate::{
         ValidatedNucleiDetection,
     },
     processed_index::prepare_processed_files,
-    reputation::AsnDatabase,
+    reputation::{load_asn_database, AsnDatabase},
     waf::{maybe_gzip_reader, WafLines},
 };
 
@@ -1802,6 +1802,16 @@ fn concentration_run(
     if source_prefix_lengths.is_some() && output.is_none() {
         anyhow::bail!("source prefix aggregation requires --output for its private artifact");
     }
+    // Default ASN data enriches only explicitly enabled corpus prefix groups.
+    // Do not change existing focus enrichment or open datasets for default runs.
+    let default_prefix_asn = if source_prefix_lengths.is_some() && asn_database.is_none() {
+        let path = crate::paths::default_asn_dataset();
+        path.exists()
+            .then(|| load_asn_database(&path))
+            .transpose()?
+    } else {
+        None
+    };
     time_range.validate()?;
     if let Some(output) = output {
         ensure_separate_output(input, output)?;
@@ -1882,14 +1892,42 @@ fn concentration_run(
     }
     report.request_concentration = accumulator.summary();
     if let Some(output) = output {
-        let mut private_report =
-            accumulator.private_report_with_query_keys(include_private_query_keys);
+        let prefix_asn = source_prefix_lengths.and(asn_database.or(default_prefix_asn.as_ref()));
+        let mut asn_used_for = Vec::new();
+        let mut private_report = accumulator.private_report_with_query_keys_and_source_asns(
+            include_private_query_keys,
+            prefix_asn.map(|database| database as &dyn crate::triage::AsnResolver),
+        );
         if let Some(focus) = private_report.focus.as_mut() {
             add_focus_prefix_groups(focus, focus_prefix_lengths);
             if let Some(asn_database) = asn_database {
                 add_focus_asn_groups(focus, asn_database);
+                asn_used_for.push("focus".to_owned());
             }
         }
+        if prefix_asn.is_some() {
+            asn_used_for.push("source_prefixes".to_owned());
+        }
+        // Record only enrichment actually passed to a report, in fixed usage order.
+        // A supplied database is explicit; only this function loads the default.
+        let asn_provenance = asn_database
+            .or(default_prefix_asn.as_ref())
+            .filter(|_| !asn_used_for.is_empty())
+            .map(|database| {
+                let provenance = database.provenance();
+                ConcentrationAsnProvenance {
+                    path: provenance.path.clone(),
+                    sha256: provenance.sha256.clone(),
+                    records: provenance.records,
+                    origin: if asn_database.is_some() {
+                        "explicit"
+                    } else {
+                        "default"
+                    }
+                    .to_owned(),
+                    used_for: asn_used_for,
+                }
+            });
         write_private_concentration(output, &private_report)?;
         let sanitized_path = output.join("sanitized-research.json");
         serde_json::to_writer_pretty(
@@ -1905,6 +1943,7 @@ fn concentration_run(
             corpus_label,
             tracking_limits,
             source_prefix_lengths,
+            asn_provenance,
         )?;
     }
     plan.commit()?;
@@ -1933,6 +1972,19 @@ struct ConcentrationRunManifest {
     tracking_limits: Option<ConcentrationTrackingLimits>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     source_prefix_lengths: Option<FocusPrefixLengths>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    asn_dataset: Option<ConcentrationAsnProvenance>,
+}
+
+/// Manifest-only snapshot: keep serialization separate from the public
+/// enrichment database API and reuse its already computed provenance.
+#[derive(Deserialize, Serialize)]
+struct ConcentrationAsnProvenance {
+    path: String,
+    sha256: String,
+    records: usize,
+    origin: String,
+    used_for: Vec<String>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -1941,6 +1993,7 @@ struct ConcentrationManifestParameters {
     filter_to: Option<String>,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn write_concentration_run_manifest(
     output: &Path,
     telemetry_profile: TelemetryProfile,
@@ -1949,6 +2002,7 @@ fn write_concentration_run_manifest(
     corpus_label: Option<String>,
     tracking_limits: Option<ConcentrationTrackingLimits>,
     source_prefix_lengths: Option<FocusPrefixLengths>,
+    asn_dataset: Option<ConcentrationAsnProvenance>,
 ) -> anyhow::Result<()> {
     corpus.sort_by(|left, right| left.path.cmp(&right.path));
     let manifest = ConcentrationRunManifest {
@@ -1966,6 +2020,7 @@ fn write_concentration_run_manifest(
         corpus_label,
         tracking_limits,
         source_prefix_lengths,
+        asn_dataset,
     };
     let path = output.join("run-manifest.json");
     serde_json::to_writer_pretty(
@@ -3192,7 +3247,9 @@ mod corpus_provenance_tests {
         assert!(manifest.corpus.is_empty());
         assert!(manifest.corpus_label.is_none());
         assert!(manifest.tracking_limits.is_none());
+        assert!(manifest.asn_dataset.is_none());
         let mut old = serde_json::to_value(&manifest).unwrap();
+        assert!(old.get("asn_dataset").is_none());
         old["tracking_limits"] = serde_json::json!({
             "max_paths": 12, "max_source_ips": 13, "max_source_path_pairs": 14
         });

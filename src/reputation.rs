@@ -5,7 +5,7 @@
 //! compromise, vulnerable product, or attacker attribution.
 
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     fs::File,
     io::{BufRead, BufReader, Read},
     net::{IpAddr, Ipv4Addr},
@@ -42,8 +42,30 @@ pub struct AsnDatabase {
 }
 
 enum AsnEntries {
-    Networks(Vec<(IpNet, AsnInfo)>),
+    Networks(AsnNetworkIndex),
     Ranges(Vec<AsnRange>),
+}
+
+/// Only populated prefix lengths, longest first. Hash iteration order never
+/// determines a lookup result; later CSV rows replace identical network keys.
+struct AsnNetworkIndex {
+    ipv4: Vec<(u8, HashMap<u32, AsnInfo>)>,
+    ipv6: Vec<(u8, HashMap<u128, AsnInfo>)>,
+}
+
+impl AsnNetworkIndex {
+    fn lookup(&self, ip: IpAddr) -> Option<&AsnInfo> {
+        match ip {
+            IpAddr::V4(ip) => self.ipv4.iter().find_map(|(bits, networks)| {
+                let mask = u32::MAX.checked_shl(32 - u32::from(*bits)).unwrap_or(0);
+                networks.get(&(u32::from(ip) & mask))
+            }),
+            IpAddr::V6(ip) => self.ipv6.iter().find_map(|(bits, networks)| {
+                let mask = u128::MAX.checked_shl(128 - u32::from(*bits)).unwrap_or(0);
+                networks.get(&(u128::from(ip) & mask))
+            }),
+        }
+    }
 }
 
 struct AsnRange {
@@ -56,11 +78,7 @@ impl AsnDatabase {
     /// Return the most-specific ASN record that contains `ip`.
     pub fn lookup(&self, ip: IpAddr) -> Option<&AsnInfo> {
         match &self.entries {
-            AsnEntries::Networks(entries) => entries
-                .iter()
-                .filter(|(network, _)| network.contains(&ip))
-                .max_by_key(|(network, _)| network.prefix_len())
-                .map(|(_, asn)| asn),
+            AsnEntries::Networks(entries) => entries.lookup(ip),
             AsnEntries::Ranges(entries) => {
                 let IpAddr::V4(ip) = ip else {
                     return None;
@@ -112,7 +130,9 @@ pub fn load_asn_database(path: &Path) -> Result<AsnDatabase> {
         path,
     )?;
 
-    let mut entries = Vec::new();
+    let mut ipv4 = BTreeMap::<u8, HashMap<u32, AsnInfo>>::new();
+    let mut ipv6 = BTreeMap::<u8, HashMap<u128, AsnInfo>>::new();
+    let mut records = 0;
     for (row, record) in reader.records().enumerate() {
         let record = record.with_context(|| {
             format!("reading ASN dataset {} at row {}", path.display(), row + 2)
@@ -142,11 +162,28 @@ pub fn load_asn_database(path: &Path) -> Result<AsnDatabase> {
                 )
             })?;
         let org = record.get(org_index).unwrap_or_default().trim().to_owned();
-        entries.push((network, AsnInfo { asn, org }));
+        // Truncation preserves contains() semantics for host-bit spellings.
+        // Keep families separate, including IPv4-mapped IPv6 networks.
+        match network.trunc() {
+            IpNet::V4(network) => {
+                ipv4.entry(network.prefix_len())
+                    .or_default()
+                    .insert(u32::from(network.network()), AsnInfo { asn, org });
+            }
+            IpNet::V6(network) => {
+                ipv6.entry(network.prefix_len())
+                    .or_default()
+                    .insert(u128::from(network.network()), AsnInfo { asn, org });
+            }
+        }
+        records += 1;
     }
-    let provenance = provenance(path, entries.len())?;
+    let provenance = provenance(path, records)?;
     Ok(AsnDatabase {
-        entries: AsnEntries::Networks(entries),
+        entries: AsnEntries::Networks(AsnNetworkIndex {
+            ipv4: ipv4.into_iter().rev().collect(),
+            ipv6: ipv6.into_iter().rev().collect(),
+        }),
         provenance,
     })
 }
@@ -528,9 +565,15 @@ fn sha256_file(path: &Path) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, net::IpAddr, path::Path};
+    use std::{
+        collections::BTreeSet,
+        fs,
+        net::{IpAddr, Ipv4Addr, Ipv6Addr},
+        path::Path,
+    };
 
-    use super::{load_asn_database, load_reputation_database};
+    use super::{load_asn_database, load_reputation_database, AsnEntries, AsnInfo};
+    use ipnet::IpNet;
     use tempfile::tempdir;
 
     const ASN_FIXTURE: &str = "tests/fixtures/reputation/asn.csv";
@@ -542,6 +585,190 @@ mod tests {
         let ip = "203.0.113.7".parse::<IpAddr>().unwrap();
         assert_eq!(database.lookup(ip).unwrap().asn, 64_501);
         assert_eq!(database.lookup(ip).unwrap().org, "EXAMPLE-NARROW");
+    }
+
+    #[test]
+    fn indexed_asn_networks_match_linear_lookup_at_all_prefix_boundaries() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("asn.csv");
+        let mut rows = [
+            ("10.0.0.0/8", 64500),
+            ("10.42.0.0/16", 64501),
+            ("10.42.3.0/24", 64502),
+            ("10.42.3.7/32", 64503),
+            ("10.42.3.0/24", 64504),
+            ("10.42.3.5/24", 64505),
+            ("192.0.2.5/24", 64506),
+            ("::ffff:0:0/96", 64507),
+            ("172.16.0.0/16", 64508),
+            ("172.16.0.0/16", 64509),
+        ]
+        .into_iter()
+        .map(|(network, asn)| {
+            (
+                network.parse::<IpNet>().unwrap(),
+                AsnInfo {
+                    asn,
+                    org: format!("Organization {asn}"),
+                },
+            )
+        })
+        .collect::<Vec<_>>();
+        // Exercise every supported mask width, including /0 and host routes.
+        for bits in 0..=32 {
+            rows.push((
+                format!("198.51.100.123/{bits}").parse().unwrap(),
+                AsnInfo {
+                    asn: 64600 + bits,
+                    org: format!("IPv4 {bits}"),
+                },
+            ));
+        }
+        for bits in 0..=128 {
+            rows.push((
+                format!("2001:db8:abcd::1234/{bits}").parse().unwrap(),
+                AsnInfo {
+                    asn: 64700 + bits,
+                    org: format!("IPv6 {bits}"),
+                },
+            ));
+        }
+        let mut csv =
+            String::from("network,autonomous_system_number,autonomous_system_organization\n");
+        for (network, info) in &rows {
+            csv.push_str(&format!("{network},{},{}\n", info.asn, info.org));
+        }
+        fs::write(&path, csv).unwrap();
+        let database = load_asn_database(&path).unwrap();
+        assert_eq!(database.provenance().records, rows.len());
+        let AsnEntries::Networks(index) = &database.entries else {
+            panic!("expected CSV index")
+        };
+        assert_eq!(index.ipv4.len(), 33);
+        assert_eq!(index.ipv6.len(), 129);
+        assert!(index.ipv4.windows(2).all(|pair| pair[0].0 > pair[1].0));
+        assert!(index.ipv6.windows(2).all(|pair| pair[0].0 > pair[1].0));
+        let mut addresses = BTreeSet::new();
+        for (network, _) in &rows {
+            match network {
+                IpNet::V4(network) => {
+                    let first = u32::from(network.network());
+                    let last = first
+                        | u32::MAX
+                            .checked_shr(u32::from(network.prefix_len()))
+                            .unwrap_or(0);
+                    for value in [
+                        Some(first),
+                        Some(last),
+                        first.checked_sub(1),
+                        last.checked_add(1),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    {
+                        addresses.insert(IpAddr::V4(Ipv4Addr::from(value)));
+                    }
+                }
+                IpNet::V6(network) => {
+                    let first = u128::from(network.network());
+                    let last = first
+                        | u128::MAX
+                            .checked_shr(u32::from(network.prefix_len()))
+                            .unwrap_or(0);
+                    for value in [
+                        Some(first),
+                        Some(last),
+                        first.checked_sub(1),
+                        last.checked_add(1),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    {
+                        addresses.insert(IpAddr::V6(Ipv6Addr::from(value)));
+                    }
+                }
+            }
+        }
+        for octet in 0..=255 {
+            for end in [0, 7, 255] {
+                let ipv4 = Ipv4Addr::new(10, 42, octet, end);
+                addresses.insert(IpAddr::V4(ipv4));
+                addresses.insert(IpAddr::V6(ipv4.to_ipv6_mapped()));
+            }
+        }
+        for ip in addresses {
+            let expected = rows
+                .iter()
+                .filter(|(network, _)| network.contains(&ip))
+                .max_by_key(|(network, _)| network.prefix_len())
+                .map(|(_, info)| info);
+            assert_eq!(database.lookup(ip), expected, "lookup differed for {ip}");
+        }
+        assert_eq!(
+            database.lookup("10.42.3.7".parse().unwrap()).unwrap().asn,
+            64503
+        );
+        assert_eq!(
+            database.lookup("10.42.3.8".parse().unwrap()).unwrap().asn,
+            64505
+        );
+        assert_eq!(
+            database.lookup("192.0.2.0".parse().unwrap()).unwrap().asn,
+            64506
+        );
+        assert_eq!(
+            database.lookup("172.16.0.1".parse().unwrap()).unwrap().asn,
+            64509
+        );
+        assert_eq!(
+            database
+                .lookup("::ffff:10.42.3.7".parse().unwrap())
+                .unwrap()
+                .asn,
+            64507
+        );
+    }
+
+    #[test]
+    fn indexed_asn_networks_keep_families_separate_and_only_populated_lengths() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("asn.csv");
+        for (network, matching, other, lengths) in [
+            ("0.0.0.0/0", "192.0.2.1", "::ffff:192.0.2.1", (1, 0)),
+            ("::/0", "::ffff:192.0.2.1", "192.0.2.1", (0, 1)),
+            ("::ffff:0:0/96", "::ffff:192.0.2.1", "192.0.2.1", (0, 1)),
+        ] {
+            fs::write(
+                &path,
+                format!("network,asn,as_org\n{network},64500,Example\n"),
+            )
+            .unwrap();
+            let database = load_asn_database(&path).unwrap();
+            assert!(database.lookup(matching.parse().unwrap()).is_some());
+            assert!(database.lookup(other.parse().unwrap()).is_none());
+            let AsnEntries::Networks(index) = &database.entries else {
+                panic!("expected CSV index")
+            };
+            assert_eq!((index.ipv4.len(), index.ipv6.len()), lengths);
+        }
+    }
+
+    #[test]
+    fn indexed_asn_csv_errors_preserve_path_and_row_numbers() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("asn.csv");
+        for (invalid, reason) in [
+            ("not-a-network,64501,Example", "invalid ASN network"),
+            ("192.0.2.0/24,not-an-asn,Example", "invalid ASN number"),
+        ] {
+            fs::write(
+                &path,
+                format!("network,asn,as_org\n192.0.2.0/24,64500,Example\n{invalid}\n"),
+            )
+            .unwrap();
+            let error = load_asn_database(&path).err().unwrap().to_string();
+            assert_eq!(error, format!("{reason} in {} at row 3", path.display()));
+        }
     }
 
     #[test]
