@@ -1,5 +1,5 @@
 use std::{
-    fs::{File, OpenOptions},
+    fs::{self, File, OpenOptions},
     io::{self, BufWriter, Write},
     path::Path,
 };
@@ -21,7 +21,29 @@ pub fn write_json_pretty(path: impl AsRef<Path>, value: &impl Serialize) -> anyh
 /// Write pretty JSON without replacing a file created before or during this call.
 pub fn write_json_pretty_new(path: impl AsRef<Path>, value: &impl Serialize) -> anyhow::Result<()> {
     let path = path.as_ref();
-    write_json_pretty_buffered(create_new_output(path)?, path, value)
+    write_new_output(path, |file| write_json_pretty_buffered(file, path, value))
+}
+
+fn write_new_output(
+    path: &Path,
+    write: impl FnOnce(&mut File) -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
+    // Never attempt cleanup unless this call successfully created the file.
+    let mut file = create_new_output(path)?;
+    let result = write(&mut file);
+    drop(file);
+    if let Err(error) = result {
+        if let Err(cleanup_error) = fs::remove_file(path) {
+            // Preserve the original write/flush error as the cause; cleanup
+            // failure adds context rather than replacing the primary failure.
+            return Err(error.context(format!(
+                "could not remove incomplete output {}: {cleanup_error}",
+                path.display()
+            )));
+        }
+        return Err(error);
+    }
+    Ok(())
 }
 
 fn create_new_output(path: &Path) -> anyhow::Result<File> {
@@ -41,11 +63,12 @@ fn create_new_output(path: &Path) -> anyhow::Result<File> {
 
 /// Write already-rendered bytes without replacing an existing output.
 pub(crate) fn write_bytes_new(path: &Path, contents: &[u8]) -> anyhow::Result<()> {
-    let mut file = create_new_output(path)?;
-    file.write_all(contents)
-        .with_context(|| format!("writing {}", path.display()))?;
-    file.flush()
-        .with_context(|| format!("flushing {}", path.display()))
+    write_new_output(path, |file| {
+        file.write_all(contents)
+            .with_context(|| format!("writing {}", path.display()))?;
+        file.flush()
+            .with_context(|| format!("flushing {}", path.display()))
+    })
 }
 
 fn write_json_pretty_buffered(
@@ -187,6 +210,90 @@ impl<W: Write> FindingWriter<W> {
 mod json_tests {
     use super::*;
     use std::{fs, io};
+
+    struct FailingSerialize;
+
+    impl Serialize for FailingSerialize {
+        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            use serde::ser::SerializeStruct;
+            let mut record = serializer.serialize_struct("Partial", 2)?;
+            // Exceed the buffer so this failure follows actual file writes.
+            record.serialize_field("text", &"x".repeat(32_768))?;
+            record.serialize_field("count", &1)?;
+            Err(serde::ser::Error::custom("injected serialize failure"))
+        }
+    }
+
+    #[test]
+    fn new_pretty_json_removes_partial_serialization_and_allows_retry() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("partial.json");
+        let error = write_json_pretty_new(&path, &FailingSerialize).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            format!("writing JSON to {}", path.display())
+        );
+        assert!(format!("{error:#}").contains("injected serialize failure"));
+        assert!(!path.exists());
+        write_json_pretty_new(&path, &true).unwrap();
+        assert_eq!(fs::read(path).unwrap(), b"true");
+    }
+
+    #[test]
+    fn new_output_removes_partial_bytes_and_allows_retry() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("partial.txt");
+        let error = write_new_output(&path, |file| {
+            file.write_all(b"partial")?;
+            assert_eq!(file.metadata()?.len(), 7);
+            anyhow::bail!("injected write failure");
+        })
+        .unwrap_err();
+        assert_eq!(error.to_string(), "injected write failure");
+        assert!(!path.exists());
+        write_bytes_new(&path, b"complete\n").unwrap();
+        assert_eq!(fs::read(path).unwrap(), b"complete\n");
+    }
+
+    #[test]
+    fn new_output_creation_failure_never_runs_writer_or_removes_existing_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("existing.txt");
+        fs::write(&path, b"existing\n").unwrap();
+        let error = write_new_output(&path, |_| panic!("writer must not run")).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            format!("refusing to overwrite existing output: {}", path.display())
+        );
+        assert_eq!(fs::read(path).unwrap(), b"existing\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn new_output_cleanup_failure_preserves_original_error() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("partial.txt");
+        let error = write_new_output(&path, |file| {
+            file.write_all(b"partial")?;
+            // Unix permits unlinking an open file. Simulate its removal by
+            // another actor so cleanup fails, without relying on permissions.
+            fs::remove_file(&path)?;
+            Err(io::Error::other("injected write failure").into())
+        })
+        .unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.contains(&format!(
+            "could not remove incomplete output {}:",
+            path.display()
+        )));
+        assert!(message.contains(&fs::remove_file(&path).unwrap_err().to_string()));
+        assert!(message.contains("injected write failure"));
+        assert_eq!(
+            error.downcast_ref::<io::Error>().unwrap().kind(),
+            io::ErrorKind::Other
+        );
+        assert!(!path.exists());
+    }
 
     #[test]
     fn new_pretty_json_preserves_serialized_bytes() {

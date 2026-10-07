@@ -7,7 +7,7 @@ default and COUNT-only; see the README for the full invariants.
 
 ### Changed
 
-- JSON artifact writes now use a shared buffered writer with explicit flush error reporting, preserving the existing serialized bytes. New-only outputs use `create_new` to avoid overwriting files created after preflight checks; processed-index writes are also buffered.
+- JSON artifact writes now use a shared buffered writer with explicit flush error reporting, preserving the existing serialized bytes. New-only outputs use `create_new` to avoid overwriting files created after preflight checks; processed-index writes are also buffered. Failed new-only writes remove incomplete files so they can be retried.
 
 - Prefix path counts now intern names once and use integer IDs per prefix; the global pair default is 10,000,000 with an independent bounded `--max-source-prefix-paths` table. Private retained-count diagnostics and actionable omission text expose the current limits and affected prefixes; existing fixed-cap measurements and sanitized artifacts are unchanged.
 
