@@ -34,6 +34,11 @@ fn write_new_output(
     drop(file);
     if let Err(error) = result {
         if let Err(cleanup_error) = fs::remove_file(path) {
+            // An absent file already satisfies the cleanup goal; do not report
+            // a cleanup failure when another actor has removed it first.
+            if cleanup_error.kind() == io::ErrorKind::NotFound {
+                return Err(error);
+            }
             // Preserve the original write/flush error as the cause; cleanup
             // failure adds context rather than replacing the primary failure.
             return Err(error.context(format!(
@@ -270,14 +275,38 @@ mod json_tests {
 
     #[cfg(unix)]
     #[test]
-    fn new_output_cleanup_failure_preserves_original_error() {
+    fn new_output_already_removed_returns_only_original_error() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("partial.txt");
         let error = write_new_output(&path, |file| {
             file.write_all(b"partial")?;
-            // Unix permits unlinking an open file. Simulate its removal by
-            // another actor so cleanup fails, without relying on permissions.
+            // Unix permits unlinking an open file; cleanup is already complete.
             fs::remove_file(&path)?;
+            Err(io::Error::other("injected write failure").into())
+        })
+        .unwrap_err();
+        assert_eq!(error.to_string(), "injected write failure");
+        assert!(!format!("{error:#}").contains("could not remove incomplete output"));
+        assert_eq!(
+            error.downcast_ref::<io::Error>().unwrap().kind(),
+            io::ErrorKind::Other
+        );
+        assert!(!path.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn new_output_cleanup_failure_preserves_original_error() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("partial.txt");
+        let replacement_content = path.join("keep.txt");
+        let error = write_new_output(&path, |file| {
+            file.write_all(b"partial")?;
+            // A nonempty replacement directory cannot be removed with
+            // remove_file, even as root. Never remove it recursively.
+            fs::remove_file(&path)?;
+            fs::create_dir(&path)?;
+            fs::write(&replacement_content, b"replacement content\n")?;
             Err(io::Error::other("injected write failure").into())
         })
         .unwrap_err();
@@ -292,7 +321,15 @@ mod json_tests {
             error.downcast_ref::<io::Error>().unwrap().kind(),
             io::ErrorKind::Other
         );
-        assert!(!path.exists());
+        assert_eq!(
+            error.downcast_ref::<io::Error>().unwrap().to_string(),
+            "injected write failure"
+        );
+        assert!(path.is_dir());
+        assert_eq!(
+            fs::read(replacement_content).unwrap(),
+            b"replacement content\n"
+        );
     }
 
     #[test]
