@@ -574,8 +574,8 @@ pub fn save_batch(candidates: &[DefensiveCandidate], output: &Path) -> Result<()
         save(candidate, &path)?;
     }
     if !snapshots.is_empty() {
-        serde_json::to_writer_pretty(
-            fs::File::create(manifest_path)?,
+        crate::output::write_json_pretty_new(
+            manifest_path,
             &serde_json::json!({
                 "report_kind": "RUN_MANIFEST", "safety_note": "Private candidate provenance: contains local file paths and operator-supplied set references. Not sanitized; do not share without review. SHA-256 identifies stored input bytes, not an identity or a Shenron determination.",
                 "shenron_version": env!("CARGO_PKG_VERSION"), "source_address_sets": snapshots.into_values().collect::<Vec<_>>(),
@@ -651,7 +651,7 @@ pub fn replay(
 }
 pub fn save(candidate: &DefensiveCandidate, path: &Path) -> Result<()> {
     ensure_new(path)?;
-    serde_json::to_writer_pretty(fs::File::create(path)?, candidate)?;
+    crate::output::write_json_pretty_new(path, candidate)?;
     Ok(())
 }
 
@@ -857,7 +857,7 @@ pub fn export(
         Backend::Ossec => ossec_rule(candidate, ossec_rule_id)?,
     };
     ensure_new(output)?;
-    fs::write(output, rendered)?;
+    crate::output::write_bytes_new(output, rendered.as_bytes())?;
     write_evidence(candidate, &report, output)?;
     Ok(report)
 }
@@ -1154,8 +1154,8 @@ fn write_evidence(
             .unwrap_or("candidate")
     ));
     ensure_new(&sidecar)?;
-    serde_json::to_writer_pretty(
-        fs::File::create(sidecar)?,
+    crate::output::write_json_pretty_new(
+        sidecar,
         &serde_json::json!({"candidate_id":c.id,"candidate_kind":c.candidate_kind,"evidence_basis":c.evidence_basis,"cves":c.cves,"kev":c.kev,"evidence":c.evidence,"recommended_initial_action":"COUNT","backend_compatibility":report,"safety_note":safety_note}),
     )?;
     Ok(())

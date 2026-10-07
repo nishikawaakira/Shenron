@@ -340,11 +340,7 @@ pub fn generate_for_format(
         rule_revision: "project-native-tests".to_owned(),
         telemetry_format: format,
     };
-    serde_json::to_writer_pretty(
-        File::create(manifest_path)
-            .with_context(|| format!("creating {}", manifest_path.display()))?,
-        &manifest,
-    )?;
+    crate::output::write_json_pretty(manifest_path, &manifest)?;
     Ok(GenerateResult {
         manifest,
         truth_records: events.len(),

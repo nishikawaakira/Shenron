@@ -118,10 +118,7 @@ pub fn export_run(
     {
         fs::create_dir_all(parent)?;
     }
-    serde_json::to_writer_pretty(
-        File::create(output).with_context(|| format!("creating {}", output.display()))?,
-        &document,
-    )?;
+    crate::output::write_json_pretty(output, &document)?;
     Ok(())
 }
 

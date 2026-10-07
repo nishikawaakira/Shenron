@@ -26,6 +26,7 @@ fn independent_cohort_evaluation_is_deterministic_private_and_does_not_grant_rep
     let candidate_path = dir.path().join("candidate.json");
     shenron::candidate::save(&c, &candidate_path).unwrap();
     let before = fs::read(&candidate_path).unwrap();
+    assert_eq!(before, serde_json::to_vec_pretty(&c).unwrap());
     let line = |path: &str| {
         format!("198.51.100.1 - - [24/Aug/2026:11:20:30 +0000] \"GET {path} HTTP/1.1\" 200 12 \"-\" \"-\"\n")
     };
@@ -92,6 +93,29 @@ fn independent_cohort_evaluation_is_deterministic_private_and_does_not_grant_rep
         .stdout(predicates::prelude::PredicateBooleanExt::not(contains(
             "/login",
         )));
+    let evaluation_path = dir.path().join("evaluation.json");
+    let evaluation_bytes = fs::read(&evaluation_path).unwrap();
+    assert_eq!(
+        evaluation_bytes,
+        serde_json::to_vec_pretty(
+            &shenron::candidate::evaluation::evaluate(&candidate_path, &plan, 20).unwrap()
+        )
+        .unwrap()
+    );
+    Command::cargo_bin("shenron")
+        .unwrap()
+        .env("SHENRON_DATA_DIR", dir.path().join("empty-data"))
+        .env_remove("XDG_DATA_HOME")
+        .args(["candidate", "evaluate", "--candidate"])
+        .arg(&candidate_path)
+        .arg("--plan")
+        .arg(&plan)
+        .arg("--output")
+        .arg(&evaluation_path)
+        .assert()
+        .failure()
+        .stderr(contains("refusing to overwrite existing output:"));
+    assert_eq!(fs::read(&evaluation_path).unwrap(), evaluation_bytes);
     let mut frozen: serde_json::Value = serde_json::from_slice(&fs::read(&plan).unwrap()).unwrap();
     frozen["corpora"][0]["expected_corpus"] =
         serde_json::to_value(&result.corpora[0].corpus).unwrap();
@@ -146,6 +170,10 @@ fn frozen_source_sets_preserve_replay_export_gates_and_private_provenance() {
     save_batch(&[built.clone()], &candidates).unwrap();
     let manifest_text = fs::read_to_string(candidates.join("run-manifest.json")).unwrap();
     let manifest: serde_json::Value = serde_json::from_str(&manifest_text).unwrap();
+    assert_eq!(
+        manifest_text.as_bytes(),
+        serde_json::to_vec_pretty(&manifest).unwrap()
+    );
     let provenance = &manifest["source_address_sets"][0]["input"];
     assert_eq!(
         provenance["path"],
@@ -216,6 +244,11 @@ fn frozen_source_sets_preserve_replay_export_gates_and_private_provenance() {
     assert_eq!(hcl.matches("ip_set_reference_statement").count(), 2);
     assert!(hcl.contains("count {}") && hcl.contains(v4) && hcl.contains(v6));
     let sidecar = fs::read_to_string(directory.path().join("export.evidence.json")).unwrap();
+    assert_eq!(
+        sidecar.as_bytes(),
+        serde_json::to_vec_pretty(&serde_json::from_str::<serde_json::Value>(&sidecar).unwrap())
+            .unwrap()
+    );
     for value in ["198.51.100", "2001:db8", "private-addresses", "/login"] {
         assert!(!sidecar.contains(value));
     }

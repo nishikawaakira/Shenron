@@ -626,11 +626,7 @@ mod tests {
             status_class_requests_per_minute_series: Vec::new(),
             minute_buckets_beyond_cap: 0,
         };
-        serde_json::to_writer_pretty(
-            File::create(path.join("request-concentration.json")).unwrap(),
-            &report,
-        )
-        .unwrap();
+        crate::output::write_json_pretty(path.join("request-concentration.json"), &report).unwrap();
     }
 
     #[test]

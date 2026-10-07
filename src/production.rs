@@ -2021,11 +2021,7 @@ fn concentration_run(
             });
         write_private_concentration(output, &private_report)?;
         let sanitized_path = output.join("sanitized-research.json");
-        serde_json::to_writer_pretty(
-            File::create(&sanitized_path)
-                .with_context(|| format!("creating {}", sanitized_path.display()))?,
-            &report,
-        )?;
+        crate::output::write_json_pretty(&sanitized_path, &report)?;
         write_concentration_run_manifest(
             output,
             telemetry_profile,
@@ -2130,10 +2126,7 @@ fn write_concentration_run_manifest(
         asn_dataset,
     };
     let path = output.join("run-manifest.json");
-    serde_json::to_writer_pretty(
-        File::create(&path).with_context(|| format!("creating {}", path.display()))?,
-        &manifest,
-    )?;
+    crate::output::write_json_pretty(&path, &manifest)?;
     Ok(())
 }
 
@@ -2152,19 +2145,13 @@ fn write_private_concentration(
     report: &PrivateRequestConcentrationReport,
 ) -> anyhow::Result<()> {
     let path = output.join("request-concentration.json");
-    serde_json::to_writer_pretty(
-        File::create(&path).with_context(|| format!("creating {}", path.display()))?,
-        report,
-    )?;
+    crate::output::write_json_pretty(&path, report)?;
     Ok(())
 }
 
 fn write_private_bot_ranges(output: &Path, report: &PrivateBotRangeReport) -> anyhow::Result<()> {
     let path = output.join("bot-range-observations.json");
-    serde_json::to_writer_pretty(
-        File::create(&path).with_context(|| format!("creating {}", path.display()))?,
-        report,
-    )?;
+    crate::output::write_json_pretty(&path, report)?;
     Ok(())
 }
 
@@ -2173,10 +2160,7 @@ fn write_private_consistency(
     report: &PrivateConsistencyReport,
 ) -> anyhow::Result<()> {
     let path = output.join("declared-observed-observations.json");
-    serde_json::to_writer_pretty(
-        File::create(&path).with_context(|| format!("creating {}", path.display()))?,
-        report,
-    )?;
+    crate::output::write_json_pretty(&path, report)?;
     Ok(())
 }
 
@@ -2931,10 +2915,7 @@ fn write_run_manifest(
         tracking_limits,
     };
     let path = output.join("run-manifest.json");
-    serde_json::to_writer_pretty(
-        File::create(&path).with_context(|| format!("creating {}", path.display()))?,
-        &manifest,
-    )?;
+    crate::output::write_json_pretty(&path, &manifest)?;
     Ok(())
 }
 

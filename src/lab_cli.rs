@@ -29,6 +29,7 @@ use crate::nuclei::{
     validated_detections, CoverageReport, InventoryReport, RequestMatcherView,
     TelemetryComparisonReport, TelemetryCoverageReport,
 };
+use crate::output::write_json_pretty;
 use crate::paths::{
     default_bot_range_snapshot, default_data_dir, default_nuclei_report, default_templates_dir,
 };
@@ -440,7 +441,7 @@ pub fn run(command: LabCommand) -> Result<()> {
             };
             print_report(&validation);
             if let Some(path) = report {
-                serde_json::to_writer_pretty(std::fs::File::create(path)?, &validation)?;
+                write_json_pretty(path, &validation)?;
             }
             if validation.status != "PASS" {
                 std::process::exit(1);
@@ -472,7 +473,7 @@ pub fn run(command: LabCommand) -> Result<()> {
                 let inventory = nuclei_inventory(&templates, &revision);
                 print_inventory(&inventory);
                 if let Some(path) = report {
-                    serde_json::to_writer_pretty(std::fs::File::create(path)?, &inventory)?;
+                    write_json_pretty(path, &inventory)?;
                 }
             }
             NucleiCommand::Coverage {
@@ -487,14 +488,14 @@ pub fn run(command: LabCommand) -> Result<()> {
                         coverage_for_telemetry(&templates, telemetry.into(), &revision);
                     print_telemetry_coverage(&source_report);
                     if let Some(path) = report {
-                        serde_json::to_writer_pretty(std::fs::File::create(path)?, &source_report)?;
+                        write_json_pretty(path, &source_report)?;
                     }
                     return Ok(());
                 }
                 let coverage = nuclei_coverage(&templates, &revision);
                 print_coverage(&coverage);
                 if let Some(path) = report {
-                    serde_json::to_writer_pretty(std::fs::File::create(path)?, &coverage)?;
+                    write_json_pretty(path, &coverage)?;
                 }
                 if coverage.coverage.missed_detections != 0
                     || coverage.coverage.unexpected_matches != 0
@@ -513,7 +514,7 @@ pub fn run(command: LabCommand) -> Result<()> {
                 let comparison = compare_telemetry(&templates, &revision);
                 print_telemetry_comparison(&comparison);
                 if let Some(path) = report {
-                    serde_json::to_writer_pretty(std::fs::File::create(path)?, &comparison)?;
+                    write_json_pretty(path, &comparison)?;
                 }
             }
             NucleiCommand::Matchers {
@@ -536,7 +537,7 @@ pub fn run(command: LabCommand) -> Result<()> {
                 );
                 print_matchers(&matchers);
                 if let Some(path) = output {
-                    serde_json::to_writer_pretty(std::fs::File::create(path)?, &matchers)?;
+                    write_json_pretty(path, &matchers)?;
                 }
             }
         },
@@ -549,7 +550,7 @@ pub fn run(command: LabCommand) -> Result<()> {
                 let coverage = kev_coverage(&kev, &nuclei_report)?;
                 print_kev_coverage(&coverage);
                 if let Some(path) = report {
-                    serde_json::to_writer_pretty(std::fs::File::create(path)?, &coverage)?;
+                    write_json_pretty(path, &coverage)?;
                 }
             }
         },
@@ -639,7 +640,7 @@ pub fn run(command: LabCommand) -> Result<()> {
             ensure_template_directory(&templates)?;
             let analysis = minimum_telemetry_analyze(&templates, &comparison, &kev, &revision)?;
             print_minimum_telemetry(&analysis);
-            serde_json::to_writer_pretty(std::fs::File::create(report)?, &analysis)?;
+            write_json_pretty(report, &analysis)?;
         }
     }
     Ok(())
@@ -743,7 +744,7 @@ fn run_nuclei_update(
     {
         fs::create_dir_all(parent)?;
     }
-    serde_json::to_writer_pretty(File::create(&report)?, &coverage)?;
+    write_json_pretty(&report, &coverage)?;
     println!("Frozen Nuclei report: {}", report.display());
     Ok(())
 }
@@ -810,7 +811,7 @@ fn update_kev_inputs(
             match kev_coverage(&snapshot, nuclei_report) {
                 Ok(coverage) => {
                     let report_path = data_dir.join("kev-report.json");
-                    serde_json::to_writer_pretty(File::create(&report_path)?, &coverage)?;
+                    write_json_pretty(&report_path, &coverage)?;
                     outputs.push(output_manifest_entry(
                         &report_path,
                         coverage.metrics.total_kevs,
@@ -847,7 +848,7 @@ fn update_kev_inputs(
             join_reason,
         };
         let manifest_path = data_dir.join("kev-manifest.json");
-        serde_json::to_writer_pretty(File::create(&manifest_path)?, &manifest)?;
+        write_json_pretty(&manifest_path, &manifest)?;
         if let Some(error) = join_error {
             return Err(error);
         }
@@ -1225,7 +1226,7 @@ fn update_bot_ranges(output: &Path, catalog: Option<&Path>, announce: bool) -> R
         }
         let retrieved_at = Utc::now().to_rfc3339();
         let snapshot = snapshot_from_downloads(&sources, &downloads, &retrieved_at)?;
-        serde_json::to_writer_pretty(File::create(output)?, &snapshot)?;
+        write_json_pretty(output, &snapshot)?;
         if announce {
             println!("Frozen published crawler ranges: {}", output.display());
             println!("Public range JSON only was downloaded; no customer logs, findings, IPs, User-Agents, or request values were transmitted. Shenron analysis commands remain offline.");
@@ -1401,7 +1402,7 @@ fn update_reputation_inputs(
             outputs: output_manifest,
         };
         let manifest_path = out_dir.join("reputation-manifest.json");
-        serde_json::to_writer_pretty(File::create(&manifest_path)?, &manifest)?;
+        write_json_pretty(&manifest_path, &manifest)?;
 
         if announce {
             println!(

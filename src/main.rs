@@ -39,6 +39,7 @@ use shenron::{
     lab_cli::{run as run_lab_command, LabCommand},
     nuclei::{path_distinctiveness, PathDistinctiveness},
     observation_store::{update_observation_store, ObservationStoreLimits},
+    output::{write_json_pretty, write_json_pretty_new},
     paths::{
         default_asn_dataset, default_bot_range_snapshot, default_kev_report, default_nuclei_report,
         default_reputation_dataset, default_sigma_rules_dir, default_templates_dir,
@@ -1330,7 +1331,7 @@ fn main() -> Result<()> {
                     if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
                         fs::create_dir_all(parent)?;
                     }
-                    serde_json::to_writer_pretty(File::create(path)?, &result)?;
+                    write_json_pretty(path, &result)?;
                     eprintln!("{}", shenron::investigation::SAFETY_NOTE);
                 }
                 if show_request {
@@ -1526,7 +1527,7 @@ fn main() -> Result<()> {
                     options,
                 )?;
                 let sanitized_path = output.join("sanitized-research.json");
-                serde_json::to_writer_pretty(File::create(&sanitized_path)?, &report)?;
+                write_json_pretty(&sanitized_path, &report)?;
                 print_hunt(&report, &sanitized_path);
                 if let Some(store_path) = observation_store {
                     shenron::production::ensure_separate_output(&input, &store_path)?;
@@ -1881,7 +1882,7 @@ fn main() -> Result<()> {
                     &template_filter.into_options(),
                 )?;
                 if let Some(path) = output.as_deref() {
-                    serde_json::to_writer_pretty(File::create(path)?, &report)?;
+                    write_json_pretty(path, &report)?;
                 }
                 print_ablation(&report, output.as_deref());
                 Ok(())
@@ -1915,7 +1916,7 @@ fn main() -> Result<()> {
                     &template_filter.into_options(),
                 )?;
                 if let Some(path) = output.as_deref() {
-                    serde_json::to_writer_pretty(File::create(path)?, &report)?;
+                    write_json_pretty(path, &report)?;
                 }
                 print_historical_replay(&report, output.as_deref());
                 Ok(())
@@ -1950,7 +1951,7 @@ fn main() -> Result<()> {
                     &template_filter.into_options(),
                 )?;
                 if let Some(path) = output.as_deref() {
-                    serde_json::to_writer_pretty(File::create(path)?, &report)?;
+                    write_json_pretty(path, &report)?;
                 }
                 print_count_hypotheses(&report, output.as_deref(), limit);
                 Ok(())
@@ -2237,13 +2238,7 @@ fn main() -> Result<()> {
                 if let Some(parent) = output.parent().filter(|p| !p.as_os_str().is_empty()) {
                     fs::create_dir_all(parent)?;
                 }
-                serde_json::to_writer_pretty(
-                    fs::OpenOptions::new()
-                        .write(true)
-                        .create_new(true)
-                        .open(&output)?,
-                    &result,
-                )?;
+                write_json_pretty_new(&output, &result)?;
                 eprintln!("{}", result.safety_note);
                 for (index, row) in result.corpora.iter().enumerate() {
                     println!("Cohort {}: parsed {} / malformed {} / matched {} / match share {} (source missing/invalid exclusions: {}/{}; absent condition fields: {}; overlapping whole files: {}; displayed path/peer omissions: {}/{})", index + 1, row.parseable_records, row.parse_errors, row.matching_records, row.match_share.map(|v| format!("{:.2}%", v*100.0)).unwrap_or_else(|| "unavailable".into()), row.source_address_unavailable, row.source_address_invalid, row.records_with_absent_condition_fields, row.files_with_identical_bytes_in_another_cohort, row.retained_paths_omitted_from_display, row.retained_peers_omitted_from_display);
@@ -2621,8 +2616,8 @@ fn write_hunt_triage_view(
     );
     let summary_path = output.join("triage-summary.json");
     let view_path = output.join("triage-view.json");
-    serde_json::to_writer_pretty(File::create(&summary_path)?, &summary)?;
-    serde_json::to_writer_pretty(File::create(&view_path)?, &view)?;
+    write_json_pretty(&summary_path, &summary)?;
+    write_json_pretty(&view_path, &view)?;
     print_hunt_triage_summary(&summary, &view_path);
     if show_triage {
         print_hunt_triage_entries(&view, limit);

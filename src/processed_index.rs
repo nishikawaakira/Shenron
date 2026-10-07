@@ -8,7 +8,7 @@
 use std::{
     collections::BTreeMap,
     fs::{self, File},
-    io::{Read, Write},
+    io::{BufWriter, Read, Write},
     path::{Path, PathBuf},
     time::UNIX_EPOCH,
 };
@@ -64,11 +64,13 @@ impl ProcessedFilePlan {
             })?;
         }
         let temporary = path.with_extension("tmp");
-        let mut file = File::create(&temporary)
+        let file = File::create(&temporary)
             .with_context(|| format!("creating processed index {}", temporary.display()))?;
+        let mut file = BufWriter::new(file);
         serde_json::to_writer_pretty(&mut file, &self.index)?;
         file.write_all(b"\n")?;
-        file.flush()?;
+        file.flush()
+            .with_context(|| format!("flushing processed index {}", temporary.display()))?;
         fs::rename(&temporary, &path)
             .with_context(|| format!("replacing processed index {}", path.display()))?;
         Ok(())
@@ -195,4 +197,32 @@ fn execution_id(records: &[ProcessedFileRecord]) -> String {
         hasher.update([0]);
     }
     format!("sha256:{:x}", hasher.finalize())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn buffered_processed_index_preserves_pretty_bytes_and_final_newline() {
+        let directory = tempfile::tempdir().unwrap();
+        let input = directory.path().join("input.log");
+        let index_path = directory.path().join("processed.json");
+        fs::write(&input, b"synthetic input\n").unwrap();
+        let plan = prepare_processed_files(vec![input.clone()], Some(&index_path), false).unwrap();
+        let expected = ProcessedFileIndex {
+            report_kind: "PROCESSED_FILE_INDEX".to_owned(),
+            safety_note: "Private local processing state: contains input file paths and fingerprints. Skipped files are excluded from the current run's aggregates; this is not a cumulative report.".to_owned(),
+            files: plan.processed_records.iter().map(|record| (record.path.clone(), record.clone())).collect(),
+        };
+        let mut expected_bytes = serde_json::to_vec_pretty(&expected).unwrap();
+        expected_bytes.push(b'\n');
+        plan.commit().unwrap();
+        assert_eq!(fs::read(&index_path).unwrap(), expected_bytes);
+        assert!(!index_path.with_extension("tmp").exists());
+        let repeated = prepare_processed_files(vec![input], Some(&index_path), false).unwrap();
+        assert_eq!(repeated.skipped_files, 1);
+        repeated.commit().unwrap();
+        assert_eq!(fs::read(index_path).unwrap(), expected_bytes);
+    }
 }

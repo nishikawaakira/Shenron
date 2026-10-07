@@ -266,7 +266,7 @@ pub fn write_comparison(output: &Path, comparison: &TemporalComparison) -> anyho
             serde_json::to_value(&comparison.private)?,
         ),
     ] {
-        serde_json::to_writer_pretty(File::create(output.join(name))?, &value)?;
+        crate::output::write_json_pretty(output.join(name), &value)?;
     }
     Ok(())
 }
