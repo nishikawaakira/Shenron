@@ -11,11 +11,11 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use crate::input_discovery::{discover_input_files, InputDiscoverySummary, SkippedInputFile};
 use anyhow::{bail, Context};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use walkdir::WalkDir;
 
 use crate::{
     access_log::{AccessLogFormat, AccessLogLines},
@@ -41,7 +41,7 @@ use crate::{
     },
     processed_index::prepare_processed_files,
     reputation::{load_asn_database, AsnDatabase},
-    waf::{maybe_gzip_reader, WafLines},
+    waf::{sniff_gzip_reader, WafLines},
 };
 
 /// Bundled Sigma rule whose matches receive response-status review context.
@@ -111,6 +111,8 @@ pub struct HuntMetrics {
     pub filter_from: Option<String>,
     pub filter_to: Option<String>,
     pub files_analyzed: usize,
+    #[serde(flatten)]
+    pub input_discovery: InputDiscoverySummary,
     pub total_requests_analyzed: usize,
     pub requests_outside_time_range: usize,
     pub requests_without_timestamp_excluded: usize,
@@ -427,6 +429,8 @@ pub struct SanitizedConcentrationReport {
     pub filter_from: Option<String>,
     pub filter_to: Option<String>,
     pub files_analyzed: usize,
+    #[serde(flatten)]
+    pub input_discovery: InputDiscoverySummary,
     pub total_requests_analyzed: usize,
     pub requests_outside_time_range: usize,
     pub requests_without_timestamp_excluded: usize,
@@ -453,6 +457,8 @@ pub struct AblationReport {
     pub filter_from: Option<String>,
     pub filter_to: Option<String>,
     pub files_analyzed: usize,
+    #[serde(flatten)]
+    pub input_discovery: InputDiscoverySummary,
     pub total_events_evaluated: usize,
     pub requests_outside_time_range: usize,
     pub requests_without_timestamp_excluded: usize,
@@ -499,6 +505,8 @@ pub struct HistoricalReplayReport {
     pub filter_from: Option<String>,
     pub filter_to: Option<String>,
     pub files_analyzed: usize,
+    #[serde(flatten)]
+    pub input_discovery: InputDiscoverySummary,
     pub total_events_evaluated: usize,
     pub requests_outside_time_range: usize,
     pub requests_without_timestamp_excluded: usize,
@@ -586,6 +594,8 @@ pub struct CountHypothesisReport {
     pub filter_from: Option<String>,
     pub filter_to: Option<String>,
     pub files_analyzed: usize,
+    #[serde(flatten)]
+    pub input_discovery: InputDiscoverySummary,
     pub total_events_evaluated: usize,
     pub requests_outside_time_range: usize,
     pub requests_without_timestamp_excluded: usize,
@@ -635,6 +645,8 @@ struct HypothesisRungAccumulator {
 
 #[derive(Serialize)]
 struct RunManifest {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    skipped_input_files: Vec<SkippedInputFile>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     disposition_context: Option<crate::disposition::DispositionContext>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1165,7 +1177,8 @@ fn hunt_with_destination(
     }
     let detection_index = DetectionPathIndex::new(&detections);
     let kev_cves = kev_cves(kev_report)?;
-    let files = input_files(input, telemetry_profile)?;
+    let discovery = discover_input_files(input, Some(telemetry_profile))?;
+    let files = discovery.files;
     let mut private_destination = match (output, stdout_writer) {
         (Some(output), None) => {
             fs::create_dir_all(output).with_context(|| {
@@ -1202,6 +1215,7 @@ fn hunt_with_destination(
     let mut private = PrivateFindingWriter::new(&mut private_destination, finding_format)?;
     let mut metrics = HuntMetrics {
         files_analyzed: files.len(),
+        input_discovery: discovery.summary,
         waf_outcome_available: telemetry_profile == TelemetryProfile::AwsWaf,
         filter_from: time_range.from.map(|time| time.to_rfc3339()),
         filter_to: time_range.to.map(|time| time.to_rfc3339()),
@@ -1897,7 +1911,8 @@ fn concentration_run(
     if let Some(output) = output {
         ensure_separate_output(input, output)?;
     }
-    let files = input_files(input, telemetry_profile)?;
+    let discovery = discover_input_files(input, Some(telemetry_profile))?;
+    let files = discovery.files;
     let plan = prepare_processed_files(files, processed_index, reprocess_all)?;
     if let Some(output) = output {
         fs::create_dir_all(output)
@@ -1910,6 +1925,7 @@ fn concentration_run(
         filter_from: time_range.from.map(|time| time.to_rfc3339()),
         filter_to: time_range.to.map(|time| time.to_rfc3339()),
         files_analyzed: plan.files.len(),
+        input_discovery: discovery.summary,
         total_requests_analyzed: 0,
         requests_outside_time_range: 0,
         requests_without_timestamp_excluded: 0,
@@ -2031,6 +2047,7 @@ fn concentration_run(
             tracking_limits,
             source_prefix_lengths,
             asn_provenance,
+            report.input_discovery.skipped.clone(),
         )?;
     }
     plan.commit()?;
@@ -2048,6 +2065,8 @@ fn concentration_run(
 /// not a sanitized research artifact and contains no raw request values.
 #[derive(Deserialize, Serialize)]
 struct ConcentrationRunManifest {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    skipped_input_files: Vec<SkippedInputFile>,
     report_kind: String,
     safety_note: String,
     shenron_version: String,
@@ -2094,6 +2113,7 @@ fn write_concentration_run_manifest(
     tracking_limits: Option<ConcentrationTrackingLimits>,
     source_prefix_lengths: Option<FocusPrefixLengths>,
     asn_dataset: Option<ConcentrationAsnProvenance>,
+    skipped_input_files: Vec<SkippedInputFile>,
 ) -> anyhow::Result<()> {
     corpus.sort_by(|left, right| left.path.cmp(&right.path));
     // Record both effective opt-in path caps, including their defaults, without
@@ -2109,6 +2129,7 @@ fn write_concentration_run_manifest(
         tracking_limits
     };
     let manifest = ConcentrationRunManifest {
+        skipped_input_files,
         report_kind: "RUN_MANIFEST".to_owned(),
         safety_note: "PRIVATE run provenance: corpus paths and verbatim analyst labels may contain private information. Do not share without review. No log record values are copied. SHA-256 values identify the stored input bytes for reproducibility; labels are analyst annotations, not Shenron determinations.".to_owned(),
         shenron_version: env!("CARGO_PKG_VERSION").to_owned(),
@@ -2228,7 +2249,8 @@ pub fn ablation_with_optional_kev_and_filter(
     // Keep the same frozen-report input contract as hunt even though KEV
     // membership is not a volume-comparison dimension.
     let _kev_cves = kev_cves(kev_report)?;
-    let files = input_files(input, telemetry_profile)?;
+    let discovery = discover_input_files(input, Some(telemetry_profile))?;
+    let files = discovery.files;
     let mut total_events_evaluated = 0;
     let mut requests_outside_time_range = 0;
     let mut requests_without_timestamp_excluded = 0;
@@ -2304,6 +2326,7 @@ pub fn ablation_with_optional_kev_and_filter(
         filter_from: time_range.from.map(|timestamp| timestamp.to_rfc3339()),
         filter_to: time_range.to.map(|timestamp| timestamp.to_rfc3339()),
         files_analyzed: files.len(),
+        input_discovery: discovery.summary,
         total_events_evaluated,
         requests_outside_time_range,
         requests_without_timestamp_excluded,
@@ -2404,7 +2427,8 @@ pub fn historical_replay_with_optional_kev_and_filter(
         );
     }
 
-    let files = input_files(input, telemetry_profile)?;
+    let discovery = discover_input_files(input, Some(telemetry_profile))?;
+    let files = discovery.files;
     let mut total_events_evaluated = 0;
     let mut requests_outside_time_range = 0;
     let mut requests_without_timestamp_excluded = 0;
@@ -2527,6 +2551,7 @@ pub fn historical_replay_with_optional_kev_and_filter(
         filter_from: time_range.from.map(|timestamp| timestamp.to_rfc3339()),
         filter_to: time_range.to.map(|timestamp| timestamp.to_rfc3339()),
         files_analyzed: files.len(),
+        input_discovery: discovery.summary,
         total_events_evaluated,
         requests_outside_time_range,
         requests_without_timestamp_excluded,
@@ -2623,7 +2648,8 @@ pub fn count_hypotheses_with_optional_kev_and_filter(
         })
         .collect::<BTreeMap<_, _>>();
 
-    let files = input_files(input, telemetry_profile)?;
+    let discovery = discover_input_files(input, Some(telemetry_profile))?;
+    let files = discovery.files;
     let mut total_events_evaluated = 0;
     let mut requests_outside_time_range = 0;
     let mut requests_without_timestamp_excluded = 0;
@@ -2741,6 +2767,7 @@ pub fn count_hypotheses_with_optional_kev_and_filter(
         filter_from: time_range.from.map(|timestamp| timestamp.to_rfc3339()),
         filter_to: time_range.to.map(|timestamp| timestamp.to_rfc3339()),
         files_analyzed: files.len(),
+        input_discovery: discovery.summary,
         total_events_evaluated,
         requests_outside_time_range,
         requests_without_timestamp_excluded,
@@ -2881,6 +2908,7 @@ fn write_run_manifest(
 ) -> anyhow::Result<()> {
     corpus.sort_by(|left, right| left.path.cmp(&right.path));
     let manifest = RunManifest {
+        skipped_input_files: metrics.input_discovery.skipped.clone(),
         disposition_context,
         corpus_label,
         report_kind: "RUN_MANIFEST",
@@ -3206,51 +3234,6 @@ fn update_time_range(
     }
 }
 
-pub(crate) fn input_files(
-    input: &Path,
-    telemetry_profile: TelemetryProfile,
-) -> anyhow::Result<Vec<PathBuf>> {
-    if input.is_file() {
-        return is_input_file(input, telemetry_profile)
-            .then(|| vec![input.to_owned()])
-            .ok_or_else(|| anyhow::anyhow!("unsupported input file {}", input.display()));
-    }
-    if !input.is_dir() {
-        bail!(
-            "input {} is neither a file nor a directory",
-            input.display()
-        );
-    }
-    Ok(WalkDir::new(input)
-        .into_iter()
-        .filter_map(Result::ok)
-        .filter(|entry| {
-            entry.file_type().is_file() && is_input_file(entry.path(), telemetry_profile)
-        })
-        .map(|entry| entry.into_path())
-        .collect())
-}
-
-fn is_input_file(path: &Path, telemetry_profile: TelemetryProfile) -> bool {
-    if is_gzip(path) {
-        return true;
-    }
-    match telemetry_profile {
-        TelemetryProfile::AwsWaf => matches!(
-            path.extension().and_then(|extension| extension.to_str()),
-            Some("json" | "jsonl")
-        ),
-        TelemetryProfile::NginxCombined
-        | TelemetryProfile::ApacheCombined
-        | TelemetryProfile::ApacheVhostCombined
-        | TelemetryProfile::NginxCombinedHost
-        | TelemetryProfile::NginxSecurity => matches!(
-            path.extension().and_then(|extension| extension.to_str()),
-            Some("log" | "txt")
-        ),
-    }
-}
-
 #[cfg(test)]
 mod corpus_provenance_tests {
     use super::*;
@@ -3370,7 +3353,6 @@ mod corpus_provenance_tests {
                 let mut events = 0;
                 let (length, hash) = stream_fingerprinted_events(
                     reader,
-                    compressed,
                     TelemetryProfile::ApacheCombined,
                     &TrustedProxySet::default(),
                     retention,
@@ -3460,12 +3442,6 @@ mod corpus_provenance_tests {
     }
 }
 
-fn is_gzip(path: &Path) -> bool {
-    path.extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("gz"))
-}
-
 fn stream_hunt_events<F>(
     path: &Path,
     profile: TelemetryProfile,
@@ -3514,7 +3490,7 @@ where
         hash: Sha256::new(),
         bytes: 0,
     }));
-    let decoded = maybe_gzip_reader(SharedFingerprintReader(state.clone()), is_gzip(path));
+    let decoded = sniff_gzip_reader(SharedFingerprintReader(state.clone()))?;
     if profile == TelemetryProfile::AwsWaf {
         let mut lines = WafLines::with_raw_retention(decoded, retention);
         while let Some(event) = lines.next() {
@@ -3552,7 +3528,7 @@ where
 
 fn event_reader(path: &Path) -> anyhow::Result<Box<dyn Read>> {
     let file = File::open(path).with_context(|| format!("opening {}", path.display()))?;
-    Ok(maybe_gzip_reader(file, is_gzip(path)))
+    Ok(sniff_gzip_reader(file)?)
 }
 
 /// Emit a periodic progress heartbeat to stderr during a long corpus scan. It
@@ -3635,7 +3611,6 @@ where
     let file = File::open(path).with_context(|| format!("opening {}", path.display()))?;
     let (byte_length, sha256) = stream_fingerprinted_events(
         file,
-        is_gzip(path),
         telemetry_profile,
         trusted_proxies,
         raw_retention,
@@ -3694,7 +3669,6 @@ impl<R: Read> Read for SharedFingerprintReader<R> {
 /// reader so provenance covers the whole file across all decoded members.
 fn stream_fingerprinted_events<R: Read + 'static, F>(
     reader: R,
-    compressed: bool,
     profile: TelemetryProfile,
     proxies: &TrustedProxySet,
     raw_retention: RawRetention,
@@ -3708,7 +3682,7 @@ where
         hash: Sha256::new(),
         bytes: 0,
     }));
-    let decoded = maybe_gzip_reader(SharedFingerprintReader(state.clone()), compressed);
+    let decoded = sniff_gzip_reader(SharedFingerprintReader(state.clone()))?;
     stream_reader_events(decoded, profile, proxies, raw_retention, callback)?;
     std::io::copy(
         &mut SharedFingerprintReader(state.clone()),

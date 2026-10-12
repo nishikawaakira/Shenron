@@ -222,6 +222,46 @@ keeps each run self-contained but makes I/O proportional to corpus size. Use
 normal log rotation or select only recent files when an append-only corpus
 becomes very large.
 
+### Input discovery and skipped files
+
+All corpus readers share deterministic, path-sorted discovery. Directory scans
+include `.gz`, extensionless files, and files with an ASCII numeric final
+extension (such as `access.log.1`). AWS WAF additionally accepts `.json` and
+`.jsonl`; Apache/nginx profiles accept `.log` and `.txt`. An explicitly selected
+file is read regardless of its name or extension. Compression is detected from
+gzip magic bytes, including in extensionless logs, in the same read used for
+parsing and stored-byte fingerprints.
+
+Files whose names begin with `.` and files with other extensions are skipped.
+Directories are traversed recursively, except hidden directories such as `.git`,
+whose contents are not visited. The explicitly selected input directory is never
+excluded by this rule, including `.logs`, `.` and `..`. Each pruned hidden
+directory counts as one `hidden-directory` entry in `files_skipped` and the
+`Files skipped` disclosure; its contents are not enumerated or counted.
+Symlinks, including links to hidden directories, are not followed: `context`
+rejects them, while other corpus readers disclose them as skipped. Filesystem
+traversal failures are errors, not silent skips. An explicitly selected link to
+a regular file retains the existing direct-file behavior.
+
+Keep only logs for the selected format in the input directory. Extensionless
+files are eligible, so non-log files such as `README` or `Makefile`, and logs in
+other formats such as error logs, can contribute parse errors.
+
+Nonzero discovery skips produce a `Files skipped` line with counts by reason,
+never filenames. Machine-readable stdout (JSON/JSONL/CSV, including context and
+daily JSON) keeps this line on stderr to preserve the data stream. Aggregate
+reports include only `files_skipped`, omitted at zero. Private run manifests
+record `skipped_input_files` paths and reasons. Commands writing a single report
+file rather than a run directory write a private `<output>.run-manifest.json`
+companion when skips occur; context and candidate reports also retain the
+private exclusions. These manifests are not sanitized and require review before
+sharing. Runs with no skips add neither fields nor disclosure lines.
+
+With `--processed-index`, newly discovered extensionless or numeric-rotation
+files are unprocessed unless already present with matching provenance; they are
+read on the next run. Discovery skips and already-processed skips are separate
+counts, and totals still describe only the files analyzed in this run.
+
 Alongside the CVE-anchored Nuclei pass, `hunt` runs a generic **Sigma** detection pass **on by default**, in the same single stream over the corpus. It loads supported Sigma rules from `--rules <DIR>`, or from the prepared `<data-dir>/sigma-rules` when present; a missing rules directory is not an error (the hunt continues with Nuclei only), and `--no-sigma` disables the pass. Sigma covers generic request-pattern TTPs — for example secret-file path enumeration (`.env`, `/.aws/credentials`, `/.git/config`) — that map to no CVE template and are otherwise invisible to a CVE-only hunt. Sigma findings are kept fully distinct from the CVE track: every finding carries a `source` (`nuclei` or `sigma`), and the sanitized report counts `sigma_matched_requests` (distinct requests with a Sigma detection), `sigma_rule_matches` (rule matches, which can exceed the request count because one request can match several rules), `distinct_sigma_rules`, and `sigma_rules_evaluated` separately from the CVE metrics. They are excluded from `candidate build` by default. Explicit `--include-sigma-ttp --rules <DIR>` creates a separate candidate class only from faithfully translatable literals declared by the matched rule; it carries no CVE/KEV claim and still requires replay before COUNT-only export. See [Sigma detection inside hunt](sigma-in-hunt.md).
 
 For the bundled `shenron-secret-config-file-probe` rule, `hunt` additionally

@@ -15,6 +15,8 @@ default and COUNT-only; see the README for the full invariants.
 
 ### Fixed
 
+- Corpus discovery now includes extensionless and numeric-rotation logs, detects gzip by stored bytes, and discloses skipped files by count/reason with paths confined to private provenance. Hidden descendant directories are pruned and counted once each, while explicitly selected input directories are traversed. Context now excludes hidden and unsupported-extension files using the same rules; previously omitted logs can increase analyzed counts.
+
 - Published bot ranges, frozen address sets and context selectors now match equivalent mapped IPv4 addresses without rewriting raw displays or frozen snapshots; candidate replay counts can increase for mapped peers.
 - Observation-store prefix/ASN lookup and source/client first-seen comparisons now canonicalize peer addresses; first-seen lists retain one raw representative and triage marks equivalent keys. Old observation-store keys are not migrated, so mapped-peer recurrence histories can restart.
 

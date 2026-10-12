@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     output::Finding,
     sigma::load_rules,
-    waf::{maybe_gzip_reader, WafLines},
+    waf::{sniff_gzip_reader, WafLines},
 };
 
 pub const JA4_EXACT: &str = "t13d1516h2_8daaf6152771_02713d6af862";
@@ -1016,14 +1016,10 @@ pub fn validate_corpus(
 ) -> Result<ValidationReport> {
     let truth = read_truth(truth_path)?;
     let rules = load_rules(rules_path);
-    let compressed = corpus
-        .extension()
-        .and_then(|value| value.to_str())
-        .is_some_and(|value| value.eq_ignore_ascii_case("gz"));
-    let reader = maybe_gzip_reader(
+
+    let reader = sniff_gzip_reader(
         File::open(corpus).with_context(|| format!("opening {}", corpus.display()))?,
-        compressed,
-    );
+    )?;
     let mut actual: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     let mut parser_errors = 0;
     for result in WafLines::new(reader) {
@@ -1259,11 +1255,8 @@ fn ratio(numerator: usize, denominator: usize) -> Option<f64> {
 pub fn measure(corpus: &Path) -> Result<(usize, u64, f64)> {
     let started = Instant::now();
     let bytes = std::fs::metadata(corpus)?.len();
-    let compressed = corpus
-        .extension()
-        .and_then(|value| value.to_str())
-        .is_some_and(|value| value.eq_ignore_ascii_case("gz"));
-    let reader = maybe_gzip_reader(File::open(corpus)?, compressed);
+
+    let reader = sniff_gzip_reader(File::open(corpus)?)?;
     let events = WafLines::new(reader).filter(Result::is_ok).count();
     Ok((events, bytes, started.elapsed().as_secs_f64()))
 }

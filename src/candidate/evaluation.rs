@@ -6,7 +6,7 @@ use crate::{
         RequestConcentrationSummary,
     },
     event::{RawRetention, TelemetryProfile, WebEvent},
-    investigation::sorted_input_files,
+    input_discovery::{discover_input_files, SkippedInputFile},
     production::{stream_referenced_events, PathProvenance},
 };
 use anyhow::{bail, Context};
@@ -51,6 +51,8 @@ pub struct CorpusEvaluation {
     pub label: Option<String>,
     pub telemetry_profile: TelemetryProfile,
     pub corpus: Vec<PathProvenance>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub skipped_input_files: Vec<SkippedInputFile>,
     pub parseable_records: u64,
     pub parse_errors: u64,
     pub source_address_unavailable: u64,
@@ -115,7 +117,9 @@ pub fn evaluate(
         };
         let caps = cohort.telemetry_profile.capabilities();
         let mut matched = RequestConcentration::with_capabilities(caps.response_bytes, caps.status);
+        let discovery = discover_input_files(&input, Some(cohort.telemetry_profile))?;
         let mut row = CorpusEvaluation {
+            skipped_input_files: discovery.summary.skipped,
             role: cohort.role,
             label: cohort.label,
             telemetry_profile: cohort.telemetry_profile,
@@ -139,7 +143,7 @@ pub fn evaluate(
                 cohort.telemetry_profile,
             ),
         };
-        for path in sorted_input_files(&input)? {
+        for path in discovery.files {
             row.corpus.push(stream_referenced_events(
                 &path,
                 cohort.telemetry_profile,

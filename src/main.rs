@@ -11,7 +11,7 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use serde::{Deserialize, Serialize};
-use walkdir::WalkDir;
+use shenron::input_discovery::{discover_input_files, InputDiscoverySummary};
 
 use shenron::{
     access_log::{parse_combined_line, AccessLogFormat},
@@ -73,7 +73,7 @@ use shenron::{
         DEFAULT_MAX_SEQUENCE_OBSERVATIONS, DEFAULT_SEQUENCE_WINDOW_SECONDS,
     },
     triage_view::{build_triage_view, PrivateTriageView, SanitizedTriageSummary},
-    waf::maybe_gzip_reader,
+    waf::sniff_gzip_reader,
 };
 
 #[derive(Debug, Parser)]
@@ -1074,23 +1074,13 @@ fn resolve_input_format(input: &Path, requested: InputFormat) -> Result<InputFor
 }
 
 fn detect_input_formats(input: &Path) -> Result<DetectedInputFormats> {
-    let mut files = input_files(input)?;
-    files.sort();
+    let discovery = discover_input_files(input, None)?;
     let mut detected = DetectedInputFormats::default();
-
-    for path in files
-        .into_iter()
-        .filter(|path| is_auto_detection_input_file(path))
-    {
+    for path in discovery.files {
         let mut records_examined = 0;
-        let compressed = path
-            .extension()
-            .and_then(|extension| extension.to_str())
-            .is_some_and(|extension| extension.eq_ignore_ascii_case("gz"));
-        let reader = maybe_gzip_reader(
+        let reader = sniff_gzip_reader(
             File::open(&path).with_context(|| format!("opening {}", path.display()))?,
-            compressed,
-        );
+        )?;
         for line in BufReader::new(reader).lines() {
             let line = line.with_context(|| format!("reading {}", path.display()))?;
             let line = line.trim();
@@ -1113,13 +1103,6 @@ fn detect_input_formats(input: &Path) -> Result<DetectedInputFormats> {
         }
     }
     Ok(detected)
-}
-
-fn is_auto_detection_input_file(path: &Path) -> bool {
-    matches!(
-        path.extension().and_then(|extension| extension.to_str()),
-        Some("json" | "jsonl" | "log" | "txt" | "gz")
-    )
 }
 
 fn is_aws_waf_record(raw: &str) -> bool {
@@ -1155,6 +1138,8 @@ struct DailyVolumeSummary {
     safety_note: &'static str,
     telemetry_profile: TelemetryProfile,
     files_analyzed: usize,
+    #[serde(flatten)]
+    input_discovery: InputDiscoverySummary,
     total_requests: usize,
     distinct_source_ips: usize,
     top_path_request_share: Option<f64>,
@@ -1188,6 +1173,7 @@ impl DailyVolumeSummary {
             safety_note: "Aggregate request-volume and response-outcome measurements only. Response shares are counts of what the log recorded: low success can also result from redirects, authentication, health checks, early client disconnects, a slow backend, or an unavailable origin. These values are not thresholds, alerts, or determinations of outage, degraded availability, automation, denial of service, attack, abuse, compromise, or attacker identity. Source IP counts describe observed connection peers and may include CDN, load-balancer, NAT, or proxy addresses.",
             telemetry_profile: report.telemetry_profile,
             files_analyzed: report.files_analyzed,
+            input_discovery: report.input_discovery.clone(),
             total_requests: report.total_requests_analyzed,
             distinct_source_ips: concentration.distinct_source_ips,
             top_path_request_share: concentration.top_path.as_ref().map(|item| item.request_share),
@@ -1331,9 +1317,14 @@ fn main() -> Result<()> {
                     if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
                         fs::create_dir_all(parent)?;
                     }
-                    write_json_pretty(path, &result)?;
+                    write_json_pretty(&path, &result)?;
+                    shenron::input_discovery::write_discovery_manifest(
+                        &path,
+                        &result.counts.input_discovery,
+                    )?;
                     eprintln!("{}", shenron::investigation::SAFETY_NOTE);
                 }
+                print_input_discovery(&result.counts.input_discovery, true);
                 if show_request {
                     eprintln!("{}", shenron::investigation::SAFETY_NOTE);
                     serde_json::to_writer_pretty(io::stdout().lock(), &result)?;
@@ -1837,6 +1828,7 @@ fn main() -> Result<()> {
                         print_daily_volume_summary(&summary, output.as_deref())
                     }
                     DailyOutputFormat::Json => {
+                        print_input_discovery(&summary.input_discovery, true);
                         serde_json::to_writer_pretty(io::stdout().lock(), &summary)?;
                         println!();
                     }
@@ -1883,6 +1875,10 @@ fn main() -> Result<()> {
                 )?;
                 if let Some(path) = output.as_deref() {
                     write_json_pretty(path, &report)?;
+                    shenron::input_discovery::write_discovery_manifest(
+                        path,
+                        &report.input_discovery,
+                    )?;
                 }
                 print_ablation(&report, output.as_deref());
                 Ok(())
@@ -1917,6 +1913,10 @@ fn main() -> Result<()> {
                 )?;
                 if let Some(path) = output.as_deref() {
                     write_json_pretty(path, &report)?;
+                    shenron::input_discovery::write_discovery_manifest(
+                        path,
+                        &report.input_discovery,
+                    )?;
                 }
                 print_historical_replay(&report, output.as_deref());
                 Ok(())
@@ -1952,6 +1952,10 @@ fn main() -> Result<()> {
                 )?;
                 if let Some(path) = output.as_deref() {
                     write_json_pretty(path, &report)?;
+                    shenron::input_discovery::write_discovery_manifest(
+                        path,
+                        &report.input_discovery,
+                    )?;
                 }
                 print_count_hypotheses(&report, output.as_deref(), limit);
                 Ok(())
@@ -2207,6 +2211,11 @@ fn main() -> Result<()> {
                     &output,
                 )?;
                 save_candidate(&candidate, &output)?;
+                let discovery = InputDiscoverySummary::from_skipped(
+                    candidate.evidence.skipped_input_files.clone(),
+                );
+                print_input_discovery(&discovery, false);
+                shenron::input_discovery::write_discovery_manifest(&output, &discovery)?;
                 if candidate.evidence.source_address_unavailable > 0
                     || candidate.evidence.source_address_invalid > 0
                 {
@@ -2240,6 +2249,15 @@ fn main() -> Result<()> {
                 }
                 write_json_pretty_new(&output, &result)?;
                 eprintln!("{}", result.safety_note);
+                let discovery = InputDiscoverySummary::from_skipped(
+                    result
+                        .corpora
+                        .iter()
+                        .flat_map(|row| row.skipped_input_files.clone())
+                        .collect(),
+                );
+                print_input_discovery(&discovery, false);
+                shenron::input_discovery::write_discovery_manifest(&output, &discovery)?;
                 for (index, row) in result.corpora.iter().enumerate() {
                     println!("Cohort {}: parsed {} / malformed {} / matched {} / match share {} (source missing/invalid exclusions: {}/{}; absent condition fields: {}; overlapping whole files: {}; displayed path/peer omissions: {}/{})", index + 1, row.parseable_records, row.parse_errors, row.matching_records, row.match_share.map(|v| format!("{:.2}%", v*100.0)).unwrap_or_else(|| "unavailable".into()), row.source_address_unavailable, row.source_address_invalid, row.records_with_absent_condition_fields, row.files_with_identical_bytes_in_another_cohort, row.retained_paths_omitted_from_display, row.retained_peers_omitted_from_display);
                     println!(
@@ -2844,7 +2862,18 @@ fn triage_duration_error(value: &str) -> String {
     )
 }
 
+fn print_input_discovery(summary: &InputDiscoverySummary, machine_stdout: bool) {
+    if let Some(line) = summary.disclosure() {
+        if machine_stdout {
+            eprintln!("{line}");
+        } else {
+            println!("{line}");
+        }
+    }
+}
+
 fn print_hunt(report: &SanitizedHuntReport, sanitized_path: &Path) {
+    print_input_discovery(&report.metrics.input_discovery, false);
     println!(
         "Findings by WAF action (matching records): {}",
         format_waf_actions(report.metrics.findings_by_waf_action.as_ref(), false)
@@ -2949,6 +2978,7 @@ fn print_hunt(report: &SanitizedHuntReport, sanitized_path: &Path) {
 /// summarizes only aggregate observations and never repeats private finding
 /// values; the private JSONL/CSV stream itself is written to stdout.
 fn print_streaming_hunt_summary(report: &SanitizedHuntReport) {
+    print_input_discovery(&report.metrics.input_discovery, true);
     eprintln!(
         "Findings by WAF action (matching records): {}",
         format_waf_actions(report.metrics.findings_by_waf_action.as_ref(), false)
@@ -3089,6 +3119,7 @@ fn print_concentration(
     limit: usize,
     focus: Option<&FocusSelector>,
 ) {
+    print_input_discovery(&report.input_discovery, false);
     let time_range = match (&report.filter_from, &report.filter_to) {
         (None, None) => "Time filter:                all timestamps".to_owned(),
         (from, to) => format!(
@@ -3536,6 +3567,7 @@ fn format_waf_actions(
 }
 
 fn print_daily_volume_summary(summary: &DailyVolumeSummary, output: Option<&Path>) {
+    print_input_discovery(&summary.input_discovery, false);
     println!("Daily request-volume summary (aggregate counts only):");
     println!(
         "  WAF actions: {}",
@@ -4088,6 +4120,7 @@ fn display_limit(limit: usize) -> usize {
 }
 
 fn print_ablation(report: &AblationReport, output_path: Option<&Path>) {
+    print_input_discovery(&report.input_discovery, false);
     println!(
         "Ablation match-volume comparison only: volume rate = matched events / total events evaluated; it is NOT precision, recall, accuracy, ground truth, or an attack/exploitation/compromise determination."
     );
@@ -4126,6 +4159,7 @@ fn print_ablation(report: &AblationReport, output_path: Option<&Path>) {
 }
 
 fn print_historical_replay(report: &HistoricalReplayReport, output_path: Option<&Path>) {
+    print_input_discovery(&report.input_discovery, false);
     let aggregate = &report.aggregate;
     let coverage = aggregate
         .coverage
@@ -4186,6 +4220,7 @@ fn print_count_hypotheses(
     output_path: Option<&Path>,
     limit: usize,
 ) {
+    print_input_discovery(&report.input_discovery, false);
     println!("COUNT hypothesis ladder is an offline, non-deploying simulation. It reports trade-off measurements only and does NOT recommend a rung.");
     println!("{}", report.safety_note);
     print_template_filter_summary(report.inputs.template_filter.as_ref());
@@ -5485,24 +5520,6 @@ fn validate(rules: &Path) -> Result<()> {
         ruleset.unsupported.len()
     );
     Ok(())
-}
-
-fn input_files(input: &Path) -> Result<Vec<PathBuf>> {
-    if input.is_file() {
-        return Ok(vec![input.to_owned()]);
-    }
-    if !input.is_dir() {
-        anyhow::bail!(
-            "input path does not exist or is not a regular file/directory: {}",
-            input.display()
-        );
-    }
-    Ok(WalkDir::new(input)
-        .into_iter()
-        .filter_map(Result::ok)
-        .filter(|entry| entry.file_type().is_file())
-        .map(|entry| entry.into_path())
-        .collect())
 }
 
 #[cfg(test)]

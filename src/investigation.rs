@@ -3,14 +3,10 @@ use crate::{
     event::{canonical_ip, RawRetention, TelemetryCapabilities, TelemetryProfile},
     production::{stream_referenced_events, PathProvenance},
 };
-use anyhow::{bail, Context};
+use anyhow::bail;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::{
-    collections::BTreeSet,
-    net::IpAddr,
-    path::{Path, PathBuf},
-};
+use std::{collections::BTreeSet, net::IpAddr, path::Path};
 
 pub const SAFETY_NOTE: &str = "PRIVATE: observed connection peers and request paths, not actor identity or a determination of attack, exploitation, or compromise. Peers may be CDN/LB/NAT/proxies. Includes non-matching requests; no detection is inferred. Do not share without review.";
 
@@ -52,6 +48,8 @@ pub struct ContextRecord {
 
 #[derive(Debug, Default, Serialize)]
 pub struct ContextCounts {
+    #[serde(flatten)]
+    pub input_discovery: crate::input_discovery::InputDiscoverySummary,
     pub parseable_records: u64,
     pub parse_errors: u64,
     pub nonselected_peers: u64,
@@ -70,6 +68,8 @@ pub struct ContextCounts {
 #[derive(Debug, Serialize)]
 pub struct ContextReport {
     pub report_kind: &'static str,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub skipped_input_files: Vec<crate::input_discovery::SkippedInputFile>,
     pub safety_note: &'static str,
     pub retention_note: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -93,28 +93,6 @@ pub struct ContextOptions {
     pub include_query: bool,
 }
 
-/// Strict deterministic traversal: filesystem failures are errors, not skips.
-pub(crate) fn sorted_input_files(input: &Path) -> anyhow::Result<Vec<PathBuf>> {
-    if input.is_file() {
-        return Ok(vec![input.to_owned()]);
-    }
-    if !input.is_dir() {
-        bail!("input must be a readable file or directory");
-    }
-    let mut files = Vec::new();
-    for entry in walkdir::WalkDir::new(input) {
-        let entry = entry.context("walking input corpus")?;
-        if entry.file_type().is_symlink() {
-            bail!("symbolic links inside a corpus must be resolved explicitly");
-        }
-        if entry.file_type().is_file() {
-            files.push(entry.into_path());
-        }
-    }
-    files.sort();
-    Ok(files)
-}
-
 pub fn request_context(
     input: &Path,
     profile: TelemetryProfile,
@@ -134,16 +112,19 @@ pub fn request_context(
         .iter()
         .map(|ip| ip.to_canonical())
         .collect();
+    let discovery = crate::input_discovery::discover_input_files(input, Some(profile))?;
+    discovery.summary.reject_symlinks()?;
     let mut report = ContextReport {
+        skipped_input_files: discovery.summary.skipped.clone(),
         report_kind: "PRIVATE_REQUEST_CONTEXT", safety_note: SAFETY_NOTE,
         retention_note: "First eligible records in sorted input-file/physical-line order are retained; retained records are then sorted by UTC time, file, and line. Not necessarily the earliest records when capped. Query values are absent unless explicitly enabled. A field absent from a record is either unavailable in this telemetry profile (see field_availability) or unrecorded for that request. Absence is not a determination that a control did not act. Retained time bounds describe only the retained records. When records were omitted beyond the cap, they are a lower bound on the observed span.",
         from: options.from, to: options.to, query_values_included: options.include_query,
         selected_source_ips: options.source_ips.clone(),
-        counts: ContextCounts { maximum_records: options.maximum_records, ..Default::default() },
+        counts: ContextCounts { input_discovery: discovery.summary, maximum_records: options.maximum_records, ..Default::default() },
         corpus: Vec::new(), records: Vec::new(),
         field_availability: profile.capabilities(),
     };
-    for path in sorted_input_files(input)? {
+    for path in discovery.files {
         let provenance =
             stream_referenced_events(&path, profile, RawRetention::Drop, |line_number, event| {
                 let Ok(event) = event else {
@@ -318,7 +299,9 @@ mod tests {
         assert_eq!(result.counts.selected_without_timestamp, 1);
         assert_eq!(result.counts.selected_outside_window, 1);
         let gzip = dir.path().join("broken.gz");
-        fs::write(&gzip, b"invalid gzip").unwrap();
+        // A gzip signature with a truncated header must still be a read error;
+        // the suffix alone no longer selects the decoder.
+        fs::write(&gzip, [0x1f, 0x8b, 0x08]).unwrap();
         assert!(request_context(&gzip, TelemetryProfile::AwsWaf, &options).is_err());
     }
     #[test]

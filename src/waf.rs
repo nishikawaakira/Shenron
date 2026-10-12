@@ -232,9 +232,49 @@ pub fn maybe_gzip_reader<R: Read + 'static>(reader: R, compressed: bool) -> Box<
     }
 }
 
+/// Inspect stored bytes without reopening or losing bytes from the stream.
+pub fn sniff_gzip_reader<R: Read + 'static>(reader: R) -> std::io::Result<Box<dyn Read>> {
+    let mut reader = std::io::BufReader::new(reader);
+    let mut prefix = Vec::with_capacity(2);
+    reader.by_ref().take(2).read_to_end(&mut prefix)?;
+    let compressed = prefix == [0x1f, 0x8b];
+    Ok(maybe_gzip_reader(
+        std::io::Cursor::new(prefix).chain(reader),
+        compressed,
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gzip_sniffing_preserves_plain_bytes_and_handles_short_reads() {
+        use std::io::{Cursor, Write};
+        struct ShortReads(Cursor<Vec<u8>>);
+        impl Read for ShortReads {
+            fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+                let count = bytes.len().min(1);
+                self.0.read(&mut bytes[..count])
+            }
+        }
+        for input in [b"".as_slice(), b"x", b"plain text\n"] {
+            let mut output = Vec::new();
+            sniff_gzip_reader(ShortReads(Cursor::new(input.to_vec())))
+                .unwrap()
+                .read_to_end(&mut output)
+                .unwrap();
+            assert_eq!(output, input);
+        }
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(b"decoded log\n").unwrap();
+        let mut output = Vec::new();
+        sniff_gzip_reader(ShortReads(Cursor::new(encoder.finish().unwrap())))
+            .unwrap()
+            .read_to_end(&mut output)
+            .unwrap();
+        assert_eq!(output, b"decoded log\n");
+    }
 
     #[test]
     fn gzip_reader_consumes_every_member_and_reports_corrupt_later_members() {

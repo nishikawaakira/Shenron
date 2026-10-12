@@ -375,6 +375,7 @@ fn candidate(condition: DefensiveCondition) -> DefensiveCandidate {
         cves: vec!["CVE-2099-0001".to_owned()],
         kev: false,
         evidence: CandidateEvidence {
+            skipped_input_files: Vec::new(),
             source_address_unavailable: 0,
             source_address_invalid: 0,
             historical_requests_evaluated: 11,
@@ -390,6 +391,92 @@ fn candidate(condition: DefensiveCondition) -> DefensiveCandidate {
         recommended_action: RecommendedAction::Count,
         telemetry_profile: TelemetryProfile::AwsWaf,
         generation_version: "test".to_owned(),
+    }
+}
+
+#[test]
+fn candidate_replay_and_evaluation_share_rotated_log_discovery_and_private_exclusions() {
+    use std::io::Write;
+    let dir = tempdir().unwrap();
+    let logs = dir.path().join("logs");
+    fs::create_dir(&logs).unwrap();
+    let line = b"198.51.100.1 - - [01/Jan/2026:00:00:00 +0000] \"GET /login HTTP/1.1\" 200 10 \"-\" \"agent\"\n";
+    fs::write(logs.join("access.log.1"), line).unwrap();
+    fs::write(logs.join(".hidden"), line).unwrap();
+    fs::write(logs.join("notes.md"), line).unwrap();
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    encoder.write_all(line).unwrap();
+    fs::write(logs.join("access_log"), encoder.finish().unwrap()).unwrap();
+    let original = candidate(DefensiveCondition::UriEquals {
+        value: "/login".into(),
+    });
+    let candidate_path = dir.path().join("candidate.json");
+    shenron::candidate::save(&original, &candidate_path).unwrap();
+    let run = |args: &[&str]| {
+        let mut cmd = Command::cargo_bin("shenron").unwrap();
+        cmd.env("SHENRON_DATA_DIR", dir.path().join("empty-data"))
+            .env_remove("XDG_DATA_HOME")
+            .env_remove("SHENRON_SLACK_WEBHOOK")
+            .args(args)
+            .assert()
+            .success()
+            .stdout(contains(
+                "Files skipped: 2 (hidden: 1, unsupported-extension: 1)",
+            ));
+    };
+    let output = dir.path().join("replayed.json");
+    run(&[
+        "candidate",
+        "replay",
+        "--candidate",
+        candidate_path.to_str().unwrap(),
+        "--input",
+        logs.to_str().unwrap(),
+        "--format",
+        "nginx",
+        "--output",
+        output.to_str().unwrap(),
+    ]);
+    let replayed = shenron::candidate::load(&output).unwrap();
+    assert_eq!(replayed.evidence.historical_requests_evaluated, 2);
+    assert_eq!(replayed.evidence.skipped_input_files.len(), 2);
+    let plan = dir.path().join("plan.json");
+    fs::write(
+        &plan,
+        serde_json::json!({"corpora":[
+            {"input":"logs", "role":"development", "telemetry_profile":"nginx-combined"},
+            {"input":"logs/access.log.1", "role":"holdout", "telemetry_profile":"nginx-combined"}
+        ]})
+        .to_string(),
+    )
+    .unwrap();
+    let output = dir.path().join("evaluation.json");
+    run(&[
+        "candidate",
+        "evaluate",
+        "--candidate",
+        candidate_path.to_str().unwrap(),
+        "--plan",
+        plan.to_str().unwrap(),
+        "--output",
+        output.to_str().unwrap(),
+    ]);
+    let report: serde_json::Value = serde_json::from_slice(&fs::read(&output).unwrap()).unwrap();
+    assert_eq!(report["corpora"][0]["parseable_records"], 2);
+    assert_eq!(
+        report["corpora"][0]["skipped_input_files"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    for name in [
+        "replayed.json.run-manifest.json",
+        "evaluation.json.run-manifest.json",
+    ] {
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(dir.path().join(name)).unwrap()).unwrap();
+        assert_eq!(manifest["skipped_input_files"].as_array().unwrap().len(), 2);
     }
 }
 

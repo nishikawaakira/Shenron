@@ -109,6 +109,8 @@ pub struct FindingReference {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CandidateEvidence {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skipped_input_files: Vec<crate::input_discovery::SkippedInputFile>,
     #[serde(default, skip_serializing_if = "is_zero")]
     pub source_address_unavailable: u64,
     #[serde(default, skip_serializing_if = "is_zero")]
@@ -390,6 +392,7 @@ pub fn build_batch_from_findings_with_sigma(
                 cves: vec![cve],
                 kev: false,
                 evidence: CandidateEvidence {
+                    skipped_input_files: Vec::new(),
                     source_address_unavailable: 0,
                     source_address_invalid: 0,
                     historical_requests_evaluated: 0,
@@ -458,6 +461,7 @@ pub fn build_batch_from_findings_with_sigma(
                 cves: Vec::new(),
                 kev: false,
                 evidence: CandidateEvidence {
+                    skipped_input_files: Vec::new(),
                     source_address_unavailable: 0,
                     source_address_invalid: 0,
                     historical_requests_evaluated: 0,
@@ -603,7 +607,9 @@ pub fn replay(
         .collect::<BTreeSet<_>>();
     let mut matched_known_request_ids = BTreeSet::new();
     let mut other_historical_matches = 0_u64;
-    for path in crate::production::input_files(input, telemetry_profile)? {
+    let discovery = crate::input_discovery::discover_input_files(input, Some(telemetry_profile))?;
+    candidate.evidence.skipped_input_files = discovery.summary.skipped;
+    for path in discovery.files {
         crate::production::stream_events_with_raw_retention(
             &path,
             telemetry_profile,
