@@ -34,6 +34,8 @@ default and COUNT-only; see the README for the full invariants.
 
 ### Added
 
+- `probe-sources` provides bounded, offline per-source request-shape measurements and transparent `probe-shaped` review conditions, with readable text output, separate hostname-peer aggregation without DNS, an expanded MIT-attributed public-vocabulary catalog, missing/capped-observation disclosures, private provenance and aggregate-only default output. Plain canonical IP lists separate observed peers from validated clients; conditions and safety notes remain in the private report and manifest. Labels do not establish intent or recommend blocking; existing hunt findings and scores are unchanged.
+
 - Opt-in source-prefix detail counts distinct and once-requested URI paths with separate per-prefix/global pair caps, private omission disclosures and effective limits in the private run manifest; default artifacts and sanitized artifacts (even with opt-in) stay unchanged and no traffic classification is inferred.
 - Opt-in source-prefix volumes can include local ASN memberships, per-ASN counts and unresolved counts using an explicit or existing default dataset; the private run manifest records the used ASN dataset and its provenance for prefix/focus enrichment, with no network lookup, operator classification or sanitized ASN detail added.
 - Opt-in concentration/daily `--source-prefix-bits` and `--source-prefix-bits-v6` add private prefix volumes, per-source maxima and response-byte totals with missing/capped-observation disclosures; defaults and sanitized artifacts are unchanged.

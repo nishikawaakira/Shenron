@@ -1,0 +1,71 @@
+# Names are public vocabulary, not evidence of the software or intent of a peer.
+# Web-shell basenames are selected verbatim from SecLists Web-Shells/backdoor_list.txt.
+# Copyright (c) 2018 Daniel Miessler. MIT License: see SECLISTS-LICENSE.txt.
+version: 2
+categories:
+  - name: webshell-or-backdoor-names
+    mode: basename
+    source: https://github.com/danielmiessler/SecLists/blob/master/Web-Shells/backdoor_list.txt
+    patterns:
+      - 'ASPXspy.aspx'
+      - 'Ani-Shell.php'
+      - 'AspxSpy2014Final.aspx'
+      - 'JspSpy.jsp'
+      - 'Micro_Webshell.php'
+      - 'alfa3.php'
+      - 'alfav3.0.1.php'
+      - 'aspxshell.aspx'
+      - 'b374k-mini-shell-php.php.php'
+      - 'b374k.php.php'
+      - 'backdoorfr.php'
+      - 'bdotw44shell.php'
+      - 'bdshell.php'
+      - 'c999shell.php'
+      - 'c99_locus7s.php'
+      - 'c99_madnet.php'
+      - 'c99_webshell.php'
+      - 'c99ud.php'
+      - 'cfmShell.cfm'
+      - 'cmd.php'
+      - 'cybershell.php'
+      - 'devilzShell.asp'
+      - 'devilzShell.aspx'
+      - 'devilzShell.cgi'
+      - 'devilzShell.jsp'
+      - 'devilzShell.php'
+      - 'devshell.asp'
+      - 'devshell.cfm'
+      - 'ex0shell.php'
+      - 'g00nshell-v1.3.php'
+      - 'ironshell.php'
+      - 'jsp-reverse.jsp'
+      - 'jspshell.jsp'
+      - 'jspspy.jspx'
+      - 'jspspy_k8.jsp'
+      - 'lamashell.php'
+      - 'load_shell.php'
+      - 'myshell.php'
+      - 'nshell.php'
+      - 'obfuscated-phpshell.php'
+      - 'php-backdoor.php'
+      - 'php-findsock-shell.php'
+      - 'php-include-w-shell.php'
+      - 'php-reverse-shell.php'
+      - 'phpshell17.php'
+      - 'plugin-shell.php'
+      - 'qsd-php-backdoor.php'
+      - 'r57.php'
+      - 'r57shell.php'
+      - 'simple-backdoor.php'
+  - name: wordpress-paths
+    mode: root-tree
+    source: https://github.com/WordPress/WordPress
+    patterns: [/wp-admin, /wp-content, /wp-includes, /wp-login.php, /xmlrpc.php]
+  - name: config-or-secret-files
+    mode: exact
+    source: sigma-rules/secret-and-config-file-probe.yml
+    patterns: [/.env, /.git/config, /.aws/credentials, /.ssh/id_rsa, /wp-config.php, /terraform.tfstate, /.npmrc, /.docker/config.json]
+  - name: admin-or-installer-paths
+    mode: root-tree
+    source: https://owasp.org/www-community/attacks/Forced_browsing
+    patterns: [/admin, /administrator, /install, /setup, /phpmyadmin]

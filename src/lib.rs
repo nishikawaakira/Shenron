@@ -21,6 +21,7 @@ pub mod nuclei;
 pub mod observation_store;
 pub mod output;
 pub mod paths;
+pub mod probe_sources;
 pub mod processed_index;
 pub mod production;
 pub mod report;

@@ -120,6 +120,7 @@ post-hunt Slack notification).
 | `hunt` | The single detection entry point — Nuclei CVE + Sigma in one pass, with aggregate input-field availability, parse quality, and timestamp coverage. `--output <DIR>` writes the full private/sanitized artifacts; without `--output`, findings stream to stdout only. `--no-nuclei` runs Sigma-only with no setup; `--since`, `--baseline-latest`, `--report`, `--observation-store` shape a run |
 | `explain` | Triage a run's private findings by connection/client IP, ASN, or JA4 with behavior-priority scores, request sequences, and windowed rates |
 | `concentration` | Request-volume distribution without CTI; `--path` / `--path-prefix` / `--source-ip` focus |
+| `probe-sources` | [Bounded per-source request-shape observations](docs/probe-sources.md), with an offline path catalog, auditable review conditions and private opt-in details; not blocking recommendations |
 | `daily` | Lightweight aggregate request-volume and response-outcome summary; separates nginx 499 and reports window extrema, writes no artifacts by default, and provides JSON for monitoring |
 | `trend` | Read one explicitly selected private URI path across existing run artifacts without reprocessing logs |
 | `compare` | Diff two run directories (first-seen entities, elevated volume, newly observed CVEs) |

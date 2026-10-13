@@ -240,7 +240,7 @@ impl HuntTimeRange {
         Ok(())
     }
 
-    fn includes(&self, timestamp: Option<DateTime<Utc>>) -> bool {
+    pub(crate) fn includes(&self, timestamp: Option<DateTime<Utc>>) -> bool {
         let Some(timestamp) = timestamp else {
             return self.from.is_none() && self.to.is_none();
         };
@@ -3598,7 +3598,7 @@ where
 
 /// Fingerprint the stored input in the parsing pass, retaining raw lines only
 /// for callers that need them (for example, hunt's Sigma keyword matching).
-fn stream_events_with_fingerprint<F>(
+pub(crate) fn stream_events_with_fingerprint<F>(
     path: &Path,
     telemetry_profile: TelemetryProfile,
     trusted_proxies: &TrustedProxySet,

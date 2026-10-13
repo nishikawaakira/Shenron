@@ -483,6 +483,37 @@ impl TemplateFilterArgs {
 // arguments would add indirection solely to reduce the enum's stack size.
 #[allow(clippy::large_enum_variant)]
 enum ProductionCommand {
+    /// Describe bounded per-source request shapes, not attack or blocking decisions.
+    ProbeSources {
+        #[arg(long)]
+        input: PathBuf,
+        #[arg(long, value_enum, default_value_t = InputFormat::Auto)]
+        format: InputFormat,
+        /// Write private source detail/provenance and a separate counts-only report.
+        #[arg(long)]
+        output: Option<PathBuf>,
+        /// Inclusive lower UTC bound; undated rows are disclosed and excluded.
+        #[arg(long, value_parser = parse_rfc3339_utc)]
+        from: Option<DateTime<Utc>>,
+        /// Inclusive upper UTC bound.
+        #[arg(long, value_parser = parse_rfc3339_utc)]
+        to: Option<DateTime<Utc>>,
+        /// Verify forwarded clients only behind these peers; keep identities separate.
+        #[arg(long, value_name = "IP_OR_CIDR")]
+        trusted_proxy: Vec<TrustedProxy>,
+        /// Opt in to private address values and per-source evidence on stdout.
+        #[arg(long)]
+        show_source_ips: bool,
+        /// Also show bounded private example paths; never show query values.
+        #[arg(long, requires = "show_source_ips")]
+        show_paths: bool,
+        #[arg(long, default_value = "20", value_parser = parse_positive_usize)]
+        limit: usize,
+        #[arg(long, value_enum, default_value_t = DailyOutputFormat::Text)]
+        output_format: DailyOutputFormat,
+        #[command(flatten)]
+        options: shenron::probe_sources::Options,
+    },
     /// Review all requests (including non-matches) by observed peers, optionally within UTC bounds.
     Context {
         #[arg(long)]
@@ -1288,6 +1319,49 @@ fn main() -> Result<()> {
             }
         },
         Command::Production(command) => match command {
+            ProductionCommand::ProbeSources {
+                input,
+                format,
+                output,
+                from,
+                to,
+                trusted_proxy,
+                show_source_ips,
+                show_paths,
+                limit,
+                output_format,
+                options,
+            } => {
+                let report = shenron::probe_sources::run(
+                    &input,
+                    format.telemetry_profile_for_input(&input)?,
+                    &HuntTimeRange { from, to },
+                    &TrustedProxySet::new(trusted_proxy),
+                    &options,
+                    output.as_deref(),
+                )?;
+                let json = matches!(output_format, DailyOutputFormat::Json);
+                if json {
+                    print_input_discovery(&report.summary.input_discovery, true);
+                    let view = shenron::probe_sources::display(
+                        &report,
+                        show_source_ips,
+                        show_paths,
+                        limit,
+                    );
+                    serde_json::to_writer_pretty(io::stdout().lock(), &view)?;
+                    println!();
+                } else {
+                    shenron::probe_sources::write_text(
+                        io::stdout().lock(),
+                        &report,
+                        show_source_ips,
+                        show_paths,
+                        limit,
+                    )?;
+                }
+                Ok(())
+            }
             ProductionCommand::Context {
                 input,
                 format,
