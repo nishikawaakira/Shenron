@@ -483,6 +483,33 @@ impl TemplateFilterArgs {
 // arguments would add indirection solely to reduce the enum's stack size.
 #[allow(clippy::large_enum_variant)]
 enum ProductionCommand {
+    /// Count bounded identifier variations without inferring authorization or intent.
+    IdentifierAccess {
+        #[arg(long)]
+        input: PathBuf,
+        #[arg(long, value_enum, default_value_t = InputFormat::Auto)]
+        format: InputFormat,
+        #[arg(long)]
+        output: PathBuf,
+        #[arg(long, value_parser = parse_rfc3339_utc)]
+        from: Option<DateTime<Utc>>,
+        #[arg(long, value_parser = parse_rfc3339_utc)]
+        to: Option<DateTime<Utc>>,
+        /// Private analyst annotation, recorded verbatim in the manifest.
+        #[arg(long)]
+        corpus_label: Option<String>,
+        #[arg(long, value_name = "IP_OR_CIDR")]
+        trusted_proxy: Vec<TrustedProxy>,
+        #[arg(long)]
+        show_paths: bool,
+        #[arg(long)]
+        show_source_ips: bool,
+        /// Number of entries to display; zero displays all retained report entries.
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        #[command(flatten)]
+        options: shenron::identifier_access::Options,
+    },
     /// Describe bounded per-source request shapes, not attack or blocking decisions.
     ProbeSources {
         #[arg(long)]
@@ -1319,6 +1346,36 @@ fn main() -> Result<()> {
             }
         },
         Command::Production(command) => match command {
+            ProductionCommand::IdentifierAccess {
+                input,
+                format,
+                output,
+                from,
+                to,
+                corpus_label,
+                trusted_proxy,
+                show_paths,
+                show_source_ips,
+                limit,
+                options,
+            } => {
+                let report = shenron::identifier_access::run(
+                    &input,
+                    format.telemetry_profile_for_input(&input)?,
+                    &HuntTimeRange { from, to },
+                    &options,
+                    &output,
+                    corpus_label.as_deref(),
+                    &TrustedProxySet::new(trusted_proxy),
+                )?;
+                shenron::identifier_access::write_text(
+                    io::stdout().lock(),
+                    &report,
+                    show_paths,
+                    show_source_ips,
+                    limit,
+                )
+            }
             ProductionCommand::ProbeSources {
                 input,
                 format,

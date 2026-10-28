@@ -2574,7 +2574,7 @@ fn response_outcome_summary(counts: &StatusClassCounts) -> ResponseOutcomeSummar
     }
 }
 
-fn record_status_class(counts: &mut StatusClassCounts, status: Option<u16>) {
+pub(crate) fn record_status_class(counts: &mut StatusClassCounts, status: Option<u16>) {
     match status {
         Some(100..=199) => counts.informational += 1,
         Some(200..=299) => counts.success += 1,

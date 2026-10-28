@@ -11,6 +11,7 @@ pub mod cti_export;
 pub mod disposition;
 pub mod event;
 pub mod findings_io;
+pub mod identifier_access;
 pub mod input_discovery;
 pub mod investigation;
 pub mod kev;

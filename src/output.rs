@@ -24,6 +24,27 @@ pub fn write_json_pretty_new(path: impl AsRef<Path>, value: &impl Serialize) -> 
     write_new_output(path, |file| write_json_pretty_buffered(file, path, value))
 }
 
+/// Write a new-only artifact group, removing only completed outputs from this
+/// call if a later write fails. Each failing write handles its own partial file.
+pub fn write_json_pretty_new_batch<T: Serialize>(outputs: &[(&Path, T)]) -> anyhow::Result<()> {
+    for (index, (path, value)) in outputs.iter().enumerate() {
+        if let Err(mut error) = write_json_pretty_new(path, value) {
+            for (completed, _) in outputs[..index].iter().rev() {
+                if let Err(cleanup_error) = fs::remove_file(completed) {
+                    if cleanup_error.kind() != io::ErrorKind::NotFound {
+                        error = error.context(format!(
+                            "could not remove incomplete output {}: {cleanup_error}",
+                            completed.display()
+                        ));
+                    }
+                }
+            }
+            return Err(error);
+        }
+    }
+    Ok(())
+}
+
 fn write_new_output(
     path: &Path,
     write: impl FnOnce(&mut File) -> anyhow::Result<()>,

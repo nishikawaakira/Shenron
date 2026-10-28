@@ -34,6 +34,8 @@ default and COUNT-only; see the README for the full invariants.
 
 ### Added
 
+- `identifier-access` adds offline, bounded per-identity identifier measurements, including extension-preserving numeric/UUID path templates, query IDs, distinct-ID-weighted response sizes, sequential/prefix/time-like observations and prior-write references. Write references use exact POST/PUT/PATCH/DELETE tokens and exclude the same entry; 1xx/3xx-only IDs and unproven minimum counts are disclosed separately. Private evidence and corpus provenance are separated from aggregate-only sanitized output; missing and capped evidence is disclosed without authorization or disclosure judgments. Failed artifact batches remove their completed outputs for retry.
+
 - `probe-sources` provides bounded, offline per-source request-shape measurements and transparent `probe-shaped` review conditions, with readable text output, separate hostname-peer aggregation without DNS, an expanded MIT-attributed public-vocabulary catalog, missing/capped-observation disclosures, private provenance and aggregate-only default output. Plain canonical IP lists separate observed peers from validated clients; conditions and safety notes remain in the private report and manifest. Labels do not establish intent or recommend blocking; existing hunt findings and scores are unchanged.
 
 - Opt-in source-prefix detail counts distinct and once-requested URI paths with separate per-prefix/global pair caps, private omission disclosures and effective limits in the private run manifest; default artifacts and sanitized artifacts (even with opt-in) stay unchanged and no traffic classification is inferred.
