@@ -96,6 +96,10 @@ fn identifier_sweep_prior_writes_order_privacy_and_bytes_are_reproducible() {
     assert_eq!(stdout, again);
     let entries = report["entries"].as_array().unwrap();
     assert_eq!(entries.len(), 2);
+    assert!(entries
+        .iter()
+        .all(|row| row["distinct_ids_at_least"].is_null()));
+    assert_eq!(report["summary"]["requests_excluded_by_method"], 0);
     let own = &entries[0];
     assert_eq!(own["distinct_ids"], 301);
     assert_eq!(own["content_ids"], 1);
@@ -163,6 +167,209 @@ fn identifier_sweep_prior_writes_order_privacy_and_bytes_are_reproducible() {
         .stderr(predicates::str::contains(
             "refusing to overwrite existing output:",
         ));
+}
+
+#[test]
+fn identifier_method_filter_preserves_writes_without_consuming_entry_capacity() {
+    let root = tempfile::tempdir().unwrap();
+    let input = root.path().join("access.log");
+    let mut log = String::new();
+    for id in 7000..7300 {
+        log += &line(
+            "192.0.2.20",
+            "PUT",
+            &format!("/api/v1/receipts/{id}.json"),
+            200,
+            800,
+            0,
+        );
+    }
+    log += &own_data();
+    fs::write(&input, log).unwrap();
+    let (all, _) = run(root.path(), &input, "all", &[]);
+    assert_eq!(all["entries"].as_array().unwrap().len(), 2);
+    assert_eq!(all["entries"][0]["method"], "GET");
+    assert_eq!(all["entries"][1]["method"], "PUT");
+    assert_eq!(all["entries"][1]["rejected_ids"], 300);
+    assert_eq!(all["summary"]["requests_excluded_by_method"], 0);
+    let args = ["--method", "GET", "--method", "HEAD", "--max-entries", "1"];
+    let (filtered, stdout) = run(root.path(), &input, "reads", &args);
+    let (get_only, _) = run(root.path(), &input, "get-only", &["--method", "GET"]);
+    assert_eq!(get_only, filtered);
+    assert_eq!(filtered["entries"], json!([all["entries"][0]]));
+    assert_eq!(filtered["entries"][0]["ids_written_by_same_peer"], 1);
+    assert_eq!(
+        filtered["entries"][0]["ids_written_before_first_content"],
+        1
+    );
+    let summary = &filtered["summary"];
+    assert_eq!(summary["requests_excluded_by_method"], 301);
+    assert_eq!(summary["total_entries"], 1);
+    assert_eq!(summary["entries_at_or_above_minimum"], 1);
+    assert_eq!(summary["rejected_share_at_least_08"], 1);
+    assert_eq!(summary["omissions"]["entry_observations_beyond_cap"], 0);
+    assert_eq!(
+        read(root.path().join("reads/run-manifest.json"))["options"]["method"],
+        json!(["GET", "HEAD"])
+    );
+    let sanitized =
+        fs::read_to_string(root.path().join("reads/sanitized-identifier-access.json")).unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&sanitized).unwrap()["requests_excluded_by_method"],
+        301
+    );
+    assert!(!sanitized.contains("GET"));
+    assert!(!sanitized.contains("HEAD"));
+    let (_, repeat) = run(root.path(), &input, "repeat", &args);
+    assert_eq!(stdout, repeat);
+    for name in [
+        "identifier-access.json",
+        "sanitized-identifier-access.json",
+        "run-manifest.json",
+    ] {
+        assert_eq!(
+            fs::read(root.path().join("reads").join(name)).unwrap(),
+            fs::read(root.path().join("repeat").join(name)).unwrap()
+        );
+    }
+    let (lowercase, _) = run(root.path(), &input, "lowercase", &["--method", "get"]);
+    assert_eq!(lowercase["entries"], json!([]));
+    assert_eq!(lowercase["summary"]["requests_excluded_by_method"], 602);
+    assert_eq!(lowercase["summary"]["total_entries"], 0);
+    // Exclusions count requests once, even when several ID positions are extracted.
+    fs::write(
+        &input,
+        line("192.0.2.20", "PUT", "/items/1/parts/2", 200, 10, 0),
+    )
+    .unwrap();
+    let (multiple, _) = run(root.path(), &input, "multiple", &["--method", "GET"]);
+    assert_eq!(multiple["summary"]["requests_excluded_by_method"], 1);
+}
+
+#[test]
+fn identifier_table_has_one_row_per_entry_nulls_and_gated_columns() {
+    let root = tempfile::tempdir().unwrap();
+    let input = root.path().join("access.log");
+    fs::write(&input, sweep() + &own_data()).unwrap();
+    for (name, args, suffix) in [
+        ("plain", vec![], ""),
+        ("paths", vec!["--show-paths"], " method position template"),
+        ("sources", vec!["--show-source-ips"], " source"),
+        (
+            "both",
+            vec!["--show-source-ips", "--show-paths"],
+            " source method position template",
+        ),
+    ] {
+        let mut args = args;
+        args.extend(["--limit", "1"]);
+        let (report, stdout) = run(root.path(), &input, name, &args);
+        assert_eq!(report["entries"][0]["distinct_ids_at_least"], Value::Null);
+        if name != "plain" {
+            for artifact in [
+                "identifier-access.json",
+                "sanitized-identifier-access.json",
+                "run-manifest.json",
+            ] {
+                assert_eq!(
+                    fs::read(root.path().join("plain").join(artifact)).unwrap(),
+                    fs::read(root.path().join(name).join(artifact)).unwrap()
+                );
+            }
+        }
+        let text = String::from_utf8(stdout).unwrap();
+        let lines: Vec<_> = text.lines().collect();
+        let header = lines
+            .iter()
+            .position(|line| line.trim_start().starts_with("# "))
+            .unwrap();
+        assert_eq!(lines[header].split_whitespace().collect::<Vec<_>>().join(" "),
+            format!("# requests ids content rejected share dom_bytes adjacent prefix timestamp written_before{suffix}"));
+        let row: Vec<_> = lines[header + 1].split_whitespace().collect();
+        assert_eq!(
+            &row[..11],
+            &["1", "301", "301", "1", "300", "1.00", "-", "1.00", "0.00", "0.00", "1"]
+        );
+        assert_eq!(lines[header + 2], "Entries not displayed: 1");
+        assert_eq!(header + 3, lines.len());
+        assert!(lines[header - 1].contains("not a judgment or score"));
+        assert!(text.contains("  Requests excluded by method: 0"));
+        assert!(!text.contains("example.test"));
+        assert!(!text.contains("5001"));
+        if !args.contains(&"--show-source-ips") {
+            assert!(!text.contains("192.0.2."));
+        }
+        if !args.contains(&"--show-paths") {
+            assert!(!text.contains("/api/"));
+        }
+    }
+    let (_, stdout) = run(
+        root.path(),
+        &input,
+        "capped",
+        &["--max-ids-per-entry", "10"],
+    );
+    let text = String::from_utf8(stdout).unwrap();
+    assert!(text.contains(">=10"));
+    let row = text
+        .lines()
+        .find(|line| line.split_whitespace().next() == Some("1"))
+        .unwrap();
+    assert_eq!(
+        &row.split_whitespace().collect::<Vec<_>>()[2..6],
+        &[">=10", "-", "-", "-"]
+    );
+    let (_, stdout) = run(root.path(), &input, "entry-cap", &["--max-entries", "1"]);
+    assert!(String::from_utf8(stdout)
+        .unwrap()
+        .contains("  Total entries: unknown"));
+}
+
+#[test]
+fn identifier_unfiltered_artifact_bytes_change_only_for_method_count_and_optional_lower_bound() {
+    use sha2::{Digest, Sha256};
+    let root = tempfile::tempdir().unwrap();
+    let input = root.path().join("access.log");
+    let mut log = String::new();
+    for (source, id, status, size) in [
+        ("192.0.2.10", 1, 200, 100),
+        ("::ffff:192.0.2.10", 2, 200, 800),
+        ("192.0.2.10", 3, 499, 10),
+        ("::ffff:192.0.2.10", 1, 200, 101),
+        ("192.0.2.10", 2, 200, 800),
+        ("192.0.2.10", 4, 503, 10),
+    ] {
+        log += &line(source, "GET", &format!("/items/{id}"), status, size, 0);
+    }
+    fs::write(&input, log).unwrap();
+    run(root.path(), &input, "report", &["--min-distinct-ids", "1"]);
+    // Pre-filter/table-change bytes from the synthetic fixture, excluding only intended changes.
+    for (file, expected) in [
+        (
+            "identifier-access.json",
+            "935d29ae8560220ab7a06838ce9c7d66cffaf5aa8b863a4d4ebea080e3bc9cf4",
+        ),
+        (
+            "sanitized-identifier-access.json",
+            "a79ecbbcbcca061b1f0b8a621e9afa9ba0d5f8cf2876a1e5b0e1f30c9b35f38b",
+        ),
+    ] {
+        let bytes = fs::read_to_string(root.path().join("report").join(file)).unwrap();
+        let previous = bytes
+            .lines()
+            .filter(|line| !line.contains("\"requests_excluded_by_method\": "))
+            .collect::<Vec<_>>()
+            .join("\n")
+            .replace(
+                "\"distinct_ids_at_least\": null",
+                "\"distinct_ids_at_least\": 4",
+            );
+        assert_eq!(
+            format!("{:x}", Sha256::digest(previous.as_bytes())),
+            expected,
+            "{file}"
+        );
+    }
 }
 
 #[test]

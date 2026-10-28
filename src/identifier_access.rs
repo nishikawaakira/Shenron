@@ -28,6 +28,9 @@ pub const SAFETY_NOTE: &str = "Identifier-access measurements are not a determin
 
 #[derive(Debug, Clone, Args, Serialize)]
 pub struct Options {
+    /// Only report these exact, case-sensitive method tokens; writes still feed history.
+    #[arg(long)]
+    pub method: Vec<String>,
     #[arg(long, default_value_t = 20)]
     pub min_distinct_ids: usize,
     #[arg(long)]
@@ -88,6 +91,7 @@ pub struct Summary {
     requests_without_timestamp: u64,
     successful_requests_without_response_bytes: u64,
     requests_with_identifiers: u64,
+    requests_excluded_by_method: u64,
     requests_without_source: u64,
     requests_without_method: u64,
     requests_without_path: u64,
@@ -229,7 +233,7 @@ pub struct Entry {
     key: Key,
     requests: u64,
     distinct_ids: Option<usize>,
-    distinct_ids_at_least: usize,
+    distinct_ids_at_least: Option<usize>,
     status_classes: StatusClassCounts,
     dominant_2xx_response_bytes: Option<u64>,
     content_ids: Option<usize>,
@@ -571,6 +575,12 @@ impl Analysis {
             return;
         }
         self.summary.requests_with_identifiers += 1;
+        let selected_method = options.method.is_empty()
+            || event
+                .method
+                .as_ref()
+                .is_some_and(|m| options.method.contains(m));
+        self.summary.requests_excluded_by_method += u64::from(!selected_method);
         let (identity, raw) = if let Some(client) = event.client_ip.as_deref() {
             ("validated-client", Some(client))
         } else {
@@ -602,7 +612,9 @@ impl Analysis {
                 ..peer
             };
             let retained = self.entries.len();
-            let entry = if let Some(entry) = self.entries.get_mut(&key as &dyn Lookup) {
+            let entry = if !selected_method {
+                None
+            } else if let Some(entry) = self.entries.get_mut(&key as &dyn Lookup) {
                 Some(entry)
             } else if retained < options.max_entries {
                 let owned = key.owned(identity);
@@ -787,7 +799,7 @@ impl Analysis {
                 key,
                 requests: a.requests,
                 distinct_ids: (a.id_omissions == 0).then_some(a.ids.len()),
-                distinct_ids_at_least: a.ids.len(),
+                distinct_ids_at_least: (a.id_omissions > 0).then_some(a.ids.len()),
                 content_ids: measurable.then_some(content.len()),
                 rejected_ids: measurable.then_some(rejected),
                 redirect_only_ids: measurable.then_some(redirect_only),
@@ -827,7 +839,11 @@ impl Analysis {
         rows.sort_by(|a, b| {
             b.rejected_ids
                 .cmp(&a.rejected_ids)
-                .then(b.distinct_ids_at_least.cmp(&a.distinct_ids_at_least))
+                .then(
+                    b.distinct_ids
+                        .or(b.distinct_ids_at_least)
+                        .cmp(&a.distinct_ids.or(a.distinct_ids_at_least)),
+                )
                 .then(a.key.cmp(&b.key))
         });
         self.summary.sources_at_or_above_minimum = qualifying_peers.len();
@@ -933,7 +949,144 @@ pub fn write_text(
         writeln!(out, "{disclosure}")?;
     }
     writeln!(out, "Identifier-access summary (aggregate counts only):")?;
-    serde_json::to_writer_pretty(&mut out, &report.summary)?;
+    let summary = &report.summary;
+    for (name, value) in [
+        ("Files analyzed", summary.files_analyzed as u64),
+        ("Parseable records", summary.parseable_records),
+        ("Parse errors", summary.parse_errors),
+        ("Analyzed requests", summary.analyzed_requests),
+        (
+            "Requests with identifiers",
+            summary.requests_with_identifiers,
+        ),
+        (
+            "Requests excluded by method",
+            summary.requests_excluded_by_method,
+        ),
+        ("Retained entries", summary.retained_entries as u64),
+        (
+            "Entries at or above minimum",
+            summary.entries_at_or_above_minimum as u64,
+        ),
+        (
+            "Sources at or above minimum",
+            summary.sources_at_or_above_minimum as u64,
+        ),
+        (
+            "Entries below minimum",
+            summary.entries_below_minimum as u64,
+        ),
+        (
+            "Entries below minimum unproven",
+            summary.entries_below_minimum_unproven as u64,
+        ),
+        (
+            "Entries with ID cap omissions",
+            summary.entries_with_id_cap_omissions as u64,
+        ),
+        ("Reported entries", summary.reported_entries as u64),
+        (
+            "Timestamp-like share >= 0.5",
+            summary.timestamp_like_share_at_least_half as u64,
+        ),
+        (
+            "Prefix-extension share >= 0.5",
+            summary.prefix_extension_share_at_least_half as u64,
+        ),
+    ] {
+        writeln!(out, "  {name}: {value}")?;
+    }
+    writeln!(
+        out,
+        "  Total entries: {}",
+        summary
+            .total_entries
+            .map_or_else(|| "unknown".into(), |v| v.to_string())
+    )?;
+    writeln!(out, "  Rejected-ID share bands: unavailable {} / <0.3 {} / [0.3,0.5) {} / [0.5,0.8) {} / >=0.8 {}",
+        summary.rejected_share_unavailable, summary.rejected_share_below_03,
+        summary.rejected_share_03_to_05, summary.rejected_share_05_to_08,
+        summary.rejected_share_at_least_08)?;
+    for (name, value) in [
+        (
+            "Records outside time range",
+            summary.records_outside_time_range,
+        ),
+        (
+            "Undated records excluded by time range",
+            summary.undated_records_excluded_by_time_range,
+        ),
+        ("Requests without status", summary.requests_without_status),
+        (
+            "Requests without timestamp",
+            summary.requests_without_timestamp,
+        ),
+        (
+            "Successful requests without response bytes",
+            summary.successful_requests_without_response_bytes,
+        ),
+        ("Requests without source", summary.requests_without_source),
+        ("Requests without method", summary.requests_without_method),
+        ("Requests without path", summary.requests_without_path),
+        (
+            "Excluded query identifier observations",
+            summary.excluded_query_identifier_observations,
+        ),
+        (
+            "Repeated query identifier observations",
+            summary.repeated_query_identifier_observations,
+        ),
+        (
+            "Entry observations beyond cap",
+            summary.omissions.entry_observations_beyond_cap,
+        ),
+        (
+            "ID observations beyond cap",
+            summary.omissions.id_observations_beyond_cap,
+        ),
+        (
+            "Response-size observations beyond cap",
+            summary.omissions.response_size_observations_beyond_cap,
+        ),
+        (
+            "Write observations beyond peer cap",
+            summary.omissions.write_observations_beyond_peer_cap,
+        ),
+        (
+            "Write observations beyond ID cap",
+            summary.omissions.write_observations_beyond_id_cap,
+        ),
+        (
+            "Content ID values not reported",
+            summary.omissions.content_id_values_not_reported,
+        ),
+    ] {
+        if value > 0 {
+            writeln!(out, "  {name}: {value}")?;
+        }
+    }
+    writeln!(out, "Order: rejected ID count, then retained distinct ID count (descending); not a judgment or score.")?;
+    write!(
+        out,
+        "{:>4} {:>10} {:>10} {:>10} {:>10} {:>6} {:>10} {:>8} {:>8} {:>9} {:>14}",
+        "#",
+        "requests",
+        "ids",
+        "content",
+        "rejected",
+        "share",
+        "dom_bytes",
+        "adjacent",
+        "prefix",
+        "timestamp",
+        "written_before"
+    )?;
+    if show_sources {
+        write!(out, " {:<39}", "source")?;
+    }
+    if show_paths {
+        write!(out, " {:<8} {:<14} template", "method", "position")?;
+    }
     writeln!(out)?;
     let shown = if limit == 0 {
         report.entries.len()
@@ -941,40 +1094,44 @@ pub fn write_text(
         limit.min(report.entries.len())
     };
     for (i, row) in report.entries.iter().take(shown).enumerate() {
-        let mut numbers = serde_json::to_value(row)?;
-        for key in [
-            "identity",
-            "source",
-            "method",
-            "host",
-            "template",
-            "position",
-            "self_reference_segment",
-            "content_id_values",
-        ] {
-            numbers
-                .as_object_mut()
-                .expect("entry is an object")
-                .remove(key);
-        }
-        writeln!(out, "Entry {}: {}", i + 1, numbers)?;
+        let ids = row.distinct_ids.map_or_else(
+            || {
+                row.distinct_ids_at_least
+                    .map_or_else(|| "-".into(), |v| format!(">={v}"))
+            },
+            |v| v.to_string(),
+        );
+        let count = |value: Option<usize>| value.map_or_else(|| "-".into(), |v| v.to_string());
+        let share = |value: Option<f64>| value.map_or_else(|| "-".into(), |v| format!("{v:.2}"));
+        write!(
+            out,
+            "{:>4} {:>10} {:>10} {:>10} {:>10} {:>6} {:>10} {:>8} {:>8} {:>9} {:>14}",
+            i + 1,
+            row.requests,
+            ids,
+            count(row.content_ids),
+            count(row.rejected_ids),
+            share(row.rejected_id_share),
+            row.dominant_2xx_response_bytes
+                .map_or_else(|| "-".into(), |v| v.to_string()),
+            share(row.adjacent_step_share),
+            share(row.prefix_extension_share),
+            share(row.timestamp_like_share),
+            count(row.ids_written_before_first_content)
+        )?;
         if show_sources {
-            writeln!(
-                out,
-                "  Source ({}): {}",
-                row.key.peer.identity,
-                terminal_safe(&row.key.peer.source)
-            )?;
+            write!(out, " {:<39}", terminal_safe(&row.key.peer.source))?;
         }
         if show_paths {
-            writeln!(
+            write!(
                 out,
-                "  Template: {} / position: {} / method: {}",
-                terminal_safe(&row.key.template),
+                " {:<8} {:<14} {}",
+                terminal_safe(&row.key.method),
                 terminal_safe(&row.key.position),
-                terminal_safe(&row.key.method)
+                terminal_safe(&row.key.template)
             )?;
         }
+        writeln!(out)?;
     }
     writeln!(
         out,
@@ -991,6 +1148,7 @@ mod tests {
 
     fn options() -> Options {
         Options {
+            method: Vec::new(),
             min_distinct_ids: 1,
             exclude_query_param: Vec::new(),
             max_entries: 100,

@@ -7,7 +7,8 @@ once, without network access or response bodies.
 ```sh
 shenron identifier-access --input ./logs --format auto --output ./private-identifiers
 shenron identifier-access --input ./logs --format apache-vhost --output ./private-review \
-  --corpus-label 'example.test review' --show-paths --show-source-ips --limit 20
+  --corpus-label 'example.test review' --method GET --method HEAD \
+  --show-paths --show-source-ips --limit 20
 ```
 
 Use one site's corpus, or a host-bearing profile when separating hosts matters.
@@ -16,6 +17,21 @@ than inferred. Input discovery, gzip magic detection, inclusive UTC
 `--from`/`--to`, and format autodetection use the existing production readers.
 Undated requests are excluded and counted when a time bound is supplied.
 Skipped paths/reasons are private; stdout discloses their counts by reason.
+
+`--method TOKEN` is repeatable and selects entry methods by exact, case-sensitive
+comparison. Without it, all methods remain eligible. For reviewing reads, use
+`--method GET --method HEAD`: creation APIs can return the same-size 200 response
+for many IDs, which the size heuristic counts as rejected without judging what
+the API did. Filtering lets the operator review reads separately.
+Excluded methods create no entries and consume no entry slots, but exact
+POST/PUT/PATCH/DELETE requests still feed the independently bounded write history.
+`requests_excluded_by_method` counts ID-containing requests excluded by this
+selection once per request, not per ID position (zero without a filter).
+With a filter, an absent method also cannot match a selected token.
+Request-level counts and the corpus timestamp span still describe the selected
+time range before method filtering; entry totals, minimum counts, share bands
+and ordering describe only the filtered entries. Sanitized output contains the
+exclusion count, never method tokens; the private manifest records the method list.
 
 ## Identifier extraction and identity
 
@@ -93,7 +109,8 @@ This is a string observation, not an interpretation of endpoint semantics.
 
 `ids_written_by_same_peer` counts retained IDs also used by the same identity
 in exactly POST, PUT, PATCH or DELETE (case-sensitive), across templates and hosts
-in the selected corpus. Other method tokens still produce entries but never
+in the selected corpus, even when excluded by `--method`. Other method tokens
+produce entries only when selected and never
 contribute write history. It does not require a successful write response and does not
 establish ownership. `ids_written_before_first_content` additionally requires a
 strictly earlier recorded write timestamp than the first content timestamp.
@@ -129,7 +146,8 @@ not estimated distinct values, are counted by reason. Report truncation does not
 change measurements; content ID values are emitted in lexical order.
 
 When an entry's ID cap actually rejects observations, `distinct_ids` is null
-and `distinct_ids_at_least` gives the retained lower bound. Such entries remain
+and `distinct_ids_at_least` gives the retained lower bound. Otherwise,
+`distinct_ids` is exact and `distinct_ids_at_least` is null. Such incomplete entries remain
 in private output even below the reporting minimum, with a sanitized count of
 affected entries. Merely filling a cap without rejection does not make data
 incomplete. `total_entries` is null when the entry cap omitted observations;
@@ -169,8 +187,16 @@ These implementation choices do not alter admission order, lexical output
 ordering, raw display spelling or measurements. Status-class accounting and
 address normalization use the same helpers as the other analysis commands.
 
-Stdout shows the safety note, aggregate counts and the top `--limit` numerical
-rows (default 20, zero means all). Suppressed rows are counted. Only
+Stdout shows the safety note, aggregate `  Name: value` lines and a fixed-width
+table with one line per entry for the top `--limit` rows (default 20, zero means
+all). Columns are `# requests ids content rejected share dom_bytes adjacent
+prefix timestamp written_before`, followed by optional `source` and optional
+`method position template` (template last). `ids` shows the exact count, or
+`>=` followed by the retained lower bound when observations were omitted.
+Null measurements appear as `-`, shares have two decimal places, and counts
+have no thousands separators. Unknown total entries are shown as `unknown`.
+The table retains the private artifact's inspection order, not a judgment or
+score. Suppressed rows are counted in the final `Entries not displayed` line. Only
 `--show-source-ips` exposes source values; only `--show-paths` exposes templates,
 positions and methods. Hosts, literal IDs and self-reference strings stay private.
 These display gates do not affect private artifacts.
