@@ -830,6 +830,7 @@ fn response_sizes_text_summarizes_counts_numbers_both_modes_and_truncates_length
     assert!(text.contains("  Analyzed requests: 14\n"));
     assert!(text.contains("  Paired requests: 12\n"));
     assert!(!text.contains("Parse errors:"));
+    assert!(!text.contains("Invalid UTF-8 lines:"));
     assert!(!text.contains("Observations beyond cap:"));
     assert!(!text.contains("Requests without required fields:"));
     for private in [
@@ -886,4 +887,403 @@ fn response_sizes_text_summarizes_counts_numbers_both_modes_and_truncates_length
             fs::read(root.path().join("repeat-shown").join(name)).unwrap()
         );
     }
+}
+
+#[test]
+fn response_sizes_query_and_form_plus_spaces_match_percent_spaces_without_changing_wire_counts() {
+    let root = tempfile::tempdir().unwrap();
+    let input = root.path().join("access.log");
+    for location in ["target", "json-path", "form"] {
+        for (encoding, control_space, read_space) in [
+            ("plus", "+", "+"),
+            ("percent", "%20", "%20"),
+            ("mixed", "+", "%20"),
+        ] {
+            let request = |expression: &str, space: &str| {
+                let query = format!("q=HEX(CAST(({expression})AS CHAR))").replace(' ', space);
+                match location {
+                    "target" => (format!("/items?{query}"), String::new()),
+                    "json-path" => (
+                        "/batch".into(),
+                        format!(r#"{{"path":"/items?{query}","note":"literal+plus"}}"#),
+                    ),
+                    _ => ("/batch".into(), query),
+                }
+            };
+            let (control_target, control_body) = request("SELECT 0x4f4b", control_space);
+            let (read_target, read_body) = request("SELECT value FROM items", read_space);
+            let request_delta = (read_target.len() + read_body.len()) as i64
+                - (control_target.len() + control_body.len()) as i64;
+            let mut log = line("192.0.2.8", &control_target, &control_body, 1000, 0, true);
+            log += &line(
+                "192.0.2.8",
+                &read_target,
+                &read_body,
+                (1000 + request_delta + 12) as u64,
+                1,
+                true,
+            );
+            if location == "form" {
+                log = log.replace(
+                    "\"application/json\"",
+                    "\"Application/X-WWW-Form-Urlencoded; charset=UTF-8\"",
+                );
+            }
+            fs::write(&input, log).unwrap();
+            let (report, _) = run(root.path(), &input, &format!("{location}-{encoding}"), &[]);
+            assert_eq!(
+                report["summary"]["control_requests"], 1,
+                "{location}/{encoding}"
+            );
+            assert_eq!(report["summary"]["paired_requests"], 1);
+            let row = &report["paired_expressions"][0];
+            assert_eq!(row["expression"], "select value from items");
+            assert_eq!(row["estimated_lengths"], serde_json::json!([8]));
+            assert_eq!(row["estimates"][0]["baseline_length"], 2);
+            assert_eq!(row["estimates"][0]["request_byte_delta"], request_delta);
+            assert_eq!(row["estimates"][0]["adjusted_delta"], 12);
+        }
+    }
+}
+
+#[test]
+fn response_sizes_encoded_and_non_query_pluses_stay_literal() {
+    let root = tempfile::tempdir().unwrap();
+    let input = root.path().join("access.log");
+    for (index, (prefix, suffix, control, read)) in [
+        (
+            "/?q=",
+            "",
+            "HEX(CAST((SELECT+1)AS+CHAR))",
+            "HEX(CAST((SELECT+1%2B1)AS+CHAR))",
+        ),
+        (
+            "/?q=",
+            "",
+            "HEX(CAST((SELECT+1)AS+CHAR))",
+            "HEX(CAST((SELECT+1%252B1)AS+CHAR))",
+        ),
+        (
+            r#"{"path":"/items?q=x","query":""#,
+            r#""}"#,
+            "HEX(CAST((SELECT 1)AS CHAR))",
+            "HEX(CAST((SELECT 1+1)AS CHAR))",
+        ),
+        (
+            "/items?q=x ",
+            "",
+            "HEX(CAST((SELECT 1)AS CHAR))",
+            "HEX(CAST((SELECT 1+1)AS CHAR))",
+        ),
+        (
+            "--boundary\r\nContent-Disposition: form-data; name=value\r\n\r\n",
+            "\r\n--boundary--",
+            "HEX(CAST((SELECT 1)AS CHAR))",
+            "HEX(CAST((SELECT 1+1)AS CHAR))",
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let control = format!("{prefix}{control}{suffix}");
+        let read = format!("{prefix}{read}{suffix}");
+        let target_case = index < 2;
+        let (control_target, control_body, read_target, read_body) = if target_case {
+            (control.as_str(), "", read.as_str(), "")
+        } else {
+            ("/batch", control.as_str(), "/batch", read.as_str())
+        };
+        let delta = read.len() as i64 - control.len() as i64;
+        let mut log = line("192.0.2.8", control_target, control_body, 1000, 0, false);
+        log += &line(
+            "192.0.2.8",
+            read_target,
+            read_body,
+            (1000 + delta + 4) as u64,
+            1,
+            false,
+        );
+        if index == 4 {
+            log = log.replace(
+                "\"application/json\"",
+                "\"multipart/form-data; boundary=boundary\"",
+            );
+        }
+        fs::write(&input, log).unwrap();
+        let (report, _) = run(root.path(), &input, &format!("literal-{index}"), &[]);
+        assert_eq!(report["summary"]["paired_requests"], 1, "case {index}");
+        assert_eq!(report["paired_expressions"][0]["expression"], "select 1+1");
+        assert_eq!(
+            report["paired_expressions"][0]["estimated_lengths"],
+            serde_json::json!([3])
+        );
+    }
+}
+
+#[test]
+fn response_sizes_negative_candidates_are_counted_sorted_private_and_reproducible() {
+    let root = tempfile::tempdir().unwrap();
+    let input = root.path().join("access.log");
+    let control = "CONCAT(0x7c7c,HEX(CAST((SELECT 0x4f4b)AS CHAR)),0x7c7c)";
+    let read = "CONCAT(0x7c7c,HEX(CAST((SELECT value FROM items)AS CHAR)),0x7c7c)";
+    let mut log = line("192.0.2.8", "/batch", control, 1000, 0, true);
+    for second in 1..=3 {
+        log += &line(
+            "192.0.2.8",
+            "/batch",
+            read,
+            (1000 + read.len() as i64 - control.len() as i64 - 8) as u64,
+            second,
+            true,
+        );
+    }
+    fs::write(&input, &log).unwrap();
+    let (report, stdout) = run(root.path(), &input, "default", &[]);
+    let row = &report["paired_expressions"][0];
+    assert_eq!(
+        row["negative_candidates"],
+        serde_json::json!([{"value":-2,"requests":3}])
+    );
+    assert_eq!(row["estimated_lengths"], serde_json::json!([]));
+    assert_eq!(row["negative_estimate"], 3);
+    assert_eq!(row["empty_or_null"], 0);
+    assert!(row["estimates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|e| e["adjusted_delta"] == -8 && e["estimated_length"].is_null()));
+    let default_text = String::from_utf8(stdout).unwrap();
+    let sanitized =
+        fs::read_to_string(root.path().join("default/sanitized-response-sizes.json")).unwrap();
+    for private in [
+        "192.0.2.8",
+        "example.test",
+        "select value",
+        "/batch",
+        "negative_candidates",
+        "negative: -2",
+    ] {
+        assert!(!default_text.contains(private));
+        assert!(!sanitized.contains(private));
+    }
+    let (_, shown) = run(root.path(), &input, "shown", &["--show-expressions"]);
+    assert!(String::from_utf8_lossy(&shown).contains("negative: -2 x3"));
+    let (_, repeat) = run(root.path(), &input, "repeat", &["--show-expressions"]);
+    assert_eq!(shown, repeat);
+    for name in [
+        "response-sizes.json",
+        "sanitized-response-sizes.json",
+        "run-manifest.json",
+    ] {
+        assert_eq!(
+            fs::read(root.path().join("shown").join(name)).unwrap(),
+            fs::read(root.path().join("repeat").join(name)).unwrap()
+        );
+    }
+    log += &line(
+        "192.0.2.8",
+        "/batch",
+        read,
+        (1000 + read.len() as i64 - control.len() as i64 - 10) as u64,
+        4,
+        true,
+    );
+    fs::write(&input, log).unwrap();
+    let (sorted, _) = run(root.path(), &input, "sorted", &[]);
+    assert_eq!(
+        sorted["paired_expressions"][0]["negative_candidates"],
+        serde_json::json!([{"value":-3,"requests":1},{"value":-2,"requests":3}])
+    );
+}
+
+#[test]
+fn response_sizes_hostless_prefixes_and_parse_error_subsets_do_not_change_other_parsers() {
+    let root = tempfile::tempdir().unwrap();
+    let input = root.path().join("access.log");
+    let mut log = String::new();
+    for file in ["access.log", "access_443.log"] {
+        let raw = line("192.0.2.8", "/batch", "ordinary", 1000, 0, true)
+            .replace("example.test_access_443.log", file);
+        // The expanded prefix acceptance is deliberately limited to response-sizes.
+        assert!(parse_combined_line(raw.trim_end(), AccessLogFormat::NginxPostdata).is_err());
+        log += &raw;
+    }
+    let control = body("SELECT 1", "/items", true);
+    let read = body("SELECT value FROM items", "/items", true);
+    log += &line("192.0.2.8", "/batch", &control, 1000, 0, true)
+        .replace("example.test_access_443.log", "access.log");
+    log += &line(
+        "192.0.2.8",
+        "/batch",
+        &read,
+        (1000 + read.len() - control.len() + 4) as u64,
+        1,
+        true,
+    )
+    .replace("example.test_access_443.log", "access_443.log");
+    let truncated = line("192.0.2.8", "/batch", "cut", 1000, 2, false);
+    log += truncated.strip_suffix("]\n").unwrap();
+    log += "\n2026/01/01 00:00:03 [error] synthetic error mentioning postdata[\nnot a record\n";
+    let oversized = line("192.0.2.8", "/batch", &"x".repeat(65_536), 1000, 3, false);
+    log += &oversized;
+    log += oversized.strip_suffix("]\n").unwrap();
+    log += "\n";
+    fs::write(&input, log).unwrap();
+    let (report, stdout) = run(root.path(), &input, "out", &[]);
+    assert_eq!(report["summary"]["parseable_records"], 4);
+    assert_eq!(report["summary"]["parse_errors"], 5);
+    assert_eq!(report["summary"]["truncated_body"], 2);
+    assert_eq!(report["summary"]["error_log_lines"], 1);
+    assert!(report["paired_expressions"][0]["host"].is_null());
+    assert_eq!(
+        report["paired_expressions"][0]["estimated_lengths"],
+        serde_json::json!([3])
+    );
+    let text = String::from_utf8(stdout).unwrap();
+    assert!(text.contains("  Truncated body: 2"));
+    assert!(text.contains("  Error log lines: 1"));
+    let sanitized: Value = serde_json::from_slice(
+        &fs::read(root.path().join("out/sanitized-response-sizes.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(sanitized["parse_errors"], 5);
+    assert_eq!(sanitized["truncated_body"], 2);
+    assert_eq!(sanitized["error_log_lines"], 1);
+}
+
+fn postdata_with_invalid_utf8_between_valid_records() -> Vec<u8> {
+    let control = body("SELECT 1", "/items", true);
+    let read = body("SELECT value FROM items", "/items", true);
+    let mut log = line("192.0.2.8", "/batch", &control, 1000, 0, true).into_bytes();
+    let mut invalid = line("192.0.2.8", "/batch", "ordinary", 1000, 1, true).into_bytes();
+    let agent = b"fixture-agent";
+    let offset = invalid
+        .windows(agent.len())
+        .position(|v| v == agent)
+        .unwrap();
+    invalid.splice(offset..offset + agent.len(), [0xff, 0xfe]);
+    log.extend(invalid);
+    log.extend(
+        line(
+            "192.0.2.8",
+            "/batch",
+            &read,
+            (1000 + read.len() - control.len() + 4) as u64,
+            2,
+            true,
+        )
+        .bytes(),
+    );
+    log
+}
+
+#[test]
+fn response_sizes_invalid_utf8_is_counted_and_reading_continues_in_plain_and_gzip_inputs() {
+    use std::io::Write;
+    let root = tempfile::tempdir().unwrap();
+    let log = postdata_with_invalid_utf8_between_valid_records();
+    let mut gzip = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    gzip.write_all(&log).unwrap();
+    let gzip = gzip.finish().unwrap();
+    for (name, bytes) in [
+        ("plain.log", log.as_slice()),
+        ("compressed.gz", gzip.as_slice()),
+    ] {
+        let input = root.path().join(name);
+        fs::write(&input, bytes).unwrap();
+        let output = format!("{name}-out");
+        let repeat_output = format!("{name}-repeat");
+        let (report, stdout) = run(root.path(), &input, &output, &[]);
+        assert_eq!(report["summary"]["parse_errors"], 1);
+        assert_eq!(report["summary"]["invalid_utf8_lines"], 1);
+        assert_eq!(report["summary"]["truncated_body"], 0);
+        assert_eq!(report["summary"]["error_log_lines"], 0);
+        assert_eq!(report["summary"]["parseable_records"], 2);
+        assert_eq!(report["summary"]["analyzed_requests"], 2);
+        assert_eq!(report["summary"]["paired_requests"], 1);
+        assert_eq!(
+            report["paired_expressions"][0]["estimated_lengths"],
+            serde_json::json!([3])
+        );
+        assert!(String::from_utf8_lossy(&stdout).contains("  Invalid UTF-8 lines: 1\n"));
+        let sanitized: Value = serde_json::from_slice(
+            &fs::read(
+                root.path()
+                    .join(&output)
+                    .join("sanitized-response-sizes.json"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(sanitized["parse_errors"], 1);
+        assert_eq!(sanitized["invalid_utf8_lines"], 1);
+        let (_, repeat) = run(root.path(), &input, &repeat_output, &[]);
+        assert_eq!(stdout, repeat);
+        for artifact in [
+            "response-sizes.json",
+            "sanitized-response-sizes.json",
+            "run-manifest.json",
+        ] {
+            assert_eq!(
+                fs::read(root.path().join(&output).join(artifact)).unwrap(),
+                fs::read(root.path().join(&repeat_output).join(artifact)).unwrap()
+            );
+        }
+    }
+}
+
+#[test]
+fn response_sizes_truncated_gzip_remains_a_fatal_read_error_without_artifacts() {
+    use std::io::Write;
+    let root = tempfile::tempdir().unwrap();
+    let input = root.path().join("truncated.gz");
+    let output = root.path().join("out");
+    let log = line(
+        "192.0.2.8",
+        "/batch",
+        &body("SELECT 1", "/items", true),
+        1000,
+        0,
+        true,
+    )
+    .repeat(3);
+    // Stored DEFLATE blocks make a midpoint cut land inside the body, not the trailer.
+    let mut gzip = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::none());
+    gzip.write_all(log.as_bytes()).unwrap();
+    let mut gzip = gzip.finish().unwrap();
+    gzip.truncate(gzip.len() / 2);
+    assert_eq!(&gzip[..3], &[0x1f, 0x8b, 0x08]);
+    fs::write(&input, gzip).unwrap();
+    command(root.path())
+        .args(["response-sizes", "--format", "nginx-postdata", "--input"])
+        .arg(&input)
+        .arg("--output")
+        .arg(&output)
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("reading decoded input:"));
+    for artifact in [
+        "response-sizes.json",
+        "sanitized-response-sizes.json",
+        "run-manifest.json",
+    ] {
+        assert!(!output.join(artifact).exists());
+    }
+}
+
+#[test]
+fn legacy_postdata_reader_keeps_its_invalid_utf8_handling() {
+    use shenron::access_log::AccessLogLines;
+    let log = postdata_with_invalid_utf8_between_valid_records();
+    let mut lines = AccessLogLines::with_raw_retention(
+        std::io::Cursor::new(log),
+        AccessLogFormat::NginxPostdata,
+        RawRetention::Drop,
+    );
+    assert!(lines.next().unwrap().is_ok());
+    assert!(lines.next().unwrap().is_err());
+    // The legacy read_line path still records this as an I/O error and continues.
+    assert!(lines.io_error().is_some());
+    assert!(lines.next().unwrap().is_ok());
+    assert!(lines.next().is_none());
 }

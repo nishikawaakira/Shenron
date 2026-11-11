@@ -3679,13 +3679,39 @@ fn stream_fingerprinted_events<R: Read + 'static, F>(
 where
     F: FnMut(Result<WebEvent, String>) -> anyhow::Result<()>,
 {
+    fingerprint_decoded_reader(reader, |decoded| {
+        stream_reader_events(decoded, profile, proxies, raw_retention, callback)
+    })
+}
+
+/// Reuse single-pass stored-byte provenance with a command-specific decoded parser.
+pub(crate) fn with_fingerprinted_input<F>(path: &Path, consume: F) -> anyhow::Result<PathProvenance>
+where
+    F: FnOnce(Box<dyn Read>) -> anyhow::Result<()>,
+{
+    let file = File::open(path).with_context(|| format!("opening {}", path.display()))?;
+    let (byte_length, sha256) = fingerprint_decoded_reader(file, consume)?;
+    Ok(PathProvenance {
+        path: path.display().to_string(),
+        byte_length: Some(byte_length),
+        sha256: Some(sha256),
+    })
+}
+
+fn fingerprint_decoded_reader<R: Read + 'static, F>(
+    reader: R,
+    consume: F,
+) -> anyhow::Result<(u64, String)>
+where
+    F: FnOnce(Box<dyn Read>) -> anyhow::Result<()>,
+{
     let state = std::rc::Rc::new(std::cell::RefCell::new(FingerprintReader {
         reader,
         hash: Sha256::new(),
         bytes: 0,
     }));
     let decoded = sniff_gzip_reader(SharedFingerprintReader(state.clone()))?;
-    stream_reader_events(decoded, profile, proxies, raw_retention, callback)?;
+    consume(decoded)?;
     std::io::copy(
         &mut SharedFingerprintReader(state.clone()),
         &mut std::io::sink(),

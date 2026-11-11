@@ -15,6 +15,8 @@ default and COUNT-only; see the README for the full invariants.
 
 ### Fixed
 
+- Response-size recognition decodes query/form plus signs as spaces only before the first percent-decoding pass, preserves sent byte counts, summarizes repeated negative candidates without asserting NULL, and discloses truncated bodies and error-log lines. Hostless nginx access prefixes are accepted only by response-sizes; other commands and auto detection are unchanged.
+
 - Corpus discovery now includes extensionless and numeric-rotation logs, detects gzip by stored bytes, and discloses skipped files by count/reason with paths confined to private provenance. Hidden descendant directories are pruned and counted once each, while explicitly selected input directories are traversed. Context now excludes hidden and unsupported-extension files using the same rules; previously omitted logs can increase analyzed counts.
 
 - Published bot ranges, frozen address sets and context selectors now match equivalent mapped IPv4 addresses without rewriting raw displays or frozen snapshots; candidate replay counts can increase for mapped peers.

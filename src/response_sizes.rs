@@ -14,11 +14,13 @@ use regex::Regex;
 use serde::Serialize;
 
 use crate::{
+    access_log::{AccessLogLines, AccessLogParseError},
     event::{canonical_address_or_raw, RawRetention, TelemetryProfile, TrustedProxySet, WebEvent},
     input_discovery::{discover_input_files, InputDiscoverySummary},
     output::write_json_pretty_new_batch,
     production::{
-        ensure_separate_output, stream_events_with_fingerprint, terminal_safe, HuntTimeRange,
+        ensure_separate_output, stream_events_with_fingerprint, terminal_safe,
+        with_fingerprinted_input, HuntTimeRange,
     },
 };
 
@@ -38,6 +40,9 @@ pub struct Summary {
     pub input_discovery: InputDiscoverySummary,
     parseable_records: u64,
     parse_errors: u64,
+    truncated_body: u64,
+    error_log_lines: u64,
+    invalid_utf8_lines: u64,
     records_outside_time_range: u64,
     analyzed_requests: u64,
     requests_without_shape: u64,
@@ -107,6 +112,7 @@ struct PairedExpression {
     requests: u64,
     distinct_sources: usize,
     estimated_lengths: BTreeSet<i128>,
+    negative_candidates: Vec<NegativeCandidate>,
     negative_estimate: u64,
     empty_or_null: u64,
     not_fitting: u64,
@@ -115,6 +121,14 @@ struct PairedExpression {
     estimates: Vec<Estimate>,
     #[serde(skip)]
     sources: BTreeSet<Peer>,
+    #[serde(skip)]
+    negative_counts: BTreeMap<i128, u64>,
+}
+
+#[derive(Serialize)]
+struct NegativeCandidate {
+    value: i128,
+    requests: u64,
 }
 
 #[derive(Serialize)]
@@ -182,7 +196,24 @@ fn hex_pair(a: u8, b: u8) -> Option<u8> {
     Some(((a as char).to_digit(16)? * 16 + (b as char).to_digit(16)?) as u8)
 }
 
-fn decode(mut bytes: Vec<u8>) -> Option<String> {
+enum DecodePart {
+    Target,
+    Body,
+    FormBody,
+}
+
+fn decode(mut bytes: Vec<u8>, part: DecodePart) -> Option<String> {
+    // Locate query spans before percent decoding: an encoded plus stays literal.
+    let mut query = matches!(part, DecodePart::FormBody);
+    for byte in &mut bytes {
+        match *byte {
+            b'?' => query = true,
+            b'"' if matches!(part, DecodePart::Body) => query = false,
+            b if b.is_ascii_whitespace() && matches!(part, DecodePart::Body) => query = false,
+            b'+' if query => *byte = b' ',
+            _ => {}
+        }
+    }
     for _ in 0..2 {
         let mut result = Vec::with_capacity(bytes.len());
         let mut i = 0;
@@ -521,8 +552,22 @@ impl Analysis {
         let target_bytes = unescape_nginx(target);
         let body_bytes = unescape_nginx(body);
         let request_bytes = target_bytes.len() + body_bytes.len();
-        let (Some(decoded_target), Some(decoded_body)) = (decode(target_bytes), decode(body_bytes))
-        else {
+        let body_part = if event.content_type.as_deref().is_some_and(|value| {
+            value
+                .split(';')
+                .next()
+                .unwrap_or("")
+                .trim()
+                .eq_ignore_ascii_case("application/x-www-form-urlencoded")
+        }) {
+            DecodePart::FormBody
+        } else {
+            DecodePart::Body
+        };
+        let (Some(decoded_target), Some(decoded_body)) = (
+            decode(target_bytes, DecodePart::Target),
+            decode(body_bytes, body_part),
+        ) else {
             self.summary.requests_with_unsupported_decoding += 1;
             return;
         };
@@ -676,6 +721,7 @@ impl Analysis {
                         self.summary.not_fitting += 1;
                     }
                     "negative_estimate" => {
+                        *entry.negative_counts.entry(estimate).or_default() += 1;
                         entry.negative_estimate += 1;
                         self.summary.negative_estimate += 1;
                     }
@@ -713,6 +759,11 @@ impl Analysis {
         }
         for entry in paired.values_mut() {
             entry.distinct_sources = entry.sources.len();
+            entry.negative_candidates = entry
+                .negative_counts
+                .iter()
+                .map(|(&value, &requests)| NegativeCandidate { value, requests })
+                .collect();
         }
         for entry in self.characters.values_mut() {
             entry.distinct_sources = entry.sources.len();
@@ -780,26 +831,54 @@ pub fn run(
     analysis.summary.input_discovery = discovery.summary;
     let mut corpus = Vec::new();
     for path in discovery.files {
-        corpus.push(stream_events_with_fingerprint(
-            &path,
-            profile,
-            proxies,
-            RawRetention::Drop,
-            |event| {
-                match event {
-                    Ok(event) => {
-                        analysis.summary.parseable_records += 1;
-                        if range.includes(event.timestamp) {
-                            analysis.observe(event, options);
-                        } else {
-                            analysis.summary.records_outside_time_range += 1;
-                        }
+        let mut consume = |event: Result<WebEvent, String>| -> Result<()> {
+            match event {
+                Ok(event) => {
+                    analysis.summary.parseable_records += 1;
+                    if range.includes(event.timestamp) {
+                        analysis.observe(event, options);
+                    } else {
+                        analysis.summary.records_outside_time_range += 1;
                     }
-                    Err(_) => analysis.summary.parse_errors += 1,
+                }
+                Err(_) => analysis.summary.parse_errors += 1,
+            }
+            Ok(())
+        };
+        let mut truncated_body = 0;
+        let mut error_log_lines = 0;
+        let mut invalid_utf8_lines = 0;
+        let provenance = if profile == TelemetryProfile::NginxPostdata {
+            with_fingerprinted_input(&path, |reader| {
+                let mut lines = AccessLogLines::for_response_sizes(reader);
+                while let Some(event) = lines.next() {
+                    if let Some(error) = lines.io_error() {
+                        bail!("reading decoded input: {error}");
+                    }
+                    match &event {
+                        Err(AccessLogParseError::TruncatedBody) => truncated_body += 1,
+                        Err(AccessLogParseError::NginxErrorLog) => error_log_lines += 1,
+                        Err(AccessLogParseError::InvalidUtf8) => invalid_utf8_lines += 1,
+                        _ => {}
+                    }
+                    consume(
+                        event
+                            .map(|mut event| {
+                                proxies.resolve_client_ip(&mut event);
+                                event
+                            })
+                            .map_err(|error| error.to_string()),
+                    )?;
                 }
                 Ok(())
-            },
-        )?);
+            })?
+        } else {
+            stream_events_with_fingerprint(&path, profile, proxies, RawRetention::Drop, consume)?
+        };
+        analysis.summary.truncated_body += truncated_body;
+        analysis.summary.error_log_lines += error_log_lines;
+        analysis.summary.invalid_utf8_lines += invalid_utf8_lines;
+        corpus.push(provenance);
     }
     let report = analysis.finish();
     let manifest = serde_json::json!({"safety_note":SAFETY_NOTE, "shenron_version":env!("CARGO_PKG_VERSION"), "telemetry_profile":profile, "options":options, "from":range.from, "to":range.to, "trusted_proxy_networks":proxies.configured_proxy_networks(), "corpus":corpus, "skipped_inputs":report.summary.input_discovery.skipped});
@@ -874,6 +953,9 @@ pub fn write_text(
     }
     for (name, value) in [
         ("Parse errors", summary.parse_errors),
+        ("Truncated body", summary.truncated_body),
+        ("Error log lines", summary.error_log_lines),
+        ("Invalid UTF-8 lines", summary.invalid_utf8_lines),
         (
             "Records outside time range",
             summary.records_outside_time_range,
@@ -927,6 +1009,18 @@ pub fn write_text(
             )?;
         }
         if show_expressions {
+            if !entry.negative_candidates.is_empty() {
+                write!(
+                    out,
+                    " / negative: {}",
+                    entry
+                        .negative_candidates
+                        .iter()
+                        .map(|candidate| format!("{} x{}", candidate.value, candidate.requests))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )?;
+            }
             write!(
                 out,
                 " / expression {}",

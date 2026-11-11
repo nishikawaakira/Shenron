@@ -28,12 +28,19 @@ An optional prefix of the following shape is removed before parsing:
 ```
 
 The filename suffix is `_access.log` or `_access_<digits>.log`; the preceding
-basename is the host. Without this prefix, host is null, not inferred from a
-request or file path. Use one site's corpus when host is absent: null-host
+basename is the host. For response-sizes, a prefix ending in `access.log` or
+`access_<digits>.log` without a host is also removed, with host left null.
+This broader prefix handling is limited to this command; other commands and
+auto detection keep their existing parsing behavior. Without this prefix, host
+is null, not inferred from a request or file path. Use one site's corpus when host is absent: null-host
 requests cannot be separated into different sites. Forwarded clients are used
 only under the existing `--trusted-proxy` verification; this format itself
 does not record forwarded headers. Observed peers and validated clients are
 different identities, and address comparisons canonicalize IPv4-mapped peers.
+
+Host extraction uses the filename before `_access`, so `ssl_access.log` and
+`other_vhosts_access.log` yield `ssl` and `other_vhosts`. Do not use this host
+value to distinguish sites when the filename does not identify the site.
 
 The event stores `request_body` in its logged spelling, `request_time_seconds`,
 and `content_type`. All three remain absent in serialized events from existing
@@ -44,13 +51,33 @@ directly from `WebEvent::request_body` by response-sizes, not available through
 rule field matching, so `request_body` capability is also false. It is
 **never selected by `--format auto`**.
 The existing line-size bound and gzip magic detection apply, with parse failures
-counted. Common discovery excludes unsupported/hidden entries with reasons;
+counted. Within `parse_errors`, `truncated_body` counts lines containing
+`postdata[` but missing the final `]`; they are never repaired or analyzed.
+`error_log_lines` counts lines beginning with `YYYY/MM/DD HH:MM:SS [level] `
+after removal of a recognized prefix, and takes precedence over truncated-body
+classification. `invalid_utf8_lines` counts byte records that cannot be decoded
+as UTF-8; they are rejected without replacement characters, and subsequent
+records are still read. All three counts are subsets of `parse_errors` and also
+appear in sanitized output. Remaining parse errors are
+`parse_errors - truncated_body - error_log_lines - invalid_utf8_lines`. Actual
+reader errors, including incomplete gzip streams, still stop the run before
+artifacts are written. The line-size bound still prevents analysis of oversized
+records, including complete bodies.
+Common discovery excludes unsupported/hidden entries with reasons;
 their paths appear only in the private manifest.
 
 ## Paired size estimates
 
 For recognizing request shapes, nginx `\xHH` escapes are decoded to bytes, then
-percent escapes are decoded at most twice. `+` is not treated as a space.
+percent escapes are decoded at most twice. Before the first percent-decoding
+pass only, literal `+` becomes a space in the target after `?`, in body spans
+starting at `?` and ending at the next double quote, ASCII whitespace or end of
+body, and throughout an `application/x-www-form-urlencoded` body (media type
+is case-insensitive and may have parameters). Boundaries are located after
+nginx unescaping, so `\x22` is a double quote. Elsewhere, including JSON values
+outside query spans and ordinary multipart content, `+` stays literal. A plus
+produced from `%2B` or a second decoding pass is never converted to a space.
+Both control recognition and shape comparison use this decoded text.
 Non-UTF-8 decoded text is excluded and counted rather than replaced. This decoded
 text is used only for recognition and shape comparison. The sent byte count is
 the target plus body with each valid `\xHH` counted as one byte; **percent escapes
@@ -107,6 +134,15 @@ for this; it is not an identification of SQL NULL. A zero candidate is
 Both outcomes have null `estimated_length` and add nothing to `estimated_lengths`.
 Only a positive candidate produces outcome `length` and a numeric
 `estimated_length`. Signed arithmetic is used even for decreasing sizes.
+
+Private paired rows also contain `negative_candidates`, an ascending array of
+distinct negative values with their request counts, for example
+`[{"value": -2, "requests": 3}]`. These are candidate values, never members of
+`estimated_lengths`. Repeated negative values could be explained by a
+NULL-sensitive `CONCAT(..., HEX(CAST((...) AS CHAR)), ...)` wrapper: a NULL
+value can make the entire concatenation NULL, removing the surrounding literal
+contributions as well as the value. This is a possible explanation, not a NULL
+determination; a changed response template or noise can also change sizes.
 
 Results aggregate by host and normalized expression (whitespace collapsed to
 one space and ASCII case folded). Private rows contain request count, distinct
@@ -167,7 +203,9 @@ are terminal-escaped and limited to 300 displayed characters. `--limit` defaults
 to 20 expression rows; zero displays all. Paired rows precede character rows
 with continuous numbering. Lengths are comma-separated without thousands
 separators, or `-` when none; after ten values, `,... (+N)` discloses the remaining
-count. Omitted expression row counts are also disclosed. These display options
+count. With `--show-expressions`, negative candidates are shown alongside lengths
+as `negative: -2 x3`; without that opt-in, their individual values are not shown.
+Omitted expression row counts are also disclosed. These display options
 do not change files.
 
 ## Safety note

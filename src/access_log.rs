@@ -38,6 +38,12 @@ pub enum AccessLogParseError {
     Timestamp,
     #[error("invalid access-log request line")]
     Request,
+    #[error("truncated nginx postdata body")]
+    TruncatedBody,
+    #[error("nginx error-log line")]
+    NginxErrorLog,
+    #[error("invalid UTF-8 access-log line")]
+    InvalidUtf8,
 }
 
 pub fn parse_combined_line(
@@ -211,6 +217,41 @@ fn parse_nginx_postdata(
     Ok(event)
 }
 
+// This broader prefix handling and diagnostic breakdown are response-sizes-only.
+fn parse_response_size_postdata(
+    raw: &str,
+    oversized: bool,
+) -> Result<WebEvent, AccessLogParseError> {
+    static PREFIX: OnceLock<Regex> = OnceLock::new();
+    static ERROR_LOG: OnceLock<Regex> = OnceLock::new();
+    let prefix = PREFIX.get_or_init(|| Regex::new(
+        r"^\d{4} [A-Z][a-z]{2} \d{2} \d{2}:\d{2}:\d{2} \([^)]*\) \S+->\S*/(?:(?P<host>[^/ ]+?)_)?access(?:_\d+)?\.log "
+    ).expect("valid response-size prefix regex"));
+    let captures = prefix.captures(raw);
+    let line = captures
+        .as_ref()
+        .map_or(raw, |c| &raw[c.get(0).unwrap().end()..]);
+    let error_log = ERROR_LOG.get_or_init(|| {
+        Regex::new(r"^\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2} \[[a-z]+\] ")
+            .expect("valid nginx error-log regex")
+    });
+    // Error-log lines take precedence even if their message mentions postdata.
+    if error_log.is_match(line) {
+        return Err(AccessLogParseError::NginxErrorLog);
+    }
+    if line.contains("postdata[") && !line.ends_with(']') {
+        return Err(AccessLogParseError::TruncatedBody);
+    }
+    if oversized {
+        return Err(AccessLogParseError::Format);
+    }
+    let mut event = parse_nginx_postdata(line, RawRetention::Drop)?;
+    if let Some(captures) = captures {
+        event.host = captures.name("host").map(|host| host.as_str().to_owned());
+    }
+    Ok(event)
+}
+
 fn combined_regex() -> &'static Regex {
     static REGEX: OnceLock<Regex> = OnceLock::new();
     REGEX.get_or_init(|| {
@@ -318,6 +359,8 @@ pub struct AccessLogLines<R: Read> {
     line: String,
     format: AccessLogFormat,
     raw_retention: RawRetention,
+    response_sizes: bool,
+    response_line: Vec<u8>,
 }
 impl<R: Read> AccessLogLines<R> {
     pub fn new(reader: R, format: AccessLogFormat) -> Self {
@@ -336,6 +379,45 @@ impl<R: Read> AccessLogLines<R> {
             line: String::new(),
             format,
             raw_retention,
+            response_sizes: false,
+            response_line: Vec::new(),
+        }
+    }
+
+    pub(crate) fn for_response_sizes(reader: R) -> Self {
+        let mut lines =
+            Self::with_raw_retention(reader, AccessLogFormat::NginxPostdata, RawRetention::Drop);
+        lines.response_sizes = true;
+        lines
+    }
+
+    fn next_response_size_line(&mut self) -> Option<Result<WebEvent, AccessLogParseError>> {
+        loop {
+            self.response_line.clear();
+            self.line_number += 1;
+            match self.reader.read_until(b'\n', &mut self.response_line) {
+                Ok(0) => return None,
+                Ok(_) => {}
+                Err(error) => {
+                    self.io_error = Some(error.to_string());
+                    return Some(Err(AccessLogParseError::Format));
+                }
+            }
+            // Invalid text is a complete rejected record, not a reader failure.
+            let line = match String::from_utf8(std::mem::take(&mut self.response_line)) {
+                Ok(line) => line,
+                Err(error) => {
+                    self.response_line = error.into_bytes();
+                    return Some(Err(AccessLogParseError::InvalidUtf8));
+                }
+            };
+            let result = (!line.trim().is_empty()).then(|| {
+                parse_response_size_postdata(line.trim_end(), line.len() > MAX_COMBINED_LINE_BYTES)
+            });
+            self.response_line = line.into_bytes();
+            if result.is_some() {
+                return result;
+            }
         }
     }
 
@@ -350,6 +432,9 @@ impl<R: Read> AccessLogLines<R> {
 impl<R: Read> Iterator for AccessLogLines<R> {
     type Item = Result<WebEvent, AccessLogParseError>;
     fn next(&mut self) -> Option<Self::Item> {
+        if self.response_sizes {
+            return self.next_response_size_line();
+        }
         loop {
             self.line.clear();
             self.line_number += 1;
