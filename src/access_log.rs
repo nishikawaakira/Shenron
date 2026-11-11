@@ -25,6 +25,7 @@ pub const MAX_COMBINED_LINE_BYTES: usize = 64 * 1024;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AccessLogFormat {
     NginxCombined,
+    NginxPostdata,
     ApacheCombined,
     ApacheVhostCombined,
 }
@@ -51,7 +52,11 @@ pub fn parse_combined_line_with_raw_retention(
     format: AccessLogFormat,
     raw_retention: RawRetention,
 ) -> Result<WebEvent, AccessLogParseError> {
+    if format == AccessLogFormat::NginxPostdata {
+        return parse_nginx_postdata(raw, raw_retention);
+    }
     let (captures, log_source, has_vhost_prefix) = match format {
+        AccessLogFormat::NginxPostdata => unreachable!("handled above"),
         AccessLogFormat::NginxCombined => (
             combined_regex()
                 .captures(raw)
@@ -144,6 +149,9 @@ pub fn parse_combined_line_with_raw_retention(
         referer,
         status,
         response_bytes,
+        request_body: None,
+        request_time_seconds: None,
+        content_type: None,
         protocol: Some(protocol.to_owned()),
         request_id: None,
         ja3: None,
@@ -158,6 +166,49 @@ pub fn parse_combined_line_with_raw_retention(
         log_source,
         raw: raw_retention.capture(raw),
     })
+}
+
+fn parse_nginx_postdata(
+    raw: &str,
+    retention: RawRetention,
+) -> Result<WebEvent, AccessLogParseError> {
+    static PREFIX: OnceLock<Regex> = OnceLock::new();
+    static RECORD: OnceLock<Regex> = OnceLock::new();
+    let prefix = PREFIX.get_or_init(|| Regex::new(
+        r"^\d{4} [A-Z][a-z]{2} \d{2} \d{2}:\d{2}:\d{2} \([^)]*\) \S+->\S*/(?P<host>[^/ ]+?)_access(?:_\d+)?\.log "
+    ).expect("valid postdata prefix regex"));
+    let captures = prefix.captures(raw);
+    let line = captures
+        .as_ref()
+        .map_or(raw, |c| &raw[c.get(0).unwrap().end()..]);
+    let record = RECORD.get_or_init(|| Regex::new(
+        r#"^(?P<combined>\S+ \S+ \S+ \[[^\]]+\] "(?:\\.|[^"])*" (?:\d{3}|-) (?:\d+|-) "(?:\\.|[^"])*" "(?:\\.|[^"])*") "(?P<type>(?:\\.|[^"])*)" "(?P<tls>(?:\\.|[^"])*)" "(?P<cipher>(?:\\.|[^"])*)" (?P<time>\S+) postdata\[(?P<body>.*)\]$"#
+    ).expect("valid postdata record regex"));
+    let fields = record.captures(line).ok_or(AccessLogParseError::Format)?;
+    let mut event = parse_combined_line_with_raw_retention(
+        &fields["combined"],
+        AccessLogFormat::NginxCombined,
+        RawRetention::Drop,
+    )?;
+    event.host = captures.map(|c| c["host"].to_owned());
+    event.content_type = value_or_none(&fields["type"]);
+    event.tls_protocol = value_or_none(&fields["tls"]);
+    event.tls_cipher = value_or_none(&fields["cipher"]);
+    event.request_body = (!fields["body"].is_empty()).then(|| fields["body"].to_owned());
+    event.request_time_seconds = if &fields["time"] == "-" {
+        None
+    } else {
+        let time = fields["time"]
+            .parse::<f64>()
+            .map_err(|_| AccessLogParseError::Format)?;
+        if !time.is_finite() || time < 0.0 {
+            return Err(AccessLogParseError::Format);
+        }
+        Some(time)
+    };
+    event.log_source = LogSource::NginxPostdata;
+    event.raw = retention.capture(raw);
+    Ok(event)
 }
 
 fn combined_regex() -> &'static Regex {

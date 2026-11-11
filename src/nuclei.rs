@@ -1110,7 +1110,9 @@ fn telemetry_report(
         let mut level = item.analysis.detectability;
         let unavailable_headers = matches!(
             telemetry,
-            TelemetryProfile::NginxCombined | TelemetryProfile::ApacheCombined
+            TelemetryProfile::NginxCombined
+                | TelemetryProfile::NginxPostdata
+                | TelemetryProfile::ApacheCombined
         ) && item
             .detections
             .iter()
@@ -1145,11 +1147,13 @@ fn telemetry_report(
             metrics.convertible += 1;
             validated = match telemetry {
                 TelemetryProfile::AwsWaf => true,
-                TelemetryProfile::NginxCombined => item.detections.iter().all(|detection| {
-                    detection
-                        .synthetic_combined_event(AccessLogFormat::NginxCombined)
-                        .is_ok_and(|event| detection.matches(&event))
-                }),
+                TelemetryProfile::NginxCombined | TelemetryProfile::NginxPostdata => {
+                    item.detections.iter().all(|detection| {
+                        detection
+                            .synthetic_combined_event(AccessLogFormat::NginxCombined)
+                            .is_ok_and(|event| detection.matches(&event))
+                    })
+                }
                 TelemetryProfile::ApacheCombined => item.detections.iter().all(|detection| {
                     detection
                         .synthetic_combined_event(AccessLogFormat::ApacheCombined)
@@ -1169,7 +1173,9 @@ fn telemetry_report(
             if !validated
                 && matches!(
                     telemetry,
-                    TelemetryProfile::NginxCombined | TelemetryProfile::ApacheCombined
+                    TelemetryProfile::NginxCombined
+                        | TelemetryProfile::NginxPostdata
+                        | TelemetryProfile::ApacheCombined
                 )
             {
                 template_reasons.push("combined_synthetic_validation_failed".to_owned());

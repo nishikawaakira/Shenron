@@ -113,9 +113,15 @@ enum Command {
     },
     /// Read-only local hunting and aggregate analysis of historical web logs.
     /// These subcommands are flattened to the top level (for example
-    /// `shenron hunt`), so there is no `production` subcommand group.
+    /// `shenron hunt`); the separate `production` namespace exposes response-sizes only.
     #[command(flatten)]
     Production(ProductionCommand),
+    /// Namespaced entry point for response-size measurements.
+    #[command(name = "production")]
+    ProductionNamespace {
+        #[command(subcommand)]
+        command: ResponseSizesCommand,
+    },
     /// Build, review, and export defensive candidates. Never deploys controls.
     Candidate {
         #[command(subcommand)]
@@ -483,6 +489,8 @@ impl TemplateFilterArgs {
 // arguments would add indirection solely to reduce the enum's stack size.
 #[allow(clippy::large_enum_variant)]
 enum ProductionCommand {
+    /// Compare request-adjusted response sizes without inferring content or disclosure.
+    ResponseSizes(ResponseSizesArgs),
     /// Count bounded identifier variations without inferring authorization or intent.
     IdentifierAccess {
         #[arg(long)]
@@ -1027,6 +1035,58 @@ enum ExplainOutputFormat {
     Json,
 }
 
+#[derive(Debug, Subcommand)]
+enum ResponseSizesCommand {
+    /// Compare request-adjusted sizes and character positions from a local corpus.
+    ResponseSizes(ResponseSizesArgs),
+}
+
+#[derive(Debug, clap::Args)]
+struct ResponseSizesArgs {
+    #[arg(long)]
+    input: PathBuf,
+    #[arg(long, value_enum, default_value_t = InputFormat::NginxPostdata)]
+    format: InputFormat,
+    #[arg(long)]
+    output: PathBuf,
+    #[arg(long, value_parser = parse_rfc3339_utc)]
+    from: Option<DateTime<Utc>>,
+    #[arg(long, value_parser = parse_rfc3339_utc)]
+    to: Option<DateTime<Utc>>,
+    #[arg(long, value_name = "IP_OR_CIDR")]
+    trusted_proxy: Vec<TrustedProxy>,
+    #[arg(long)]
+    show_source_ips: bool,
+    #[arg(long)]
+    show_expressions: bool,
+    /// Maximum expression rows to display; zero displays all.
+    #[arg(long, default_value_t = 20)]
+    limit: usize,
+    #[command(flatten)]
+    options: shenron::response_sizes::Options,
+}
+
+fn run_response_sizes(args: ResponseSizesArgs) -> Result<()> {
+    let report = shenron::response_sizes::run(
+        &args.input,
+        args.format.telemetry_profile_for_input(&args.input)?,
+        &HuntTimeRange {
+            from: args.from,
+            to: args.to,
+        },
+        &TrustedProxySet::new(args.trusted_proxy),
+        &args.options,
+        &args.output,
+    )?;
+    shenron::response_sizes::write_text(
+        io::stdout().lock(),
+        &report,
+        args.show_source_ips,
+        args.show_expressions,
+        args.limit,
+    )
+}
+
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum InputFormat {
     /// Detect AWS WAF or vhost-prefixed Apache logs; ambiguous Combined logs require an explicit format.
@@ -1035,6 +1095,8 @@ enum InputFormat {
     AwsWaf,
     /// Standard nginx Combined Log Format.
     Nginx,
+    /// Explicit nginx Combined plus content type, TLS, request time and postdata body.
+    NginxPostdata,
     /// Apache standard Combined or vhost-prefixed Combined, detected per line.
     Apache,
     /// Apache vhost-prefixed Combined only; a leading vhost is required.
@@ -1094,6 +1156,7 @@ impl InputFormat {
             ),
             Self::AwsWaf => Ok(TelemetryProfile::AwsWaf),
             Self::Nginx => Ok(TelemetryProfile::NginxCombined),
+            Self::NginxPostdata => Ok(TelemetryProfile::NginxPostdata),
             Self::Apache => Ok(TelemetryProfile::ApacheCombined),
             Self::ApacheVhost => Ok(TelemetryProfile::ApacheVhostCombined),
         }
@@ -1345,7 +1408,11 @@ fn main() -> Result<()> {
                 Ok(())
             }
         },
+        Command::ProductionNamespace {
+            command: ResponseSizesCommand::ResponseSizes(args),
+        } => run_response_sizes(args),
         Command::Production(command) => match command {
+            ProductionCommand::ResponseSizes(args) => run_response_sizes(args),
             ProductionCommand::IdentifierAccess {
                 input,
                 format,

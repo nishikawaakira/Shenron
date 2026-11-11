@@ -470,7 +470,7 @@ fn source_matches(logsource: &Logsource, source: LogSource) -> bool {
                     .as_deref()
                     .is_none_or(|service| service.eq_ignore_ascii_case("waf"))
         }
-        LogSource::NginxCombined => logsource
+        LogSource::NginxCombined | LogSource::NginxPostdata => logsource
             .product
             .as_deref()
             .is_none_or(|product| product.eq_ignore_ascii_case("nginx")),

@@ -173,6 +173,7 @@ pub struct HttpHeader {
 pub enum LogSource {
     AwsWaf,
     NginxCombined,
+    NginxPostdata,
     ApacheCombined,
     ApacheVhostCombined,
 }
@@ -185,6 +186,7 @@ impl LogSource {
         match self {
             Self::AwsWaf => TelemetryProfile::AwsWaf,
             Self::NginxCombined => TelemetryProfile::NginxCombined,
+            Self::NginxPostdata => TelemetryProfile::NginxPostdata,
             Self::ApacheCombined => TelemetryProfile::ApacheCombined,
             Self::ApacheVhostCombined => TelemetryProfile::ApacheVhostCombined,
         }
@@ -197,6 +199,8 @@ pub enum TelemetryProfile {
     #[default]
     AwsWaf,
     NginxCombined,
+    /// Explicit extended Combined format with logged request body and duration.
+    NginxPostdata,
     ApacheCombined,
     /// Apache `other_vhosts_access.log` / vhost-prefixed Combined Log Format.
     ApacheVhostCombined,
@@ -340,6 +344,15 @@ impl TelemetryProfile {
                 host: true,
                 ..Self::ApacheCombined.capabilities()
             },
+            Self::NginxPostdata => TelemetryCapabilities {
+                // Host is recorded only when a prefix exists, not guaranteed by this profile.
+                host: false,
+                // response-sizes reads WebEvent::request_body directly; rule matching cannot.
+                request_body: false,
+                tls_protocol: true,
+                tls_cipher: true,
+                ..Self::NginxCombined.capabilities()
+            },
             Self::NginxCombinedHost => TelemetryCapabilities {
                 host: true,
                 ..Self::NginxCombined.capabilities()
@@ -378,6 +391,13 @@ pub struct WebEvent {
     pub referer: Option<String>,
     pub status: Option<u16>,
     pub response_bytes: Option<u64>,
+    /// Logged body spelling, including nginx escapes; not decoded request content.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_body: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_time_seconds: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content_type: Option<String>,
     pub protocol: Option<String>,
     pub request_id: Option<String>,
     pub ja3: Option<String>,

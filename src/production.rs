@@ -874,6 +874,7 @@ impl<W: Write> PrivateFindingWriter<W> {
                         .map(|value| match value {
                             LogSource::AwsWaf => "aws_waf",
                             LogSource::NginxCombined => "nginx_combined",
+                            LogSource::NginxPostdata => "nginx_postdata",
                             LogSource::ApacheCombined => "apache_combined",
                             LogSource::ApacheVhostCombined => "apache_vhost_combined",
                         })
@@ -3504,6 +3505,7 @@ where
             TelemetryProfile::ApacheCombined => AccessLogFormat::ApacheCombined,
             TelemetryProfile::ApacheVhostCombined => AccessLogFormat::ApacheVhostCombined,
             TelemetryProfile::NginxCombined => AccessLogFormat::NginxCombined,
+            TelemetryProfile::NginxPostdata => AccessLogFormat::NginxPostdata,
             _ => bail!("source references require a supported combined or AWS WAF profile"),
         };
         let mut lines = AccessLogLines::with_raw_retention(decoded, format, retention);
@@ -3734,10 +3736,14 @@ where
                 )?;
             }
         }
-        TelemetryProfile::NginxCombined => {
+        TelemetryProfile::NginxCombined | TelemetryProfile::NginxPostdata => {
             for item in AccessLogLines::with_raw_retention(
                 reader,
-                AccessLogFormat::NginxCombined,
+                if telemetry_profile == TelemetryProfile::NginxPostdata {
+                    AccessLogFormat::NginxPostdata
+                } else {
+                    AccessLogFormat::NginxCombined
+                },
                 raw_retention,
             ) {
                 callback(

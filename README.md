@@ -122,6 +122,7 @@ post-hunt Slack notification).
 | `concentration` | Request-volume distribution without CTI; `--path` / `--path-prefix` / `--source-ip` focus |
 | `probe-sources` | [Bounded per-source request-shape observations](docs/probe-sources.md), with an offline path catalog, auditable review conditions and private opt-in details; not blocking recommendations |
 | `identifier-access` | [Bounded identifier-access observations](docs/identifier-access.md), with per-source ID variation, status/size measurements and prior-write references; not authorization or disclosure findings |
+| `response-sizes` | [Request-adjusted response sizes and character positions](docs/response-sizes.md), with explicit `nginx-postdata` input; also available as `production response-sizes`. Estimates lengths, never content or disclosure |
 | `daily` | Lightweight aggregate request-volume and response-outcome summary; separates nginx 499 and reports window extrema, writes no artifacts by default, and provides JSON for monitoring |
 | `trend` | Read one explicitly selected private URI path across existing run artifacts without reprocessing logs |
 | `compare` | Diff two run directories (first-seen entities, elevated volume, newly observed CVEs) |

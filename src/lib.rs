@@ -28,6 +28,7 @@ pub mod production;
 pub mod report;
 pub mod reputation;
 pub mod reputation_update;
+pub mod response_sizes;
 pub mod sigma;
 pub mod sigma_pack;
 pub mod slack;

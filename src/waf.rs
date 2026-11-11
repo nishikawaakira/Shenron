@@ -123,6 +123,9 @@ pub fn parse_line_with_raw_retention(
         headers,
         status: event.response_code_sent,
         response_bytes: None,
+        request_body: None,
+        request_time_seconds: None,
+        content_type: None,
         protocol: request
             .as_ref()
             .and_then(|request| request.http_version.clone()),
