@@ -1287,3 +1287,84 @@ fn legacy_postdata_reader_keeps_its_invalid_utf8_handling() {
     assert!(lines.next().unwrap().is_ok());
     assert!(lines.next().is_none());
 }
+
+#[test]
+fn response_sizes_counts_prefixed_error_records_by_content_not_filename() {
+    let root = tempfile::tempdir().unwrap();
+    let input = root.path().join("access.log");
+    let mut log = String::new();
+    for filename in [
+        "error.log",
+        "example.test_error_443.log",
+        "misc.log",
+        "example.test_access.log",
+    ] {
+        log += &format!("2026 Jan 01 00:00:00 (fixture) 192.0.2.1->/var/log/nginx/{filename} 2026/01/01 00:00:00 [error] synthetic message\n");
+    }
+    // A prefix without a .log suffix remains an ordinary parse error.
+    log += "2026 Jan 01 00:00:00 (fixture) 192.0.2.1->/var/log/nginx/error.txt 2026/01/01 00:00:00 [error] synthetic message\n";
+    fs::write(&input, log).unwrap();
+    let (report, stdout) = run(root.path(), &input, "out", &[]);
+    assert_eq!(report["summary"]["parse_errors"], 5);
+    assert_eq!(report["summary"]["error_log_lines"], 4);
+    assert_eq!(report["summary"]["analyzed_requests"], 0);
+    assert!(String::from_utf8(stdout)
+        .unwrap()
+        .contains("  Error log lines: 4\n"));
+    let sanitized: Value = serde_json::from_slice(
+        &fs::read(root.path().join("out/sanitized-response-sizes.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(sanitized["error_log_lines"], 4);
+}
+
+#[test]
+fn response_sizes_reads_access_records_under_any_log_prefix_and_only_extracts_access_hosts() {
+    let root = tempfile::tempdir().unwrap();
+    let input = root.path().join("access.log");
+    for (index, (filename, host)) in [
+        ("error.log", None),
+        ("example.test_error_443.log", None),
+        ("misc.log", None),
+        (".log", None),
+        ("access.log", None),
+        ("access_443.log", None),
+        ("example.test_access.log", Some("example.test")),
+        ("example.test_access_443.log", Some("example.test")),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let control = body("SELECT 1", "/items", true);
+        let read = body("SELECT value FROM items", "/items", true);
+        let first = line("192.0.2.8", "/batch", &control, 1000, 0, true)
+            .replace("example.test_access_443.log", filename);
+        // The normal nginx-postdata parser keeps its original prefix rules.
+        let legacy = parse_combined_line(first.trim_end(), AccessLogFormat::NginxPostdata);
+        assert_eq!(legacy.is_ok(), host.is_some());
+        let log = first
+            + &line(
+                "192.0.2.8",
+                "/batch",
+                &read,
+                (1000 + read.len() - control.len() + 4) as u64,
+                1,
+                true,
+            )
+            .replace("example.test_access_443.log", filename);
+        fs::write(&input, log).unwrap();
+        let (report, _) = run(root.path(), &input, &format!("out-{index}"), &[]);
+        assert_eq!(report["summary"]["parseable_records"], 2);
+        assert_eq!(report["summary"]["parse_errors"], 0);
+        assert_eq!(report["summary"]["error_log_lines"], 0);
+        assert_eq!(report["summary"]["paired_requests"], 1);
+        assert_eq!(
+            report["paired_expressions"][0]["host"],
+            serde_json::json!(host)
+        );
+        assert_eq!(
+            report["paired_expressions"][0]["estimated_lengths"],
+            serde_json::json!([3])
+        );
+    }
+}

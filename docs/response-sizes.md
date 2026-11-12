@@ -27,9 +27,11 @@ An optional prefix of the following shape is removed before parsing:
 2026 Jan 01 00:00:01 (fixture) 192.0.2.1->/var/log/nginx/example.test_access_443.log
 ```
 
-The filename suffix is `_access.log` or `_access_<digits>.log`; the preceding
-basename is the host. For response-sizes, a prefix ending in `access.log` or
-`access_<digits>.log` without a host is also removed, with host left null.
+For response-sizes, the prefix is removed whenever its filename ends in `.log`.
+Host is extracted only from `<host>_access.log` or `<host>_access_<digits>.log`;
+all other filenames, including `error.log` and `example.test_error_443.log`,
+leave host null. Error-log classification uses the remaining line's shape,
+never the filename: an access record under an error-log filename is still read.
 This broader prefix handling is limited to this command; other commands and
 auto detection keep their existing parsing behavior. Without this prefix, host
 is null, not inferred from a request or file path. Use one site's corpus when host is absent: null-host

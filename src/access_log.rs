@@ -223,9 +223,10 @@ fn parse_response_size_postdata(
     oversized: bool,
 ) -> Result<WebEvent, AccessLogParseError> {
     static PREFIX: OnceLock<Regex> = OnceLock::new();
+    static HOST: OnceLock<Regex> = OnceLock::new();
     static ERROR_LOG: OnceLock<Regex> = OnceLock::new();
     let prefix = PREFIX.get_or_init(|| Regex::new(
-        r"^\d{4} [A-Z][a-z]{2} \d{2} \d{2}:\d{2}:\d{2} \([^)]*\) \S+->\S*/(?:(?P<host>[^/ ]+?)_)?access(?:_\d+)?\.log "
+        r"^\d{4} [A-Z][a-z]{2} \d{2} \d{2}:\d{2}:\d{2} \([^)]*\) \S+->\S*/(?P<filename>[^/ ]*\.log) "
     ).expect("valid response-size prefix regex"));
     let captures = prefix.captures(raw);
     let line = captures
@@ -247,7 +248,13 @@ fn parse_response_size_postdata(
     }
     let mut event = parse_nginx_postdata(line, RawRetention::Drop)?;
     if let Some(captures) = captures {
-        event.host = captures.name("host").map(|host| host.as_str().to_owned());
+        let host = HOST.get_or_init(|| {
+            Regex::new(r"^(?P<host>[^/ ]+?)_access(?:_\d+)?\.log$")
+                .expect("valid response-size host filename regex")
+        });
+        event.host = host
+            .captures(&captures["filename"])
+            .map(|c| c["host"].to_owned());
     }
     Ok(event)
 }
