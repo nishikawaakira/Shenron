@@ -47,6 +47,14 @@ Four design pillars: (1) static conversion — templates are never executed; (2)
 
 ## Capabilities
 
+`rare-success` counts paths with few successful response sources, sharing
+identifier templates and the existing probe-shape classifier in one offline
+pass. Success means a configured status class; prior probe-shaped activity is
+a time-order observation, not a causal or security conclusion. Administrative
+pages and legitimate integrations can have the same shape. Private path/source
+detail requires explicit display flags; sanitized output contains counts only.
+See [rare response-status patterns](docs/rare-success.md).
+
 `request-anomalies` measures encoded request spellings and nonstandard request
 lines with at most two byte-decoding passes and bounded private evidence.
 Its command-local Combined recovery leaves hunt and other parsers unchanged.
@@ -144,6 +152,7 @@ post-hunt Slack notification).
 | `hunt` | The single detection entry point — Nuclei CVE + Sigma in one pass, with aggregate input-field availability, parse quality, and timestamp coverage. `--output <DIR>` writes the full private/sanitized artifacts; without `--output`, findings stream to stdout only. `--no-nuclei` runs Sigma-only with no setup; `--since`, `--baseline-latest`, `--report`, `--observation-store` shape a run |
 | `explain` | Triage a run's private findings by connection/client IP, ASN, or JA4 with behavior-priority scores, request sequences, and windowed rates |
 | `concentration` | Request-volume distribution without CTI; `--path` / `--path-prefix` / `--source-ip` focus |
+| `rare-success` | [Count paths with few successful sources](docs/rare-success.md) and dated prior probe-shaped observations; bounded private evidence and aggregate-only default output |
 | `request-anomalies` | [Count encoding shapes and request-line forms](docs/request-anomalies.md), including command-local Combined recovery; aggregate-only by default, without inferring exploitation |
 | `ioc` | [Match operator-provided local indicators](docs/ioc.md) against historical logs with bounded private evidence and counts-only sanitized output; no compromise or attribution determination |
 | `probe-sources` | [Bounded per-source request-shape observations](docs/probe-sources.md), with an offline path catalog, auditable review conditions and private opt-in details; not blocking recommendations |

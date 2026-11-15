@@ -53,7 +53,7 @@ pub struct Options {
 }
 
 impl Options {
-    fn validate(&self) -> Result<()> {
+    pub(crate) fn validate(&self) -> Result<()> {
         if [
             self.min_distinct_paths,
             self.min_catalog_paths,
@@ -310,23 +310,60 @@ fn percentage(n: u64, d: u64) -> f64 {
     n as f64 * 100.0 / d as f64
 }
 
-#[derive(PartialEq, Eq, PartialOrd, Ord)]
-enum SourceKey {
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum SourceKey {
     Ip(GroupingIdentity, IpAddr),
     Hostname(String),
 }
 impl SourceKey {
-    fn kind(&self) -> &'static str {
+    pub(crate) fn kind(&self) -> &'static str {
         match self {
             Self::Ip(_, _) => "ip",
             Self::Hostname(_) => "hostname",
         }
     }
 
-    fn identity(&self) -> &'static str {
+    pub(crate) fn identity(&self) -> &'static str {
         match self {
             Self::Ip(identity, _) => identity.label(),
             Self::Hostname(_) => "hostname-peer",
+        }
+    }
+}
+
+pub(crate) fn source_key(event: &WebEvent) -> Option<(SourceKey, &String)> {
+    let peer = event
+        .source_ip
+        .as_ref()
+        .filter(|s| !s.is_empty() && *s != "-")?;
+    if let Some(ip) = canonical_ip(peer) {
+        if let Some(client) = event.client_ip.as_ref() {
+            Some((
+                SourceKey::Ip(GroupingIdentity::ValidatedClient, canonical_ip(client)?),
+                client,
+            ))
+        } else {
+            Some((SourceKey::Ip(GroupingIdentity::ObservedPeer, ip), peer))
+        }
+    } else {
+        // A hostname peer cannot establish CIDR trust for a supplied client.
+        Some((SourceKey::Hostname(canonical_hostname(peer)?), peer))
+    }
+}
+
+impl Source {
+    pub(crate) fn key(&self) -> Option<SourceKey> {
+        match self.identity {
+            "observed-peer" => Some(SourceKey::Ip(
+                GroupingIdentity::ObservedPeer,
+                canonical_ip(&self.source)?,
+            )),
+            "validated-client" => Some(SourceKey::Ip(
+                GroupingIdentity::ValidatedClient,
+                canonical_ip(&self.source)?,
+            )),
+            "hostname-peer" => Some(SourceKey::Hostname(canonical_hostname(&self.source)?)),
+            _ => None,
         }
     }
 }
@@ -348,7 +385,7 @@ fn canonical_hostname(value: &str) -> Option<String> {
         .then(|| name.to_ascii_lowercase())
 }
 
-struct Analysis {
+pub(crate) struct Analysis {
     sources: BTreeMap<SourceKey, Accumulator>,
     successful_paths: BTreeMap<String, ()>,
     pairs: usize,
@@ -356,7 +393,7 @@ struct Analysis {
     catalog: Catalog,
 }
 impl Analysis {
-    fn new() -> Result<Self> {
+    pub(crate) fn new() -> Result<Self> {
         Ok(Self {
             sources: BTreeMap::new(),
             successful_paths: BTreeMap::new(),
@@ -365,7 +402,14 @@ impl Analysis {
             catalog: Catalog::load()?,
         })
     }
-    fn observe(&mut self, event: WebEvent, options: &Options) {
+    pub(crate) fn catalog_provenance(&self) -> (u32, String) {
+        (
+            self.catalog.version,
+            format!("{:x}", Sha256::digest(CATALOG.as_bytes())),
+        )
+    }
+
+    pub(crate) fn observe(&mut self, event: WebEvent, options: &Options) {
         self.summary.requests_without_path += u64::from(event.uri_path.is_none());
         self.summary.requests_without_status += u64::from(event.status.is_none());
         if event
@@ -386,32 +430,16 @@ impl Analysis {
         }
         // Match the established triage identity policy, never merging validated
         // clients with observed peers. The representative remains a raw spelling.
-        let Some(peer) = event
+        if event
             .source_ip
             .as_ref()
             .filter(|value| !value.is_empty() && *value != "-")
-        else {
+            .is_none()
+        {
             self.summary.requests_without_source_ip += 1;
             return;
-        };
-        let (key, raw) = if let Some(ip) = canonical_ip(peer) {
-            if let Some(client) = event.client_ip.as_ref() {
-                let Some(client_ip) = canonical_ip(client) else {
-                    self.summary.requests_with_invalid_source_ip += 1;
-                    return;
-                };
-                (
-                    SourceKey::Ip(GroupingIdentity::ValidatedClient, client_ip),
-                    client,
-                )
-            } else {
-                (SourceKey::Ip(GroupingIdentity::ObservedPeer, ip), peer)
-            }
-        } else if let Some(hostname) = canonical_hostname(peer) {
-            // Hostname peers cannot establish CIDR trust, even if a caller
-            // supplies a client field on an event outside the normal streamer.
-            (SourceKey::Hostname(hostname), peer)
-        } else {
+        }
+        let Some((key, raw)) = source_key(&event) else {
             self.summary.requests_with_invalid_source_ip += 1;
             return;
         };
@@ -503,7 +531,7 @@ impl Analysis {
                 .is_some_and(|query| !query.is_empty()),
         );
     }
-    fn finish(mut self, options: &Options) -> Report {
+    pub(crate) fn finish(mut self, options: &Options) -> Report {
         let mut rows = Vec::new();
         for (key, source) in self.sources {
             let identity = key.identity();

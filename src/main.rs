@@ -493,6 +493,8 @@ enum ProductionCommand {
     Ioc(IocArgs),
     /// Measure request spellings and command-local parse recovery, without inferring intent.
     RequestAnomalies(RequestAnomaliesArgs),
+    /// Observe paths with few successful sources and prior probe-shaped activity.
+    RareSuccess(RareSuccessArgs),
     /// Compare request-adjusted response sizes without inferring content or disclosure.
     ResponseSizes(ResponseSizesArgs),
     /// Count bounded identifier variations without inferring authorization or intent.
@@ -951,6 +953,31 @@ struct ProbeSourcesArgs {
     output_format: DailyOutputFormat,
     #[command(flatten)]
     options: shenron::probe_sources::Options,
+}
+
+#[derive(Debug, clap::Args)]
+struct RareSuccessArgs {
+    #[arg(long)]
+    input: PathBuf,
+    #[arg(long, value_enum, default_value_t = InputFormat::Auto)]
+    format: InputFormat,
+    #[arg(long)]
+    output: Option<PathBuf>,
+    #[arg(long, value_parser = parse_rfc3339_utc)]
+    from: Option<DateTime<Utc>>,
+    #[arg(long, value_parser = parse_rfc3339_utc)]
+    to: Option<DateTime<Utc>>,
+    /// Verify forwarded clients only behind explicitly trusted peers.
+    #[arg(long, value_name = "IP_OR_CIDR")]
+    trusted_proxy: Vec<TrustedProxy>,
+    #[arg(long)]
+    show_paths: bool,
+    #[arg(long)]
+    show_source_ips: bool,
+    #[arg(long, value_enum, default_value_t = DailyOutputFormat::Text)]
+    output_format: DailyOutputFormat,
+    #[command(flatten)]
+    options: shenron::rare_success::Options,
 }
 
 #[derive(Debug, clap::Args)]
@@ -1470,6 +1497,7 @@ fn main() -> Result<()> {
         Command::Production(command) => match command {
             ProductionCommand::Ioc(args) => run_ioc(args),
             ProductionCommand::RequestAnomalies(args) => run_request_anomalies(args),
+            ProductionCommand::RareSuccess(args) => run_rare_success(args),
             ProductionCommand::ResponseSizes(args) => run_response_sizes(args),
             ProductionCommand::IdentifierAccess(args) => run_identifier_access(args),
             ProductionCommand::ProbeSources(args) => run_probe_sources(args),
@@ -2202,6 +2230,42 @@ fn run_daily(args: DailyArgs) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn run_rare_success(args: RareSuccessArgs) -> Result<()> {
+    let report = shenron::rare_success::run(
+        &args.input,
+        args.format.telemetry_profile_for_input(&args.input)?,
+        &HuntTimeRange {
+            from: args.from,
+            to: args.to,
+        },
+        &TrustedProxySet::new(args.trusted_proxy),
+        &args.options,
+        args.output.as_deref(),
+    )?;
+    match args.output_format {
+        DailyOutputFormat::Text => shenron::rare_success::write_text(
+            io::stdout().lock(),
+            &report,
+            args.show_paths,
+            args.show_source_ips,
+            args.options.limit,
+        ),
+        DailyOutputFormat::Json => {
+            serde_json::to_writer_pretty(
+                io::stdout().lock(),
+                &shenron::rare_success::display(
+                    &report,
+                    args.show_paths,
+                    args.show_source_ips,
+                    args.options.limit,
+                ),
+            )?;
+            println!();
+            Ok(())
+        }
+    }
 }
 
 fn run_request_anomalies(args: RequestAnomaliesArgs) -> Result<()> {
