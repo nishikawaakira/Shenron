@@ -28,6 +28,7 @@ mod percent_encoding;
 pub mod probe_sources;
 pub mod processed_index;
 pub mod production;
+pub mod rare_success;
 pub mod report;
 pub mod reputation;
 pub mod reputation_update;

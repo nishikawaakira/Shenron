@@ -337,7 +337,7 @@ fn kind(value: &str) -> Option<&'static str> {
         None
     }
 }
-fn path_id(segment: &str) -> Option<(&str, String)> {
+pub(crate) fn path_id(segment: &str) -> Option<(&str, String)> {
     if let Some(kind) = kind(segment) {
         return Some((segment, kind.into()));
     }
