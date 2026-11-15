@@ -495,6 +495,8 @@ enum ProductionCommand {
     RequestAnomalies(RequestAnomaliesArgs),
     /// Observe paths with few successful sources and prior probe-shaped activity.
     RareSuccess(RareSuccessArgs),
+    /// Count bounded field-value frequencies without inferring intent or automation.
+    Stack(StackArgs),
     /// Compare request-adjusted response sizes without inferring content or disclosure.
     ResponseSizes(ResponseSizesArgs),
     /// Count bounded identifier variations without inferring authorization or intent.
@@ -953,6 +955,30 @@ struct ProbeSourcesArgs {
     output_format: DailyOutputFormat,
     #[command(flatten)]
     options: shenron::probe_sources::Options,
+}
+
+#[derive(Debug, clap::Args)]
+struct StackArgs {
+    #[arg(long)]
+    input: PathBuf,
+    #[arg(long, value_enum, default_value_t = InputFormat::Auto)]
+    format: InputFormat,
+    #[arg(long)]
+    output: Option<PathBuf>,
+    #[arg(long, value_parser = parse_rfc3339_utc)]
+    from: Option<DateTime<Utc>>,
+    #[arg(long, value_parser = parse_rfc3339_utc)]
+    to: Option<DateTime<Utc>>,
+    /// Also count verified clients without merging them with observed peers.
+    #[arg(long, value_name = "IP_OR_CIDR")]
+    trusted_proxy: Vec<TrustedProxy>,
+    /// Opt in to private values; stdout truncation never changes the artifact.
+    #[arg(long)]
+    show_values: bool,
+    #[arg(long, value_enum, default_value_t = DailyOutputFormat::Text)]
+    output_format: DailyOutputFormat,
+    #[command(flatten)]
+    options: shenron::stack::Options,
 }
 
 #[derive(Debug, clap::Args)]
@@ -1498,6 +1524,7 @@ fn main() -> Result<()> {
             ProductionCommand::Ioc(args) => run_ioc(args),
             ProductionCommand::RequestAnomalies(args) => run_request_anomalies(args),
             ProductionCommand::RareSuccess(args) => run_rare_success(args),
+            ProductionCommand::Stack(args) => run_stack(args),
             ProductionCommand::ResponseSizes(args) => run_response_sizes(args),
             ProductionCommand::IdentifierAccess(args) => run_identifier_access(args),
             ProductionCommand::ProbeSources(args) => run_probe_sources(args),
@@ -2230,6 +2257,36 @@ fn run_daily(args: DailyArgs) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn run_stack(args: StackArgs) -> Result<()> {
+    let report = shenron::stack::run(
+        &args.input,
+        args.format.telemetry_profile_for_input(&args.input)?,
+        &HuntTimeRange {
+            from: args.from,
+            to: args.to,
+        },
+        &TrustedProxySet::new(args.trusted_proxy),
+        &args.options,
+        args.output.as_deref(),
+    )?;
+    match args.output_format {
+        DailyOutputFormat::Text => shenron::stack::write_text(
+            io::stdout().lock(),
+            &report,
+            args.show_values,
+            &args.options,
+        ),
+        DailyOutputFormat::Json => {
+            serde_json::to_writer_pretty(
+                io::stdout().lock(),
+                &shenron::stack::display(&report, args.show_values, &args.options),
+            )?;
+            println!();
+            Ok(())
+        }
+    }
 }
 
 fn run_rare_success(args: RareSuccessArgs) -> Result<()> {
