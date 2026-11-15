@@ -14,6 +14,7 @@ pub mod findings_io;
 pub mod identifier_access;
 pub mod input_discovery;
 pub mod investigation;
+pub mod ioc;
 pub mod kev;
 pub mod lab;
 pub mod lab_cli;

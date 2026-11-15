@@ -60,6 +60,8 @@ Shenron は、Web アクセスログを対象にした Rust 製の「受動的�
 
 ## できること
 
+- `ioc`：運用者が渡した TSV／限定した STIX 2.1 指標をローカルの履歴ログへ遡及照合します。IP／CIDR は索引で照合し、観測 peer と検証済み client の一致を別集計、有効期間外の一致も残します。既定の標準出力と `sanitized-ioc.json` は件数だけで、値・ラベル・指標ファイルの情報・上限付き証跡は private に分離し、外部送信しません。一致は攻撃・侵害・意図・帰属・同一運営主体の判定ではなく、CDN・NAT・共有クラウドの IP は無関係な利用者とも一致し得ます。詳細は [IOC observations](docs/ioc.md) を参照してください。
+
 - 小さく明示的な Sigma サブセットによるログ照合
 - Nuclei の CVE テンプレートの静的解析と、検知可能性（detectability）の評価
 - `hunt`：検証済み Nuclei 検出条件を過去ログに照合し、全件のフィールド可用性・解析品質・時刻カバレッジも生値なしの集計として表示（FIND）
@@ -103,6 +105,7 @@ Shenron は**単一バイナリ**です。準備系コマンドだけが公開�
 | `hunt` | 唯一の検知入口。Nuclei(CVE)＋Sigma を1パスで照合し、入力フィールド可用性・parse 品質・時刻カバレッジも集計表示。`--output <DIR>` で private/sanitized の全成果物、`--output` 無しなら findings を stdout のみ。`--no-nuclei` は setup 不要の Sigma のみ。`--since` / `--baseline-latest` / `--report` / `--observation-store` で運用を形作る |
 | `explain` | run の private findings を 接続元/クライアント IP・ASN・JA4 単位でトリアージ（挙動優先度スコア・リクエスト列・時間窓レート） |
 | `concentration` | CTI なしのリクエスト量分布。`--path` / `--path-prefix` / `--source-ip` でフォーカス |
+| `ioc` | 運用者のローカル指標を履歴ログへ照合し、上限付き private 証跡と集計だけの sanitized 出力を作成。侵害・帰属の判定ではありません |
 | `probe-sources` | オフラインのパスカタログと上限付きの接続元別リクエスト形状を観測し、人手確認の条件・根拠を表示。攻撃の判定や遮断の推奨ではありません |
 | `identifier-access` | 送信元ごとの ID 変化、ステータス／サイズ、先行書き込みの参照を上限付きで計数。認可の欠陥・情報開示の判定ではありません |
 | `response-sizes` / `production response-sizes` | `--format nginx-postdata` を明示して送信量補正後の応答サイズと文字位置を観測。内容の復元・情報開示の判定ではありません |
@@ -255,6 +258,8 @@ shenron candidate export \
 JA4 のように、選択した telemetry/backend では忠実に表現できない条件は、勝手に削って広いルールにするのではなく、export を拒否します。`Authorization`・`Cookie`・API キー等の秘匿ヘッダ名や、bearer/JWT らしき値を含む条件も export を拒否します。ただし `/oauth/token` のように URI に単語が含まれるだけでは拒否しません。
 
 ## ドキュメント
+
+- [IOC observations](docs/ioc.md)
 
 - [ケーススタディ（4データセットの実証）](docs/case-study.md)
 - [Production hunting](docs/production-hunting.md)

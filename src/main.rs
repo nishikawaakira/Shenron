@@ -489,6 +489,8 @@ impl TemplateFilterArgs {
 // arguments would add indirection solely to reduce the enum's stack size.
 #[allow(clippy::large_enum_variant)]
 enum ProductionCommand {
+    /// Match operator-provided indicators against local history without inferring compromise.
+    Ioc(IocArgs),
     /// Compare request-adjusted response sizes without inferring content or disclosure.
     ResponseSizes(ResponseSizesArgs),
     /// Count bounded identifier variations without inferring authorization or intent.
@@ -950,6 +952,34 @@ struct ProbeSourcesArgs {
 }
 
 #[derive(Debug, clap::Args)]
+struct IocArgs {
+    #[arg(long)]
+    input: PathBuf,
+    #[arg(long, value_enum, default_value_t = InputFormat::Auto)]
+    format: InputFormat,
+    /// Local TSV or STIX bundle; repeat to combine files. Values stay private.
+    #[arg(long, required = true)]
+    indicators: Vec<PathBuf>,
+    #[arg(long)]
+    output: Option<PathBuf>,
+    #[arg(long, value_parser = parse_rfc3339_utc)]
+    from: Option<DateTime<Utc>>,
+    #[arg(long, value_parser = parse_rfc3339_utc)]
+    to: Option<DateTime<Utc>>,
+    /// Include only forwarded clients verified against these connection peers.
+    #[arg(long, value_name = "IP_OR_CIDR")]
+    trusted_proxy: Vec<TrustedProxy>,
+    /// Opt in to private indicator values and bounded request evidence on stdout.
+    #[arg(long)]
+    show_matches: bool,
+    /// Maximum retained match records to display; zero displays all retained records.
+    #[arg(long, default_value_t = 20)]
+    limit: usize,
+    #[command(flatten)]
+    options: shenron::ioc::Options,
+}
+
+#[derive(Debug, clap::Args)]
 struct IdentifierAccessArgs {
     #[arg(long)]
     input: PathBuf,
@@ -1378,6 +1408,7 @@ fn main() -> Result<()> {
             command: ResponseSizesCommand::ResponseSizes(args),
         } => run_response_sizes(args),
         Command::Production(command) => match command {
+            ProductionCommand::Ioc(args) => run_ioc(args),
             ProductionCommand::ResponseSizes(args) => run_response_sizes(args),
             ProductionCommand::IdentifierAccess(args) => run_identifier_access(args),
             ProductionCommand::ProbeSources(args) => run_probe_sources(args),
@@ -2110,6 +2141,22 @@ fn run_daily(args: DailyArgs) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn run_ioc(args: IocArgs) -> Result<()> {
+    let report = shenron::ioc::run(
+        &args.input,
+        args.format.telemetry_profile_for_input(&args.input)?,
+        &HuntTimeRange {
+            from: args.from,
+            to: args.to,
+        },
+        &TrustedProxySet::new(args.trusted_proxy),
+        &args.indicators,
+        &args.options,
+        args.output.as_deref(),
+    )?;
+    shenron::ioc::write_text(io::stdout().lock(), &report, args.show_matches, args.limit)
 }
 
 fn run_probe_sources(args: ProbeSourcesArgs) -> Result<()> {

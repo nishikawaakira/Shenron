@@ -1669,7 +1669,15 @@ mod setup_tests {
     };
 
     fn file_url(path: &Path) -> String {
-        format!("file://{}", path.display())
+        let path = path.to_str().unwrap();
+        #[cfg(windows)]
+        let path = format!(
+            "/{}",
+            path.strip_prefix(r"\\?\")
+                .unwrap_or(path)
+                .replace('\\', "/")
+        );
+        format!("file://{path}")
     }
 
     fn write_reputation_sources(directory: &Path) -> [String; 4] {
@@ -1746,7 +1754,7 @@ mod setup_tests {
         )
         .unwrap();
         let catalog = fs::canonicalize("tests/fixtures/kev/catalog.json").unwrap();
-        let source = format!("file://{}", catalog.display());
+        let source = file_url(&catalog);
 
         assert_eq!(
             update_kev_inputs(data_dir, &source, &data_dir.join("nuclei-report.json")).unwrap(),
@@ -1775,7 +1783,7 @@ mod setup_tests {
     fn kev_setup_keeps_the_snapshot_but_skips_join_without_a_nuclei_report() {
         let directory = tempdir().unwrap();
         let catalog = fs::canonicalize("tests/fixtures/kev/catalog.json").unwrap();
-        let source = format!("file://{}", catalog.display());
+        let source = file_url(&catalog);
         let missing = directory.path().join("nuclei-report.json");
 
         let outcome = update_kev_inputs(directory.path(), &source, &missing).unwrap();
