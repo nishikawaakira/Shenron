@@ -104,7 +104,7 @@ fn hunt_prunes_hidden_directories_and_reports_private_exclusions_without_parse_e
     let skipped = manifest["skipped_input_files"].as_array().unwrap();
     assert_eq!(skipped.len(), 3);
     for (entry, name) in skipped.iter().zip([".cache", ".git", "nested/.hidden-dir"]) {
-        assert_eq!(entry["path"], logs.join(name).to_str().unwrap());
+        assert_eq!(Path::new(entry["path"].as_str().unwrap()), logs.join(name));
         assert_eq!(entry["reason"], "hidden-directory");
     }
 }
