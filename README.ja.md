@@ -48,6 +48,7 @@ Shenron は、Web アクセスログを対象にした Rust 製の「受動的�
 
 - AWS WAF のログ（JSONL、`.gz` も可）
 - nginx の Combined ログ
+- nginx の本文付き拡張ログ（`--format nginx-postdata` を明示指定。Combined の後に Content-Type・TLS protocol・cipher・request duration・`postdata[<body>]` が必要で、`--format auto` の検出対象外）。`response-sizes` の本文依存の解析にはこの形式を使います。既存の解析コマンドでは標準 Combined も引き続き利用できます。詳細は [Response-size observations](docs/response-sizes.md) を参照してください。
 - Apache の Combined ログ（`--format apache` は標準 Combined と vhost 前置き Combined を行単位で自動判別。先頭の vhost はポート有無どちらも可。`--format apache-vhost` は vhost 前置きを厳格に要求）
 - Nuclei テンプレート一式と、その検証結果（凍結レポート）
 - CISA KEV スナップショット
@@ -55,11 +56,17 @@ Shenron は、Web アクセスログを対象にした Rust 製の「受動的�
 
 すべての入力はソースに依存しない共通形式 `WebEvent` に正規化されます。
 
+ログのディレクトリ探索では、形式ごとの対応拡張子に加えて、拡張子なしと数字だけの拡張子を持つローテーション済みログも読みます。ディレクトリ内の隠しファイル・隠しディレクトリ・非対応拡張子・シンボリックリンクは読み飛ばし、件数と理由を開示します（`context` はシンボリックリンクでエラー）。隠しディレクトリは中を走査せず1件と数えます。入力として直接指定したディレクトリは隠しディレクトリでも走査し、直接指定したファイルは拡張子にかかわらず読みます。拡張子なしのログ以外のファイルも解析対象になるため、ログ専用のディレクトリを推奨します。gzip は拡張子でなく magic bytes で判定し、連結された全メンバーを読みます。読み飛ばしたパスは private の provenance にだけ残します。新たに読み込み対象になったファイルは、一致する provenance が既に index にない限り、`--processed-index` では未処理として扱われます。詳細は [Production hunting](docs/production-hunting.md) を参照してください。
+
 ## できること
 
 - 小さく明示的な Sigma サブセットによるログ照合
 - Nuclei の CVE テンプレートの静的解析と、検知可能性（detectability）の評価
 - `hunt`：検証済み Nuclei 検出条件を過去ログに照合し、全件のフィールド可用性・解析品質・時刻カバレッジも生値なしの集計として表示（FIND）
+- `probe-sources`：Nuclei・Sigma の finding に依存せず、接続元ごとのパスの幅、オフラインのパスカタログとの一致、応答ステータス、選択したコーパス内で 2xx が観測されなかったパスの割合を上限付きで計数します。設定可能な確認条件とその充足状況を示し、`probe-shaped` は人が確認する優先度のための観測ラベルです。攻撃・侵害・悪意・攻撃者特定の判定でも、遮断の推奨でもありません。CDN・LB・NAT・プロキシ、正規の監視・診断・クローラーも同じ形になり得ます。既定の標準出力と `sanitized-research.json` は集計だけで、個別の接続元は `--show-source-ips`、例示パスは追加の `--show-paths` で表示します。User-Agent 値は private 成果物だけに保存します。詳細は [Probe-source request shapes](docs/probe-sources.md) を参照してください。
+- `identifier-access`：送信元・メソッド・ホスト・テンプレート・ID 位置ごとに、数値／UUID の ID だけが異なるリクエストを上限付きで集計し、ID の種類数、ステータス／サイズの観測、同じ peer の別エントリからの先行書き込みを記録します。`--method GET --method HEAD` などでメソッドを明示的に絞れます。`content`／`rejected` はステータスとサイズに基づく観測であり、攻撃・認可の欠陥・情報開示の判定ではありません。標準出力は集計と測定値の表で、送信元は `--show-source-ips`、テンプレート等は `--show-paths` で表示します。ID 値を含む `identifier-access.json` と、集計だけの `sanitized-identifier-access.json` を分離します。詳細は [Identifier-access observations](docs/identifier-access.md) を参照してください。
+- `response-sizes` / `production response-sizes`：`--format nginx-postdata` の本文付きログで、送信バイト数の差を補正した応答サイズから、対応する対照と読み出しの長さ候補を比較します。1文字ずつの読み出しは試した文字位置として別集計し、長さとは扱いません。`fit_rate` は HEX で包んだ読み出しの偶奇だけを検査します。ゼロは空文字列と NULL を区別せず、負の候補値も NULL と断定しません。内容の復元や情報開示の判定は行いません。既定の標準出力と `sanitized-response-sizes.json` は集計だけで、送信元は `--show-source-ips`、式は `--show-expressions` で明示表示します。式・ホスト・証跡は private の `response-sizes.json` に保存します。詳細は [Response-size observations](docs/response-sizes.md) を参照してください。
+- `context`：Nuclei／Sigma に一致しないものも含め、指定した観測 peer のリクエストを確認します。`--from`／`--to` は片側だけでも省略しても使え、既定の標準出力は件数と保持した記録の UTC 期間（`earliest_retained`／`latest_retained`）です。既定の保持上限は `--max-records 10000` で、省略件数を開示します。private な各記録は `--show-request`、クエリと Referer は追加の `--show-query` で表示します。保持期間は省略された記録を含む全期間ではありません。詳細は [Investigation workflow](docs/investigation-workflow.md) を参照してください。
 - `ablation`：URI-only から Nuclei IR・request-specific IR まで、条件の広さ別に一致件数（ボリューム）を比較
 - `replay`：ローカルの履歴コーパス全体に対し、既知検出の再観測カバレッジとその他の一致を、機微情報を含まない集計として算出
 - `count-hypotheses`：CVE ごとに「広い→狭い」WAF 条件を、ローカルの COUNT シミュレーションとして比較（推奨する条件を自動で選んだり、デプロイしたりはしません）
@@ -72,6 +79,9 @@ Shenron は、Web アクセスログを対象にした Rust 製の「受動的�
 - `concentration --path /example/path --show-source-ips`：特定の正規化済みパスに対する観測接続ピアごとのリクエスト件数を private 側で確認できます。`--path-prefix /example` はそのパス以下（サブツリー）をまとめて分析し、配下の個別パス（`--show-paths`）とアクセス元ピアを一覧表示します。`--source-ip <IP>` は逆向きで、カンマ区切りまたはフラグの繰り返しによって 1 件以上の IP を指定でき、それらの観測ピアが送った URI パスの union を表示します。複数 IP の場合、`--show-source-ips` は IP ごとの private なリクエスト件数内訳も表示します。選択したパス、IP、内訳は private artifact のみに保存し、sanitized 側は集計だけを残します。これは集中状況の文脈であり、観測 peer は攻撃者特定ではありません。
 - 同じ private フォーカス表示では、IP 単位の行を残したままネットワークプレフィックス単位にも集約します（IPv4 は既定 `/24`、IPv6 は既定 `/48`、`--ipv4-group-prefix` / `--ipv6-group-prefix` で変更可能）。プレフィックスの共有は所有者・運用主体・行為者の共有を意味しません。
 - ローカル ASN データセットがある場合は `--asn-dataset <PATH>` を追加すると、IP／プレフィックス表示と並べて private な ASN 集約を表示し、未解決 peer も件数で開示します。ASN は経路上のグループにすぎず、単一運用者・帰属・DoS・攻撃・悪用を示すものではありません。ASN 番号と組織名は sanitized 出力に入りません。
+- `concentration` / `daily` の `--source-prefix-bits`（IPv4）／`--source-prefix-bits-v6`（IPv6）は、フォーカスとは独立したコーパス全体の接頭辞別集計を有効にします。片方の指定で両ファミリを有効にし、未指定側は `/24`／`/48` を使います。private の `source_prefixes` に要求数・記録された応答バイト数・送信元数・1送信元あたりの最大要求数・ステータス分布を出し、ローカル ASN データがあれば複数 ASN の内訳と未解決件数も併記します。使ったデータセットのパス・SHA-256・件数・明示／既定・用途は private manifest に記録します。既定の `asn-ranges.tsv` は IPv4 専用で、IPv6 も解決するには対応するローカル CSV を指定します。接頭辞の共有や ASN は、所有者・運営主体・協調・攻撃の判定ではありません。`daily` ではこの指定に `--output` が必要で、sanitized 成果物は opt-in しても変わりません。
+- 同じ接頭辞別集計では、クエリを除いた `distinct_uri_paths` と `uri_paths_requested_once` も正確に数えます。既定の上限は `--max-paths-per-source-prefix` が 5,000、`--max-source-prefix-path-pairs` と `--max-source-prefix-paths` が各 10,000,000 です。省略件数と保持数を private 側に開示し、省略のあった接頭辞では1回だけのパス数を出しません。これらは巡回の形の観測であり、自動化・スクレイピング・攻撃の判定ではありません。上限・メモリ・再実行の目安は [Request concentration](docs/request-concentration.md) を参照してください。
+- IP の照合では IPv4-mapped IPv6 を IPv4 として扱い、同じアドレスの表記違いを内部でまとめます。公開 bot レンジ・アドレス集合・`context`・ASN／レピュテーション・接頭辞集計・first-seen などが対象で、表示の生のキーは各機能の規約どおり保持します。first-seen はアドレスごとに1件ですが、triage の `first_seen_entities` は印の付いた生表記の行数なので異なり得ます。過去の observation store のキーは移行せず、mapped 形式だった peer の再出現履歴が新しく始まる場合があります。アドレス集合の候補 replay も mapped peer を含むログでは一致件数が増え得ます。詳細は [Temporal comparison](docs/temporal-comparison.md) と [Observation memory](docs/observation-store.md) を参照してください。
 - `hunt --input <logs> --output <run-dir> --report`：ログ解析と同じ run 内の private HTML レポート生成を一度に行います。既存の hunt / concentration run は `hunt --results-dir <run-dir> --lang ja` で生ログを再解析せず再レンダリングでき、`--report <path>` で既定の `<run-dir>/report.html` を上書きできます。パス・IP の棒グラフ、分刻み時系列（集計された HTTP ステータスクラス 1xx〜5xx の5本の折れ線を含む）、hunt triage に加え、観測 CVE ごとに一致した Nuclei テンプレート ID とカタログ宣言 severity を一覧表示します。ステータスクラスの分系列は集計件数だけを含み、private な concentration artifact のみに保存して sanitized 出力へはコピーしません。この公開 CTI の ID は sanitized の CVE 集計にも決定論的な `template_ids` として保存され、顧客のリクエスト値は追加しません。CVE severity は Nuclei `info.severity`、Sigma severity 集計は Sigma `level` に由来し、Shenron による影響・悪用・侵害・悪性・帰属の判定ではありません。両方の時系列を CSS だけでホバーでき、ステータス表示では UTC の分と全クラスの件数を確認できます。テンプレート ID は公開 GitHub コード検索へのリンクですが、レポートを開くだけでは通信せず、クリック時にも公開 ID だけを送信して private 値は送りません。生のパスと IP を含む private 成果物であり、JavaScript や自動取得される外部リソースは使いません。DoS・攻撃・悪用・侵害・悪性確率・攻撃者特定の判定ではありません。詳細は [Private offline HTML report](docs/html-report.md) を参照してください。
 - `compare`：2つのローカル凍結 run artifact を差分比較します。`hunt --baseline <prior-run>` では新しい hunt 後に同じ比較を出力します。CVE の差分と集計は sanitized 側、first-seen entity とパス/IP 詳細は private 側に分離されます。first-seen や elevated-volume は悪性・攻撃・侵害・攻撃者特定の判定ではありません。詳細は [Temporal comparison](docs/temporal-comparison.md) を参照してください。
 - `hunt --output <DIR>`：集計のみの `triage-summary.json` と、優先順付き private `triage-view.json` も出力します。IP 等の private 値を標準出力に表示するには `--show-triage`（必要なら `--limit`）を指定します。この順序は人間が先に確認するためのトリアージであり、脅威の重大度・悪性確率ではありません。first-seen は「新規なので要確認」であって悪性の断定ではありません。
@@ -93,10 +103,16 @@ Shenron は**単一バイナリ**です。準備系コマンドだけが公開�
 | `hunt` | 唯一の検知入口。Nuclei(CVE)＋Sigma を1パスで照合し、入力フィールド可用性・parse 品質・時刻カバレッジも集計表示。`--output <DIR>` で private/sanitized の全成果物、`--output` 無しなら findings を stdout のみ。`--no-nuclei` は setup 不要の Sigma のみ。`--since` / `--baseline-latest` / `--report` / `--observation-store` で運用を形作る |
 | `explain` | run の private findings を 接続元/クライアント IP・ASN・JA4 単位でトリアージ（挙動優先度スコア・リクエスト列・時間窓レート） |
 | `concentration` | CTI なしのリクエスト量分布。`--path` / `--path-prefix` / `--source-ip` でフォーカス |
+| `probe-sources` | オフラインのパスカタログと上限付きの接続元別リクエスト形状を観測し、人手確認の条件・根拠を表示。攻撃の判定や遮断の推奨ではありません |
+| `identifier-access` | 送信元ごとの ID 変化、ステータス／サイズ、先行書き込みの参照を上限付きで計数。認可の欠陥・情報開示の判定ではありません |
+| `response-sizes` / `production response-sizes` | `--format nginx-postdata` を明示して送信量補正後の応答サイズと文字位置を観測。内容の復元・情報開示の判定ではありません |
+| `context` | 非一致も含む指定 peer の記録を、任意の UTC 範囲で確認。件数・保持期間が既定で、個別記録は opt-in |
 | `daily` | 軽量なリクエスト量・応答結果サマリ。nginx 499 と時間窓の極値を分離表示し、既定では成果物なし、監視向け JSON に対応 |
 | `trend` | 明示指定した private URI パスを既存 run 成果物間で追跡（生ログの再処理なし） |
 | `compare` | 2つの run ディレクトリを差分比較（first-seen・volume 上昇・新規 CVE） |
-| `candidate build` / `replay` / `compatibility` / `explain` / `export` | 確定した検出を、レビュー前提の **COUNT のみ** WAF ルールへ |
+| `candidate build` / `replay` / `evaluate` / `compatibility` / `explain` / `export` | private findings から候補を作成し、履歴 replay・独立コーパス評価・互換性確認を経て、レビュー前提の **COUNT のみ** WAF ルールへ。攻撃・悪用成立の確定ではありません |
+| `disposition read` / `set` | スコープ・再レビュー期限を含む、人が記録した private なレビュー状態を参照・追記 |
+| `observation-store read` / `compact` | private な再観測メモリを参照し、新しいファイルへ明示的に整理。生ログの再解析・帰属の判定ではありません |
 | `export` | run を sanitized な STIX 2.1 / MISP ファイルに変換（ファイル出力のみ・TLP 付き） |
 | `replay` / `ablation` / `count-hypotheses` | カバレッジ・検知戦略の計測 |
 | `validate-rules` | 手持ちの Sigma ルールが対応サブセットに入るか確認 |
@@ -182,6 +198,10 @@ Shenron はディレクトリツリーと gzip ローテーションを読み、
 
 `hunt` は CVE 主体の Nuclei パスに加えて、汎用的な **Sigma** 検出パスを**既定で ON**にして同一ストリームで実行します。CVE テンプレートに対応しない汎用 TTP（例：`.env` などの機密ファイル探索）を拾えます。ルールは `--rules <DIR>` か準備済みの `<data-dir>/sigma-rules` から読み込み、`--no-sigma` で無効化できます。`shenron setup` が Shenron 対応の同梱パックをそこへ配置するので、追加設定なしで動きます。さらに `setup --sigma-source <git-url>` で外部ソース（例：SigmaHQ）の `rules/web` も取得できます。Sigma の finding は `source` フィールドを持ち、CVE 指標とは別に集計されます。`candidate build` では既定で除外され、明示的な `--include-sigma-ttp --rules <DIR>` の場合だけ、忠実に変換できるルール由来リテラルから CVE 候補とは別の replay 必須クラスを生成します。CVE の証拠ではなく、出力は引き続き COUNT のみです。詳細は [Sigma detection inside hunt](docs/sigma-in-hunt.md) を参照。
 
+同梱 Sigma パックは秘密／設定ファイル、バージョン管理、管理／actuator エンドポイントに加え、AI 開発ツールの設定パスも対象に含みます。いずれも要求パスへの一致であり、ファイルの存在・内容の取得・侵害を確定するものではありません。
+
+Nuclei の変換可否は共通の汎用パス判定に揃えられています。既存の凍結レポートへ反映するには `shenron nuclei update` を再実行してください。traversal の形やクエリ／ヘッダー条件は引き続き取り込み対象になり得ます。検知可能性は攻撃・悪用・脆弱な製品の存在の判定ではありません。詳細は [Nuclei detectability](docs/nuclei-detectability.md) を参照してください。
+
 同梱の秘密・設定ファイル探索ルールでは、記録された応答が 2xx の一致を人手確認の最優先として強調し、private HTML レポートに証跡を一覧表示します。他の一致を除外するものではなく、2xx はファイル内容の開示・攻撃・悪用・侵害を証明しません。ステータスが取得できない場合は確認不可のままで、成功扱いにはしません。
 
 `hunt` は、機微なリクエスト値を含む **private findings** と、それを含まない **sanitized（無害化済み）レポート**を分離して出力します。AWS WAF の検出結果は `explain` で `BLOCK` / `not-blocked` を絞り込めます。
@@ -239,6 +259,32 @@ JA4 のように、選択した telemetry/backend では忠実に表現できな
 - [ケーススタディ（4データセットの実証）](docs/case-study.md)
 - [Production hunting](docs/production-hunting.md)
 - [Telemetry capabilities](docs/telemetry-capabilities.md)
+- [Investigation workflow](docs/investigation-workflow.md)
+- [Threat-hunting workflow](docs/threat-hunting-workflow.md)
+- [Daily-hunting runbook](docs/daily-hunting-runbook.md)
+- [Analyst dispositions](docs/analyst-dispositions.md)
+- [Probe-source request shapes](docs/probe-sources.md)
+- [Identifier-access observations](docs/identifier-access.md)
+- [Response-size observations](docs/response-sizes.md)
+- [Request concentration](docs/request-concentration.md)
+- [Temporal comparison](docs/temporal-comparison.md)
+- [Observation memory](docs/observation-store.md)
+- [Request sequences](docs/request-sequences.md)
+- [Private offline HTML report](docs/html-report.md)
+- [Declared/observed consistency](docs/declared-observed-consistency.md)
+- [Published bot ranges](docs/published-bot-ranges.md)
+- [CTI export](docs/cti-export.md)
+- [Nuclei detectability](docs/nuclei-detectability.md)
+- [Nuclei test generation](docs/nuclei-test-generation.md)
+- [Sigma support](docs/sigma-support.md)
+- [Sigma detection inside hunt](docs/sigma-in-hunt.md)
+- [Validation](docs/validation.md)
+- [Synthetic corpus](docs/synthetic-corpus.md)
+- [Architecture](docs/architecture.md)
+- [KEV coverage](docs/kev-coverage.md)
+- [Minimum telemetry](docs/minimum-telemetry.md)
+- [AWS WAF schema](docs/aws-waf-schema.md)
+- [Detection-strategy ablation](docs/ablation.md)
 - [Candidate model](docs/waf-candidate-model.md)
 - [Historical replay coverage](docs/historical-replay.md)
 - [COUNT hypothesis ladder](docs/count-hypotheses.md)

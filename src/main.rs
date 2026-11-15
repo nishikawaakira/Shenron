@@ -492,380 +492,20 @@ enum ProductionCommand {
     /// Compare request-adjusted response sizes without inferring content or disclosure.
     ResponseSizes(ResponseSizesArgs),
     /// Count bounded identifier variations without inferring authorization or intent.
-    IdentifierAccess {
-        #[arg(long)]
-        input: PathBuf,
-        #[arg(long, value_enum, default_value_t = InputFormat::Auto)]
-        format: InputFormat,
-        #[arg(long)]
-        output: PathBuf,
-        #[arg(long, value_parser = parse_rfc3339_utc)]
-        from: Option<DateTime<Utc>>,
-        #[arg(long, value_parser = parse_rfc3339_utc)]
-        to: Option<DateTime<Utc>>,
-        /// Private analyst annotation, recorded verbatim in the manifest.
-        #[arg(long)]
-        corpus_label: Option<String>,
-        #[arg(long, value_name = "IP_OR_CIDR")]
-        trusted_proxy: Vec<TrustedProxy>,
-        #[arg(long)]
-        show_paths: bool,
-        #[arg(long)]
-        show_source_ips: bool,
-        /// Number of entries to display; zero displays all retained report entries.
-        #[arg(long, default_value_t = 20)]
-        limit: usize,
-        #[command(flatten)]
-        options: shenron::identifier_access::Options,
-    },
+    IdentifierAccess(IdentifierAccessArgs),
     /// Describe bounded per-source request shapes, not attack or blocking decisions.
-    ProbeSources {
-        #[arg(long)]
-        input: PathBuf,
-        #[arg(long, value_enum, default_value_t = InputFormat::Auto)]
-        format: InputFormat,
-        /// Write private source detail/provenance and a separate counts-only report.
-        #[arg(long)]
-        output: Option<PathBuf>,
-        /// Inclusive lower UTC bound; undated rows are disclosed and excluded.
-        #[arg(long, value_parser = parse_rfc3339_utc)]
-        from: Option<DateTime<Utc>>,
-        /// Inclusive upper UTC bound.
-        #[arg(long, value_parser = parse_rfc3339_utc)]
-        to: Option<DateTime<Utc>>,
-        /// Verify forwarded clients only behind these peers; keep identities separate.
-        #[arg(long, value_name = "IP_OR_CIDR")]
-        trusted_proxy: Vec<TrustedProxy>,
-        /// Opt in to private address values and per-source evidence on stdout.
-        #[arg(long)]
-        show_source_ips: bool,
-        /// Also show bounded private example paths; never show query values.
-        #[arg(long, requires = "show_source_ips")]
-        show_paths: bool,
-        #[arg(long, default_value = "20", value_parser = parse_positive_usize)]
-        limit: usize,
-        #[arg(long, value_enum, default_value_t = DailyOutputFormat::Text)]
-        output_format: DailyOutputFormat,
-        #[command(flatten)]
-        options: shenron::probe_sources::Options,
-    },
+    ProbeSources(ProbeSourcesArgs),
     /// Review all requests (including non-matches) by observed peers, optionally within UTC bounds.
-    Context {
-        #[arg(long)]
-        input: PathBuf,
-        #[arg(long, value_enum, default_value_t = InputFormat::Auto)]
-        format: InputFormat,
-        #[arg(long, required = true, value_delimiter = ',')]
-        source_ip: Vec<IpAddr>,
-        /// Inclusive lower UTC bound; omit for no lower time limit.
-        #[arg(long, value_parser = parse_rfc3339_utc)]
-        from: Option<DateTime<Utc>>,
-        /// Inclusive upper UTC bound; omit for no upper time limit.
-        #[arg(long, value_parser = parse_rfc3339_utc)]
-        to: Option<DateTime<Utc>>,
-        #[arg(long, default_value = "10000", value_parser = parse_positive_usize)]
-        max_records: usize,
-        /// Opt in to private request records on stdout; default stdout is counts only.
-        #[arg(long)]
-        show_request: bool,
-        /// Include sensitive query and Referer values in private output. Requires --show-request.
-        #[arg(long, requires = "show_request")]
-        show_query: bool,
-        /// Write a private context artifact, never a sanitized report.
-        #[arg(long)]
-        output: Option<PathBuf>,
-    },
+    Context(ContextArgs),
     /// Hunt web logs with Nuclei and/or Sigma. Without --output, private findings are written only to stdout.
-    Hunt {
-        #[command(flatten)]
-        disposition_selection: DispositionSelectionArgs,
-        /// Add private input-file/physical-line evidence references. Manifest hashes identify stored bytes.
-        #[arg(long, requires = "output", conflicts_with = "results_dir")]
-        include_source_references: bool,
-        #[command(flatten)]
-        tracking_limits: ConcentrationLimitArgs,
-        /// Verbatim private analyst label recorded in the run manifest, not an inferred identity.
-        #[arg(long, requires = "output", conflicts_with = "results_dir")]
-        corpus_label: Option<String>,
-        /// Raw web telemetry to analyze. Mutually exclusive with --results-dir.
-        #[arg(
-            long,
-            required_unless_present = "results_dir",
-            conflicts_with = "results_dir"
-        )]
-        input: Option<PathBuf>,
-        /// Existing run directory to render without re-analyzing raw logs.
-        #[arg(long, conflicts_with = "input")]
-        results_dir: Option<PathBuf>,
-        #[arg(
-            long,
-            value_enum,
-            default_value_t = InputFormat::Auto,
-            conflicts_with = "results_dir"
-        )]
-        format: InputFormat,
-        #[arg(long, conflicts_with = "results_dir")]
-        nuclei_templates: Option<PathBuf>,
-        #[arg(long, conflicts_with = "results_dir")]
-        nuclei_report: Option<PathBuf>,
-        #[command(flatten)]
-        template_filter: TemplateFilterArgs,
-        #[arg(long, conflicts_with = "results_dir")]
-        kev_report: Option<PathBuf>,
-        /// Write the full private/sanitized run artifacts under this directory.
-        /// Without this option, stdout contains private findings only.
-        #[arg(long, conflicts_with = "results_dir")]
-        output: Option<PathBuf>,
-        /// Private finding format for stdout mode. Stdout can contain raw IPs,
-        /// paths, hosts, headers, and other request evidence; do not share it.
-        #[arg(
-            long,
-            value_enum,
-            default_value_t = OutputFormat::Jsonl,
-            conflicts_with_all = ["results_dir", "output"]
-        )]
-        output_format: OutputFormat,
-        /// Inclusive UTC start time in RFC 3339 format, for example 2026-04-01T00:00:00Z.
-        #[arg(
-            long,
-            value_parser = parse_rfc3339_utc,
-            conflicts_with_all = ["results_dir", "since"]
-        )]
-        from: Option<DateTime<Utc>>,
-        /// Inclusive UTC end time in RFC 3339 format, for example 2026-04-30T23:59:59Z.
-        #[arg(
-            long,
-            value_parser = parse_rfc3339_utc,
-            conflicts_with_all = ["results_dir", "since"]
-        )]
-        to: Option<DateTime<Utc>>,
-        /// Analyze events since DURATION before this run starts (for example
-        /// 24h or 1d). This moving boundary is convenient but not reproducible;
-        /// use explicit --from/--to timestamps for an auditable fixed window.
-        #[arg(
-            long,
-            value_name = "DURATION",
-            value_parser = parse_triage_duration,
-            conflicts_with_all = ["results_dir", "from", "to"]
-        )]
-        since: Option<Duration>,
-        /// Trusted direct proxy IP or CIDR. Repeat to trust multiple proxy networks.
-        /// Forwarded client IPs remain unavailable unless this is specified.
-        #[arg(long, value_name = "IP-or-CIDR", conflicts_with = "results_dir")]
-        trusted_proxy: Vec<TrustedProxy>,
-        /// Supported Sigma rules directory for the generic detection pass.
-        /// Defaults to the prepared <data-dir>/sigma-rules when present.
-        #[arg(long, conflicts_with = "results_dir")]
-        rules: Option<PathBuf>,
-        /// Disable the Sigma pass entirely (Nuclei CVE hunting is unaffected).
-        #[arg(long, conflicts_with = "results_dir")]
-        no_sigma: bool,
-        /// Disable Nuclei/CVE matching and its prepared inputs. This enables a
-        /// setup-free Sigma-only hunt when --rules is supplied.
-        #[arg(long, conflicts_with = "results_dir")]
-        no_nuclei: bool,
-        /// Write plain private-findings.jsonl instead of lossless gzip.
-        #[arg(long, conflicts_with = "results_dir")]
-        uncompressed_findings: bool,
-        /// Frozen operator-published crawler ranges. Defaults to the prepared
-        /// data-directory snapshot when present; all matching remains offline.
-        #[arg(long, conflicts_with = "results_dir")]
-        bot_ranges: Option<PathBuf>,
-        /// Opt in to append-only private memory of recurring network prefixes
-        /// and optional locally resolved ASNs across completed runs.
-        #[arg(long, conflicts_with = "results_dir")]
-        observation_store: Option<PathBuf>,
-        /// Private append-only analyst disposition store. Matching opinions
-        /// classify findings for review but never remove or recount them.
-        #[arg(long, conflicts_with = "results_dir")]
-        disposition_store: Option<PathBuf>,
-        /// IPv4 prefix length recorded in the private observation store (default: 24).
-        #[arg(long, value_parser = parse_ipv4_prefix_length, conflicts_with = "results_dir")]
-        ipv4_group_prefix: Option<u8>,
-        /// IPv6 prefix length recorded in the private observation store (default: 48).
-        #[arg(long, value_parser = parse_ipv6_prefix_length, conflicts_with = "results_dir")]
-        ipv6_group_prefix: Option<u8>,
-        /// Optional local ASN dataset for private observation-store entries.
-        #[arg(long, conflicts_with = "results_dir")]
-        asn_dataset: Option<PathBuf>,
-        /// Prior local run-artifact directory to compare after this hunt completes.
-        #[arg(long, conflicts_with_all = ["results_dir", "baseline_latest"])]
-        baseline: Option<PathBuf>,
-        /// Select the lexicographically latest valid prior run below RUN-ROOT as
-        /// the baseline. Use sortable directory names such as hunt-<UTC>.
-        #[arg(
-            long,
-            value_name = "RUN-ROOT",
-            conflicts_with_all = ["results_dir", "baseline"]
-        )]
-        baseline_latest: Option<PathBuf>,
-        /// Display ranked private connection/client-IP triage entries.
-        #[arg(long, conflicts_with = "results_dir")]
-        show_triage: bool,
-        /// Maximum private triage entries to display. Use 0 to display all.
-        #[arg(long, default_value_t = 20)]
-        limit: usize,
-        /// Also write a private HTML report. Omit PATH to use <run-dir>/report.html.
-        #[arg(long, num_args = 0..=1, value_name = "PATH")]
-        report: Option<Option<PathBuf>>,
-        /// Human-readable HTML report language.
-        #[arg(long, value_enum, default_value_t = ReportLanguage::En)]
-        lang: ReportLanguage,
-    },
+    Hunt(HuntArgs),
     /// Compare two existing local run-artifact directories without re-streaming logs.
-    Compare {
-        /// Add explicit frozen reference runs to the baseline set; repeat for multiple runs.
-        /// Reports equal-weight median/min/max, not an inferred normal range.
-        #[arg(long)]
-        reference_run: Vec<PathBuf>,
-        /// Disclose recorded coverage/settings differences without inferring comparability.
-        #[arg(long)]
-        compare_conditions: bool,
-        /// Opt in to daily measurement deltas and descriptive comparison points,
-        /// not classifications or alerts. No PATH uses four documented defaults;
-        /// a JSON file supplies explicit points. Omit for the legacy comparison.
-        #[arg(long, num_args = 0..=1, value_name = "PATH")]
-        comparison_points: Option<Option<PathBuf>>,
-        #[arg(long)]
-        baseline: PathBuf,
-        #[arg(long)]
-        current: PathBuf,
-        #[arg(long)]
-        output: PathBuf,
-        #[arg(long)]
-        show_entities: bool,
-        #[arg(long)]
-        show_paths: bool,
-        #[arg(long)]
-        show_source_ips: bool,
-        #[arg(long, default_value_t = 20)]
-        limit: usize,
-    },
+    Compare(CompareArgs),
     /// Measure bounded request-volume distribution without CTI inputs or detector matching.
-    Concentration {
-        #[command(flatten)]
-        source_prefixes: SourcePrefixArgs,
-        #[command(flatten)]
-        tracking_limits: ConcentrationLimitArgs,
-        #[arg(long)]
-        input: PathBuf,
-        #[arg(long, value_enum, default_value_t = InputFormat::Auto)]
-        format: InputFormat,
-        /// Directory for the private detail and sanitized aggregate artifacts.
-        #[arg(long)]
-        output: PathBuf,
-        /// Verbatim analyst annotation stored only in the private run manifest.
-        #[arg(long)]
-        corpus_label: Option<String>,
-        /// Focus the private source-IP breakdown on this exact URI path.
-        #[arg(long, conflicts_with_all = ["path_prefix", "source_ip"])]
-        path: Option<String>,
-        /// Focus on this path and everything under it (`/api` covers `/api` and
-        /// `/api/...`), listing the sub-paths and observed connection peers.
-        #[arg(long, conflicts_with_all = ["path", "source_ip"])]
-        path_prefix: Option<String>,
-        /// Focus on one or more observed connection-peer IPs, listing the union
-        /// of URI paths they requested. Repeat the flag or separate IPs by commas.
-        /// This is volume context, not attacker attribution.
-        #[arg(long, value_delimiter = ',', conflicts_with_all = ["path", "path_prefix"])]
-        source_ip: Vec<String>,
-        /// IPv4 prefix length for private focus-path address-block aggregation (default: 24).
-        #[arg(long, value_parser = parse_ipv4_prefix_length)]
-        ipv4_group_prefix: Option<u8>,
-        /// IPv6 prefix length for private focus-path address-block aggregation (default: 48).
-        #[arg(long, value_parser = parse_ipv6_prefix_length)]
-        ipv6_group_prefix: Option<u8>,
-        /// Local GeoLite2-ASN-compatible CSV or Shenron ASN range TSV for private
-        /// focus/prefix grouping. Prefix groups also use an existing default dataset.
-        /// The default TSV covers IPv4 only; use CSV with IPv6 networks for IPv6.
-        /// No network lookup is performed.
-        #[arg(long)]
-        asn_dataset: Option<PathBuf>,
-        /// UTC bucket widths evaluated simultaneously for request-rate shape.
-        /// Repeat or comma-separate durations such as 1m,10m,1h,1d.
-        #[arg(long, value_delimiter = ',', value_parser = parse_triage_duration)]
-        rate_window: Vec<Duration>,
-        /// Minimum requests required before a rate bucket contributes response
-        /// outcome minima/maxima. This is an inclusion floor, not an alert.
-        #[arg(long, default_value_t = DEFAULT_RESPONSE_BUCKET_MINIMUM_REQUESTS, value_parser = clap::value_parser!(u64).range(1..))]
-        response_bucket_min_requests: u64,
-        /// Count eligible buckets strictly below this success-share percentage.
-        /// This is a descriptive count, not a classification or alert.
-        #[arg(long, default_value_t = DEFAULT_RESPONSE_SUCCESS_SHARE_THRESHOLD_PERCENT, value_parser = clap::value_parser!(u8).range(0..=100))]
-        response_success_share_threshold_percent: u8,
-        /// Inclusive UTC start time in RFC 3339 format.
-        #[arg(long, value_parser = parse_rfc3339_utc)]
-        from: Option<DateTime<Utc>>,
-        /// Inclusive UTC end time in RFC 3339 format.
-        #[arg(long, value_parser = parse_rfc3339_utc)]
-        to: Option<DateTime<Utc>>,
-        /// Private file-level index used to skip unchanged, previously
-        /// processed files. The current report covers only files processed now.
-        #[arg(long)]
-        processed_index: Option<PathBuf>,
-        /// Ignore --processed-index entries and process every discovered file.
-        #[arg(long, requires = "processed_index")]
-        reprocess_all: bool,
-        /// Display raw URI paths from the private artifact.
-        #[arg(long)]
-        show_paths: bool,
-        /// Display observed connection-peer IPs from the private artifact.
-        #[arg(long)]
-        show_source_ips: bool,
-        /// Maximum private path/IP entries to display. Use 0 to display all.
-        #[arg(long, default_value_t = 20)]
-        limit: usize,
-    },
+    Concentration(ConcentrationArgs),
     /// Print a lightweight aggregate-only daily volume summary. No artifacts
     /// are written unless --output is explicitly supplied.
-    Daily {
-        #[command(flatten)]
-        source_prefixes: SourcePrefixArgs,
-        #[command(flatten)]
-        tracking_limits: ConcentrationLimitArgs,
-        /// Local ASN dataset for explicitly enabled private source-prefix groups.
-        /// The default TSV covers IPv4 only; use CSV with IPv6 networks for IPv6.
-        #[arg(long, requires = "output")]
-        asn_dataset: Option<PathBuf>,
-        #[arg(long)]
-        input: PathBuf,
-        #[arg(long, value_enum, default_value_t = InputFormat::Auto)]
-        format: InputFormat,
-        /// Write the normal private and sanitized concentration artifacts.
-        #[arg(long)]
-        output: Option<PathBuf>,
-        /// Verbatim analyst annotation stored only in the private run manifest.
-        #[arg(long, requires = "output")]
-        corpus_label: Option<String>,
-        /// Machine-readable aggregate-only output.
-        #[arg(long, value_enum, default_value_t = DailyOutputFormat::Text)]
-        output_format: DailyOutputFormat,
-        /// UTC bucket widths evaluated simultaneously. Repeat or comma-separate
-        /// durations such as 1m,10m,1h,1d.
-        #[arg(long, value_delimiter = ',', value_parser = parse_triage_duration)]
-        rate_window: Vec<Duration>,
-        /// Minimum requests required before a rate bucket contributes response
-        /// outcome minima/maxima. This is an inclusion floor, not an alert.
-        #[arg(long, default_value_t = DEFAULT_RESPONSE_BUCKET_MINIMUM_REQUESTS, value_parser = clap::value_parser!(u64).range(1..))]
-        response_bucket_min_requests: u64,
-        /// Count eligible buckets strictly below this success-share percentage.
-        /// This is a descriptive count, not a classification or alert.
-        #[arg(long, default_value_t = DEFAULT_RESPONSE_SUCCESS_SHARE_THRESHOLD_PERCENT, value_parser = clap::value_parser!(u8).range(0..=100))]
-        response_success_share_threshold_percent: u8,
-        /// Inclusive UTC start time in RFC 3339 format.
-        #[arg(long, value_parser = parse_rfc3339_utc)]
-        from: Option<DateTime<Utc>>,
-        /// Inclusive UTC end time in RFC 3339 format.
-        #[arg(long, value_parser = parse_rfc3339_utc)]
-        to: Option<DateTime<Utc>>,
-        /// Private file-level index used to skip unchanged, previously
-        /// processed files. The current summary covers only files processed now.
-        #[arg(long)]
-        processed_index: Option<PathBuf>,
-        /// Ignore --processed-index entries and process every discovered file.
-        #[arg(long, requires = "processed_index")]
-        reprocess_all: bool,
-    },
+    Daily(DailyArgs),
     /// Read one private URI path across existing concentration run artifacts.
     /// Raw logs are not opened or reprocessed.
     Trend {
@@ -881,151 +521,544 @@ enum ProductionCommand {
         output_format: TrendOutputFormat,
     },
     /// Compare aggregate match volume across predicates derived from one validated Nuclei IR. Never writes private findings.
-    Ablation {
-        #[arg(long)]
-        input: PathBuf,
-        #[arg(long, value_enum, default_value_t = InputFormat::Auto)]
-        format: InputFormat,
-        #[arg(long)]
-        nuclei_templates: Option<PathBuf>,
-        #[arg(long)]
-        nuclei_report: Option<PathBuf>,
-        #[command(flatten)]
-        template_filter: TemplateFilterArgs,
-        #[arg(long)]
-        kev_report: Option<PathBuf>,
-        /// Optional aggregate-only JSON report destination.
-        #[arg(long)]
-        output: Option<PathBuf>,
-        /// Inclusive UTC start time in RFC 3339 format.
-        #[arg(long, value_parser = parse_rfc3339_utc)]
-        from: Option<DateTime<Utc>>,
-        /// Inclusive UTC end time in RFC 3339 format.
-        #[arg(long, value_parser = parse_rfc3339_utc)]
-        to: Option<DateTime<Utc>>,
-    },
+    Ablation(AblationArgs),
     /// Compare broad-to-narrow validated Nuclei conditions as local COUNT-mode simulations. Never deploys a control.
-    CountHypotheses {
-        #[arg(long)]
-        input: PathBuf,
-        #[arg(long, value_enum, default_value_t = InputFormat::Auto)]
-        format: InputFormat,
-        #[arg(long)]
-        nuclei_templates: Option<PathBuf>,
-        #[arg(long)]
-        nuclei_report: Option<PathBuf>,
-        #[command(flatten)]
-        template_filter: TemplateFilterArgs,
-        #[arg(long)]
-        kev_report: Option<PathBuf>,
-        /// Local private findings from a prior hunt; read only for conservative coverage.
-        #[arg(long)]
-        findings: PathBuf,
-        /// Optional aggregate-only JSON report destination.
-        #[arg(long)]
-        output: Option<PathBuf>,
-        /// Inclusive UTC start time in RFC 3339 format.
-        #[arg(long, value_parser = parse_rfc3339_utc)]
-        from: Option<DateTime<Utc>>,
-        /// Inclusive UTC end time in RFC 3339 format.
-        #[arg(long, value_parser = parse_rfc3339_utc)]
-        to: Option<DateTime<Utc>>,
-        /// Maximum CVE ladders to display. Use 0 to display all.
-        #[arg(long, default_value_t = 20)]
-        limit: usize,
-    },
+    CountHypotheses(CountHypothesesArgs),
     /// Measure validated Nuclei matcher coverage and other aggregate historical matches. Never writes private findings.
-    Replay {
-        #[arg(long)]
-        input: PathBuf,
-        #[arg(long, value_enum, default_value_t = InputFormat::Auto)]
-        format: InputFormat,
-        #[arg(long)]
-        nuclei_templates: Option<PathBuf>,
-        #[arg(long)]
-        nuclei_report: Option<PathBuf>,
-        #[command(flatten)]
-        template_filter: TemplateFilterArgs,
-        #[arg(long)]
-        kev_report: Option<PathBuf>,
-        /// Local private findings from a prior hunt; read only to establish conservative coverage.
-        #[arg(long)]
-        findings: PathBuf,
-        /// Optional aggregate-only JSON report destination.
-        #[arg(long)]
-        output: Option<PathBuf>,
-        /// Inclusive UTC start time in RFC 3339 format.
-        #[arg(long, value_parser = parse_rfc3339_utc)]
-        from: Option<DateTime<Utc>>,
-        /// Inclusive UTC end time in RFC 3339 format.
-        #[arg(long, value_parser = parse_rfc3339_utc)]
-        to: Option<DateTime<Utc>>,
-    },
+    Replay(ReplayArgs),
     /// Show CVE/template mappings from a locally stored private findings file.
-    Explain {
-        #[command(flatten)]
-        disposition_selection: DispositionSelectionArgs,
-        #[arg(long)]
-        findings: PathBuf,
-        /// Restrict results to a WAF enforcement outcome. nginx/Apache findings have an unknown outcome.
-        #[arg(long, value_enum)]
-        waf_outcome: Option<WafOutcomeFilter>,
-        /// Include URI-only matches on generic paths such as /robots.txt.
-        #[arg(long)]
-        include_generic: bool,
-        /// Display matched method, path, and query. This may expose sensitive request values.
-        #[arg(long)]
-        show_request: bool,
-        /// Display all private evidence captured by hunt, including IP, host,
-        /// headers, JA3/JA4, WAF labels/rule IDs, and request ID. Implies --show-request.
-        #[arg(long)]
-        show_evidence: bool,
-        /// Summarize source IP addresses from the selected private findings.
-        #[arg(long)]
-        show_source_ips: bool,
-        /// Summarize selected findings by locally resolved ASN. Uses a prepared default dataset when available.
-        #[arg(long)]
-        show_asn: bool,
-        /// Local ASN CSV or Shenron range TSV used only to enrich displayed IP groups.
-        #[arg(long)]
-        asn_dataset: Option<PathBuf>,
-        /// Local JSONL third-party reputation opinions used only to enrich displayed IP groups.
-        #[arg(long)]
-        reputation_dataset: Option<PathBuf>,
-        /// Private append-only analyst disposition store used only to group
-        /// retained findings by analyst-authored review state.
-        #[arg(long)]
-        disposition_store: Option<PathBuf>,
-        /// Summarize JA4 TLS client fingerprints from the selected private findings.
-        #[arg(long)]
-        show_fingerprints: bool,
-        /// Matching observations required for breadth-based triage (default: 3).
-        #[arg(long, value_parser = parse_positive_usize)]
-        triage_breadth_observations: Option<usize>,
-        /// Distinct templates required for breadth-based triage (default: 2).
-        #[arg(long, value_parser = parse_positive_usize)]
-        triage_breadth_templates: Option<usize>,
-        /// Matching observations required for depth-based triage (default: 10).
-        #[arg(long, value_parser = parse_positive_usize)]
-        triage_depth_observations: Option<usize>,
-        /// Evaluate repeated behavior within this sliding duration (for example 10m, 1h, or 2d).
-        #[arg(long, value_parser = parse_triage_duration)]
-        #[arg(value_delimiter = ',')]
-        triage_window: Vec<Duration>,
-        /// Window for ordered request-sequence context (default: 10s).
-        #[arg(long, value_parser = parse_triage_duration)]
-        sequence_window: Option<Duration>,
-        /// Maximum individual findings to display. Use 0 to display all findings.
-        #[arg(long, default_value_t = 20)]
-        limit: usize,
-        /// Write the report to a file instead of stdout. Private analyst output.
-        #[arg(long)]
-        output: Option<PathBuf>,
-        /// Output format. `json` emits the same content the text mode was asked
-        /// to show, honoring the same --show-* gates.
-        #[arg(long, value_enum, default_value_t = ExplainOutputFormat::Text)]
-        output_format: ExplainOutputFormat,
-    },
+    Explain(ExplainArgs),
+}
+
+#[derive(Debug, clap::Args)]
+struct HuntArgs {
+    #[command(flatten)]
+    disposition_selection: DispositionSelectionArgs,
+    /// Add private input-file/physical-line evidence references. Manifest hashes identify stored bytes.
+    #[arg(long, requires = "output", conflicts_with = "results_dir")]
+    include_source_references: bool,
+    #[command(flatten)]
+    tracking_limits: ConcentrationLimitArgs,
+    /// Verbatim private analyst label recorded in the run manifest, not an inferred identity.
+    #[arg(long, requires = "output", conflicts_with = "results_dir")]
+    corpus_label: Option<String>,
+    /// Raw web telemetry to analyze. Mutually exclusive with --results-dir.
+    #[arg(
+        long,
+        required_unless_present = "results_dir",
+        conflicts_with = "results_dir"
+    )]
+    input: Option<PathBuf>,
+    /// Existing run directory to render without re-analyzing raw logs.
+    #[arg(long, conflicts_with = "input")]
+    results_dir: Option<PathBuf>,
+    #[arg(
+        long,
+        value_enum,
+        default_value_t = InputFormat::Auto,
+        conflicts_with = "results_dir"
+    )]
+    format: InputFormat,
+    #[arg(long, conflicts_with = "results_dir")]
+    nuclei_templates: Option<PathBuf>,
+    #[arg(long, conflicts_with = "results_dir")]
+    nuclei_report: Option<PathBuf>,
+    #[command(flatten)]
+    template_filter: TemplateFilterArgs,
+    #[arg(long, conflicts_with = "results_dir")]
+    kev_report: Option<PathBuf>,
+    /// Write the full private/sanitized run artifacts under this directory.
+    /// Without this option, stdout contains private findings only.
+    #[arg(long, conflicts_with = "results_dir")]
+    output: Option<PathBuf>,
+    /// Private finding format for stdout mode. Stdout can contain raw IPs,
+    /// paths, hosts, headers, and other request evidence; do not share it.
+    #[arg(
+        long,
+        value_enum,
+        default_value_t = OutputFormat::Jsonl,
+        conflicts_with_all = ["results_dir", "output"]
+    )]
+    output_format: OutputFormat,
+    /// Inclusive UTC start time in RFC 3339 format, for example 2026-04-01T00:00:00Z.
+    #[arg(
+        long,
+        value_parser = parse_rfc3339_utc,
+        conflicts_with_all = ["results_dir", "since"]
+    )]
+    from: Option<DateTime<Utc>>,
+    /// Inclusive UTC end time in RFC 3339 format, for example 2026-04-30T23:59:59Z.
+    #[arg(
+        long,
+        value_parser = parse_rfc3339_utc,
+        conflicts_with_all = ["results_dir", "since"]
+    )]
+    to: Option<DateTime<Utc>>,
+    /// Analyze events since DURATION before this run starts (for example
+    /// 24h or 1d). This moving boundary is convenient but not reproducible;
+    /// use explicit --from/--to timestamps for an auditable fixed window.
+    #[arg(
+        long,
+        value_name = "DURATION",
+        value_parser = parse_triage_duration,
+        conflicts_with_all = ["results_dir", "from", "to"]
+    )]
+    since: Option<Duration>,
+    /// Trusted direct proxy IP or CIDR. Repeat to trust multiple proxy networks.
+    /// Forwarded client IPs remain unavailable unless this is specified.
+    #[arg(long, value_name = "IP-or-CIDR", conflicts_with = "results_dir")]
+    trusted_proxy: Vec<TrustedProxy>,
+    /// Supported Sigma rules directory for the generic detection pass.
+    /// Defaults to the prepared <data-dir>/sigma-rules when present.
+    #[arg(long, conflicts_with = "results_dir")]
+    rules: Option<PathBuf>,
+    /// Disable the Sigma pass entirely (Nuclei CVE hunting is unaffected).
+    #[arg(long, conflicts_with = "results_dir")]
+    no_sigma: bool,
+    /// Disable Nuclei/CVE matching and its prepared inputs. This enables a
+    /// setup-free Sigma-only hunt when --rules is supplied.
+    #[arg(long, conflicts_with = "results_dir")]
+    no_nuclei: bool,
+    /// Write plain private-findings.jsonl instead of lossless gzip.
+    #[arg(long, conflicts_with = "results_dir")]
+    uncompressed_findings: bool,
+    /// Frozen operator-published crawler ranges. Defaults to the prepared
+    /// data-directory snapshot when present; all matching remains offline.
+    #[arg(long, conflicts_with = "results_dir")]
+    bot_ranges: Option<PathBuf>,
+    /// Opt in to append-only private memory of recurring network prefixes
+    /// and optional locally resolved ASNs across completed runs.
+    #[arg(long, conflicts_with = "results_dir")]
+    observation_store: Option<PathBuf>,
+    /// Private append-only analyst disposition store. Matching opinions
+    /// classify findings for review but never remove or recount them.
+    #[arg(long, conflicts_with = "results_dir")]
+    disposition_store: Option<PathBuf>,
+    /// IPv4 prefix length recorded in the private observation store (default: 24).
+    #[arg(long, value_parser = parse_ipv4_prefix_length, conflicts_with = "results_dir")]
+    ipv4_group_prefix: Option<u8>,
+    /// IPv6 prefix length recorded in the private observation store (default: 48).
+    #[arg(long, value_parser = parse_ipv6_prefix_length, conflicts_with = "results_dir")]
+    ipv6_group_prefix: Option<u8>,
+    /// Optional local ASN dataset for private observation-store entries.
+    #[arg(long, conflicts_with = "results_dir")]
+    asn_dataset: Option<PathBuf>,
+    /// Prior local run-artifact directory to compare after this hunt completes.
+    #[arg(long, conflicts_with_all = ["results_dir", "baseline_latest"])]
+    baseline: Option<PathBuf>,
+    /// Select the lexicographically latest valid prior run below RUN-ROOT as
+    /// the baseline. Use sortable directory names such as hunt-<UTC>.
+    #[arg(
+        long,
+        value_name = "RUN-ROOT",
+        conflicts_with_all = ["results_dir", "baseline"]
+    )]
+    baseline_latest: Option<PathBuf>,
+    /// Display ranked private connection/client-IP triage entries.
+    #[arg(long, conflicts_with = "results_dir")]
+    show_triage: bool,
+    /// Maximum private triage entries to display. Use 0 to display all.
+    #[arg(long, default_value_t = 20)]
+    limit: usize,
+    /// Also write a private HTML report. Omit PATH to use <run-dir>/report.html.
+    #[arg(long, num_args = 0..=1, value_name = "PATH")]
+    report: Option<Option<PathBuf>>,
+    /// Human-readable HTML report language.
+    #[arg(long, value_enum, default_value_t = ReportLanguage::En)]
+    lang: ReportLanguage,
+}
+
+#[derive(Debug, clap::Args)]
+struct ExplainArgs {
+    #[command(flatten)]
+    disposition_selection: DispositionSelectionArgs,
+    #[arg(long)]
+    findings: PathBuf,
+    /// Restrict results to a WAF enforcement outcome. nginx/Apache findings have an unknown outcome.
+    #[arg(long, value_enum)]
+    waf_outcome: Option<WafOutcomeFilter>,
+    /// Include URI-only matches on generic paths such as /robots.txt.
+    #[arg(long)]
+    include_generic: bool,
+    /// Display matched method, path, and query. This may expose sensitive request values.
+    #[arg(long)]
+    show_request: bool,
+    /// Display all private evidence captured by hunt, including IP, host,
+    /// headers, JA3/JA4, WAF labels/rule IDs, and request ID. Implies --show-request.
+    #[arg(long)]
+    show_evidence: bool,
+    /// Summarize source IP addresses from the selected private findings.
+    #[arg(long)]
+    show_source_ips: bool,
+    /// Summarize selected findings by locally resolved ASN. Uses a prepared default dataset when available.
+    #[arg(long)]
+    show_asn: bool,
+    /// Local ASN CSV or Shenron range TSV used only to enrich displayed IP groups.
+    #[arg(long)]
+    asn_dataset: Option<PathBuf>,
+    /// Local JSONL third-party reputation opinions used only to enrich displayed IP groups.
+    #[arg(long)]
+    reputation_dataset: Option<PathBuf>,
+    /// Private append-only analyst disposition store used only to group
+    /// retained findings by analyst-authored review state.
+    #[arg(long)]
+    disposition_store: Option<PathBuf>,
+    /// Summarize JA4 TLS client fingerprints from the selected private findings.
+    #[arg(long)]
+    show_fingerprints: bool,
+    /// Matching observations required for breadth-based triage (default: 3).
+    #[arg(long, value_parser = parse_positive_usize)]
+    triage_breadth_observations: Option<usize>,
+    /// Distinct templates required for breadth-based triage (default: 2).
+    #[arg(long, value_parser = parse_positive_usize)]
+    triage_breadth_templates: Option<usize>,
+    /// Matching observations required for depth-based triage (default: 10).
+    #[arg(long, value_parser = parse_positive_usize)]
+    triage_depth_observations: Option<usize>,
+    /// Evaluate repeated behavior within this sliding duration (for example 10m, 1h, or 2d).
+    #[arg(long, value_parser = parse_triage_duration)]
+    #[arg(value_delimiter = ',')]
+    triage_window: Vec<Duration>,
+    /// Window for ordered request-sequence context (default: 10s).
+    #[arg(long, value_parser = parse_triage_duration)]
+    sequence_window: Option<Duration>,
+    /// Maximum individual findings to display. Use 0 to display all findings.
+    #[arg(long, default_value_t = 20)]
+    limit: usize,
+    /// Write the report to a file instead of stdout. Private analyst output.
+    #[arg(long)]
+    output: Option<PathBuf>,
+    /// Output format. `json` emits the same content the text mode was asked
+    /// to show, honoring the same --show-* gates.
+    #[arg(long, value_enum, default_value_t = ExplainOutputFormat::Text)]
+    output_format: ExplainOutputFormat,
+}
+
+#[derive(Debug, clap::Args)]
+struct ConcentrationArgs {
+    #[command(flatten)]
+    source_prefixes: SourcePrefixArgs,
+    #[command(flatten)]
+    tracking_limits: ConcentrationLimitArgs,
+    #[arg(long)]
+    input: PathBuf,
+    #[arg(long, value_enum, default_value_t = InputFormat::Auto)]
+    format: InputFormat,
+    /// Directory for the private detail and sanitized aggregate artifacts.
+    #[arg(long)]
+    output: PathBuf,
+    /// Verbatim analyst annotation stored only in the private run manifest.
+    #[arg(long)]
+    corpus_label: Option<String>,
+    /// Focus the private source-IP breakdown on this exact URI path.
+    #[arg(long, conflicts_with_all = ["path_prefix", "source_ip"])]
+    path: Option<String>,
+    /// Focus on this path and everything under it (`/api` covers `/api` and
+    /// `/api/...`), listing the sub-paths and observed connection peers.
+    #[arg(long, conflicts_with_all = ["path", "source_ip"])]
+    path_prefix: Option<String>,
+    /// Focus on one or more observed connection-peer IPs, listing the union
+    /// of URI paths they requested. Repeat the flag or separate IPs by commas.
+    /// This is volume context, not attacker attribution.
+    #[arg(long, value_delimiter = ',', conflicts_with_all = ["path", "path_prefix"])]
+    source_ip: Vec<String>,
+    /// IPv4 prefix length for private focus-path address-block aggregation (default: 24).
+    #[arg(long, value_parser = parse_ipv4_prefix_length)]
+    ipv4_group_prefix: Option<u8>,
+    /// IPv6 prefix length for private focus-path address-block aggregation (default: 48).
+    #[arg(long, value_parser = parse_ipv6_prefix_length)]
+    ipv6_group_prefix: Option<u8>,
+    /// Local GeoLite2-ASN-compatible CSV or Shenron ASN range TSV for private
+    /// focus/prefix grouping. Prefix groups also use an existing default dataset.
+    /// The default TSV covers IPv4 only; use CSV with IPv6 networks for IPv6.
+    /// No network lookup is performed.
+    #[arg(long)]
+    asn_dataset: Option<PathBuf>,
+    /// UTC bucket widths evaluated simultaneously for request-rate shape.
+    /// Repeat or comma-separate durations such as 1m,10m,1h,1d.
+    #[arg(long, value_delimiter = ',', value_parser = parse_triage_duration)]
+    rate_window: Vec<Duration>,
+    /// Minimum requests required before a rate bucket contributes response
+    /// outcome minima/maxima. This is an inclusion floor, not an alert.
+    #[arg(long, default_value_t = DEFAULT_RESPONSE_BUCKET_MINIMUM_REQUESTS, value_parser = clap::value_parser!(u64).range(1..))]
+    response_bucket_min_requests: u64,
+    /// Count eligible buckets strictly below this success-share percentage.
+    /// This is a descriptive count, not a classification or alert.
+    #[arg(long, default_value_t = DEFAULT_RESPONSE_SUCCESS_SHARE_THRESHOLD_PERCENT, value_parser = clap::value_parser!(u8).range(0..=100))]
+    response_success_share_threshold_percent: u8,
+    /// Inclusive UTC start time in RFC 3339 format.
+    #[arg(long, value_parser = parse_rfc3339_utc)]
+    from: Option<DateTime<Utc>>,
+    /// Inclusive UTC end time in RFC 3339 format.
+    #[arg(long, value_parser = parse_rfc3339_utc)]
+    to: Option<DateTime<Utc>>,
+    /// Private file-level index used to skip unchanged, previously
+    /// processed files. The current report covers only files processed now.
+    #[arg(long)]
+    processed_index: Option<PathBuf>,
+    /// Ignore --processed-index entries and process every discovered file.
+    #[arg(long, requires = "processed_index")]
+    reprocess_all: bool,
+    /// Display raw URI paths from the private artifact.
+    #[arg(long)]
+    show_paths: bool,
+    /// Display observed connection-peer IPs from the private artifact.
+    #[arg(long)]
+    show_source_ips: bool,
+    /// Maximum private path/IP entries to display. Use 0 to display all.
+    #[arg(long, default_value_t = 20)]
+    limit: usize,
+}
+
+#[derive(Debug, clap::Args)]
+struct ContextArgs {
+    #[arg(long)]
+    input: PathBuf,
+    #[arg(long, value_enum, default_value_t = InputFormat::Auto)]
+    format: InputFormat,
+    #[arg(long, required = true, value_delimiter = ',')]
+    source_ip: Vec<IpAddr>,
+    /// Inclusive lower UTC bound; omit for no lower time limit.
+    #[arg(long, value_parser = parse_rfc3339_utc)]
+    from: Option<DateTime<Utc>>,
+    /// Inclusive upper UTC bound; omit for no upper time limit.
+    #[arg(long, value_parser = parse_rfc3339_utc)]
+    to: Option<DateTime<Utc>>,
+    #[arg(long, default_value = "10000", value_parser = parse_positive_usize)]
+    max_records: usize,
+    /// Opt in to private request records on stdout; default stdout is counts only.
+    #[arg(long)]
+    show_request: bool,
+    /// Include sensitive query and Referer values in private output. Requires --show-request.
+    #[arg(long, requires = "show_request")]
+    show_query: bool,
+    /// Write a private context artifact, never a sanitized report.
+    #[arg(long)]
+    output: Option<PathBuf>,
+}
+
+#[derive(Debug, clap::Args)]
+struct CompareArgs {
+    /// Add explicit frozen reference runs to the baseline set; repeat for multiple runs.
+    /// Reports equal-weight median/min/max, not an inferred normal range.
+    #[arg(long)]
+    reference_run: Vec<PathBuf>,
+    /// Disclose recorded coverage/settings differences without inferring comparability.
+    #[arg(long)]
+    compare_conditions: bool,
+    /// Opt in to daily measurement deltas and descriptive comparison points,
+    /// not classifications or alerts. No PATH uses four documented defaults;
+    /// a JSON file supplies explicit points. Omit for the legacy comparison.
+    #[arg(long, num_args = 0..=1, value_name = "PATH")]
+    comparison_points: Option<Option<PathBuf>>,
+    #[arg(long)]
+    baseline: PathBuf,
+    #[arg(long)]
+    current: PathBuf,
+    #[arg(long)]
+    output: PathBuf,
+    #[arg(long)]
+    show_entities: bool,
+    #[arg(long)]
+    show_paths: bool,
+    #[arg(long)]
+    show_source_ips: bool,
+    #[arg(long, default_value_t = 20)]
+    limit: usize,
+}
+
+#[derive(Debug, clap::Args)]
+struct DailyArgs {
+    #[command(flatten)]
+    source_prefixes: SourcePrefixArgs,
+    #[command(flatten)]
+    tracking_limits: ConcentrationLimitArgs,
+    /// Local ASN dataset for explicitly enabled private source-prefix groups.
+    /// The default TSV covers IPv4 only; use CSV with IPv6 networks for IPv6.
+    #[arg(long, requires = "output")]
+    asn_dataset: Option<PathBuf>,
+    #[arg(long)]
+    input: PathBuf,
+    #[arg(long, value_enum, default_value_t = InputFormat::Auto)]
+    format: InputFormat,
+    /// Write the normal private and sanitized concentration artifacts.
+    #[arg(long)]
+    output: Option<PathBuf>,
+    /// Verbatim analyst annotation stored only in the private run manifest.
+    #[arg(long, requires = "output")]
+    corpus_label: Option<String>,
+    /// Machine-readable aggregate-only output.
+    #[arg(long, value_enum, default_value_t = DailyOutputFormat::Text)]
+    output_format: DailyOutputFormat,
+    /// UTC bucket widths evaluated simultaneously. Repeat or comma-separate
+    /// durations such as 1m,10m,1h,1d.
+    #[arg(long, value_delimiter = ',', value_parser = parse_triage_duration)]
+    rate_window: Vec<Duration>,
+    /// Minimum requests required before a rate bucket contributes response
+    /// outcome minima/maxima. This is an inclusion floor, not an alert.
+    #[arg(long, default_value_t = DEFAULT_RESPONSE_BUCKET_MINIMUM_REQUESTS, value_parser = clap::value_parser!(u64).range(1..))]
+    response_bucket_min_requests: u64,
+    /// Count eligible buckets strictly below this success-share percentage.
+    /// This is a descriptive count, not a classification or alert.
+    #[arg(long, default_value_t = DEFAULT_RESPONSE_SUCCESS_SHARE_THRESHOLD_PERCENT, value_parser = clap::value_parser!(u8).range(0..=100))]
+    response_success_share_threshold_percent: u8,
+    /// Inclusive UTC start time in RFC 3339 format.
+    #[arg(long, value_parser = parse_rfc3339_utc)]
+    from: Option<DateTime<Utc>>,
+    /// Inclusive UTC end time in RFC 3339 format.
+    #[arg(long, value_parser = parse_rfc3339_utc)]
+    to: Option<DateTime<Utc>>,
+    /// Private file-level index used to skip unchanged, previously
+    /// processed files. The current summary covers only files processed now.
+    #[arg(long)]
+    processed_index: Option<PathBuf>,
+    /// Ignore --processed-index entries and process every discovered file.
+    #[arg(long, requires = "processed_index")]
+    reprocess_all: bool,
+}
+
+#[derive(Debug, clap::Args)]
+struct ProbeSourcesArgs {
+    #[arg(long)]
+    input: PathBuf,
+    #[arg(long, value_enum, default_value_t = InputFormat::Auto)]
+    format: InputFormat,
+    /// Write private source detail/provenance and a separate counts-only report.
+    #[arg(long)]
+    output: Option<PathBuf>,
+    /// Inclusive lower UTC bound; undated rows are disclosed and excluded.
+    #[arg(long, value_parser = parse_rfc3339_utc)]
+    from: Option<DateTime<Utc>>,
+    /// Inclusive upper UTC bound.
+    #[arg(long, value_parser = parse_rfc3339_utc)]
+    to: Option<DateTime<Utc>>,
+    /// Verify forwarded clients only behind these peers; keep identities separate.
+    #[arg(long, value_name = "IP_OR_CIDR")]
+    trusted_proxy: Vec<TrustedProxy>,
+    /// Opt in to private address values and per-source evidence on stdout.
+    #[arg(long)]
+    show_source_ips: bool,
+    /// Also show bounded private example paths; never show query values.
+    #[arg(long, requires = "show_source_ips")]
+    show_paths: bool,
+    #[arg(long, default_value = "20", value_parser = parse_positive_usize)]
+    limit: usize,
+    #[arg(long, value_enum, default_value_t = DailyOutputFormat::Text)]
+    output_format: DailyOutputFormat,
+    #[command(flatten)]
+    options: shenron::probe_sources::Options,
+}
+
+#[derive(Debug, clap::Args)]
+struct IdentifierAccessArgs {
+    #[arg(long)]
+    input: PathBuf,
+    #[arg(long, value_enum, default_value_t = InputFormat::Auto)]
+    format: InputFormat,
+    #[arg(long)]
+    output: PathBuf,
+    #[arg(long, value_parser = parse_rfc3339_utc)]
+    from: Option<DateTime<Utc>>,
+    #[arg(long, value_parser = parse_rfc3339_utc)]
+    to: Option<DateTime<Utc>>,
+    /// Private analyst annotation, recorded verbatim in the manifest.
+    #[arg(long)]
+    corpus_label: Option<String>,
+    #[arg(long, value_name = "IP_OR_CIDR")]
+    trusted_proxy: Vec<TrustedProxy>,
+    #[arg(long)]
+    show_paths: bool,
+    #[arg(long)]
+    show_source_ips: bool,
+    /// Number of entries to display; zero displays all retained report entries.
+    #[arg(long, default_value_t = 20)]
+    limit: usize,
+    #[command(flatten)]
+    options: shenron::identifier_access::Options,
+}
+
+#[derive(Debug, clap::Args)]
+struct ReplayArgs {
+    #[arg(long)]
+    input: PathBuf,
+    #[arg(long, value_enum, default_value_t = InputFormat::Auto)]
+    format: InputFormat,
+    #[arg(long)]
+    nuclei_templates: Option<PathBuf>,
+    #[arg(long)]
+    nuclei_report: Option<PathBuf>,
+    #[command(flatten)]
+    template_filter: TemplateFilterArgs,
+    #[arg(long)]
+    kev_report: Option<PathBuf>,
+    /// Local private findings from a prior hunt; read only to establish conservative coverage.
+    #[arg(long)]
+    findings: PathBuf,
+    /// Optional aggregate-only JSON report destination.
+    #[arg(long)]
+    output: Option<PathBuf>,
+    /// Inclusive UTC start time in RFC 3339 format.
+    #[arg(long, value_parser = parse_rfc3339_utc)]
+    from: Option<DateTime<Utc>>,
+    /// Inclusive UTC end time in RFC 3339 format.
+    #[arg(long, value_parser = parse_rfc3339_utc)]
+    to: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, clap::Args)]
+struct CountHypothesesArgs {
+    #[arg(long)]
+    input: PathBuf,
+    #[arg(long, value_enum, default_value_t = InputFormat::Auto)]
+    format: InputFormat,
+    #[arg(long)]
+    nuclei_templates: Option<PathBuf>,
+    #[arg(long)]
+    nuclei_report: Option<PathBuf>,
+    #[command(flatten)]
+    template_filter: TemplateFilterArgs,
+    #[arg(long)]
+    kev_report: Option<PathBuf>,
+    /// Local private findings from a prior hunt; read only for conservative coverage.
+    #[arg(long)]
+    findings: PathBuf,
+    /// Optional aggregate-only JSON report destination.
+    #[arg(long)]
+    output: Option<PathBuf>,
+    /// Inclusive UTC start time in RFC 3339 format.
+    #[arg(long, value_parser = parse_rfc3339_utc)]
+    from: Option<DateTime<Utc>>,
+    /// Inclusive UTC end time in RFC 3339 format.
+    #[arg(long, value_parser = parse_rfc3339_utc)]
+    to: Option<DateTime<Utc>>,
+    /// Maximum CVE ladders to display. Use 0 to display all.
+    #[arg(long, default_value_t = 20)]
+    limit: usize,
+}
+
+#[derive(Debug, clap::Args)]
+struct AblationArgs {
+    #[arg(long)]
+    input: PathBuf,
+    #[arg(long, value_enum, default_value_t = InputFormat::Auto)]
+    format: InputFormat,
+    #[arg(long)]
+    nuclei_templates: Option<PathBuf>,
+    #[arg(long)]
+    nuclei_report: Option<PathBuf>,
+    #[command(flatten)]
+    template_filter: TemplateFilterArgs,
+    #[arg(long)]
+    kev_report: Option<PathBuf>,
+    /// Optional aggregate-only JSON report destination.
+    #[arg(long)]
+    output: Option<PathBuf>,
+    /// Inclusive UTC start time in RFC 3339 format.
+    #[arg(long, value_parser = parse_rfc3339_utc)]
+    from: Option<DateTime<Utc>>,
+    /// Inclusive UTC end time in RFC 3339 format.
+    #[arg(long, value_parser = parse_rfc3339_utc)]
+    to: Option<DateTime<Utc>>,
 }
 
 /// The rendering format for `production explain`.
@@ -1337,987 +1370,31 @@ impl OutputFormat {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Command::ObservationStore { command } => {
-            let stdout = io::stdout();
-            let mut stdout = stdout.lock();
-            match command {
-                ObservationStoreCommand::Read { store, limit } => serde_json::to_writer_pretty(
-                    &mut stdout,
-                    &shenron::observation_store::read_observation_store(&store, limit)?,
-                )?,
-                ObservationStoreCommand::Compact { store, output } => serde_json::to_writer_pretty(
-                    &mut stdout,
-                    &shenron::observation_store::compact_observation_store(&store, &output)?,
-                )?,
-            }
-            io::Write::write_all(&mut stdout, b"\n")?;
-            Ok(())
-        }
+        Command::ObservationStore { command } => run_observation_store(command),
         Command::Lab(command) => run_lab_command(command),
         Command::ValidateRules { rules } => validate(&rules),
-        Command::Disposition { command } => match command {
-            DispositionCommand::Read { store, selection } => {
-                let store = selection.load(Some(&store))?.expect("explicit store");
-                eprintln!("{DISPOSITION_SAFETY_NOTE}");
-                serde_json::to_writer_pretty(io::stdout().lock(), &store.selected_entries())?;
-                println!();
-                Ok(())
-            }
-            DispositionCommand::Set {
-                store,
-                source,
-                template_id,
-                method,
-                path,
-                query,
-                disposition,
-                comment,
-                corpus_scope,
-                reviewer,
-                evidence_run,
-                nuclei_revision,
-                review_after,
-            } => {
-                let mut key =
-                    DispositionKey::new(&source, &template_id, &method, &path, query.as_deref());
-                key.corpus_scope = corpus_scope;
-                let review = (reviewer.is_some()
-                    || evidence_run.is_some()
-                    || nuclei_revision.is_some()
-                    || review_after.is_some())
-                .then_some(DispositionReview {
-                    reviewer,
-                    evidence_run,
-                    nuclei_revision,
-                    review_after,
-                });
-                let result = record_disposition_with_review(
-                    &store,
-                    key,
-                    disposition.into(),
-                    comment,
-                    review,
-                )?;
-                println!(
-                    "Private analyst disposition store: {}\n  Already recorded: {}\n  Effective pattern dispositions: {}",
-                    store.display(),
-                    result.already_recorded,
-                    result.effective_entries,
-                );
-                println!("{DISPOSITION_SAFETY_NOTE}");
-                Ok(())
-            }
-        },
+        Command::Disposition { command } => run_disposition(command),
         Command::ProductionNamespace {
             command: ResponseSizesCommand::ResponseSizes(args),
         } => run_response_sizes(args),
         Command::Production(command) => match command {
             ProductionCommand::ResponseSizes(args) => run_response_sizes(args),
-            ProductionCommand::IdentifierAccess {
-                input,
-                format,
-                output,
-                from,
-                to,
-                corpus_label,
-                trusted_proxy,
-                show_paths,
-                show_source_ips,
-                limit,
-                options,
-            } => {
-                let report = shenron::identifier_access::run(
-                    &input,
-                    format.telemetry_profile_for_input(&input)?,
-                    &HuntTimeRange { from, to },
-                    &options,
-                    &output,
-                    corpus_label.as_deref(),
-                    &TrustedProxySet::new(trusted_proxy),
-                )?;
-                shenron::identifier_access::write_text(
-                    io::stdout().lock(),
-                    &report,
-                    show_paths,
-                    show_source_ips,
-                    limit,
-                )
-            }
-            ProductionCommand::ProbeSources {
-                input,
-                format,
-                output,
-                from,
-                to,
-                trusted_proxy,
-                show_source_ips,
-                show_paths,
-                limit,
-                output_format,
-                options,
-            } => {
-                let report = shenron::probe_sources::run(
-                    &input,
-                    format.telemetry_profile_for_input(&input)?,
-                    &HuntTimeRange { from, to },
-                    &TrustedProxySet::new(trusted_proxy),
-                    &options,
-                    output.as_deref(),
-                )?;
-                let json = matches!(output_format, DailyOutputFormat::Json);
-                if json {
-                    print_input_discovery(&report.summary.input_discovery, true);
-                    let view = shenron::probe_sources::display(
-                        &report,
-                        show_source_ips,
-                        show_paths,
-                        limit,
-                    );
-                    serde_json::to_writer_pretty(io::stdout().lock(), &view)?;
-                    println!();
-                } else {
-                    shenron::probe_sources::write_text(
-                        io::stdout().lock(),
-                        &report,
-                        show_source_ips,
-                        show_paths,
-                        limit,
-                    )?;
-                }
-                Ok(())
-            }
-            ProductionCommand::Context {
-                input,
-                format,
-                source_ip,
-                from,
-                to,
-                max_records,
-                show_request,
-                show_query,
-                output,
-            } => {
-                if let Some(path) = &output {
-                    shenron::production::ensure_separate_output(&input, path)?;
-                }
-                let result = shenron::investigation::request_context(
-                    &input,
-                    format.telemetry_profile_for_input(&input)?,
-                    &shenron::investigation::ContextOptions {
-                        source_ips: source_ip.into_iter().collect(),
-                        from,
-                        to,
-                        maximum_records: max_records,
-                        include_query: show_query,
-                    },
-                )?;
-                if let Some(path) = output {
-                    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
-                        fs::create_dir_all(parent)?;
-                    }
-                    write_json_pretty(&path, &result)?;
-                    shenron::input_discovery::write_discovery_manifest(
-                        &path,
-                        &result.counts.input_discovery,
-                    )?;
-                    eprintln!("{}", shenron::investigation::SAFETY_NOTE);
-                }
-                print_input_discovery(&result.counts.input_discovery, true);
-                if show_request {
-                    eprintln!("{}", shenron::investigation::SAFETY_NOTE);
-                    serde_json::to_writer_pretty(io::stdout().lock(), &result)?;
-                } else {
-                    serde_json::to_writer_pretty(io::stdout().lock(), &result.counts)?;
-                }
-                println!();
-                eprintln!("{}", result.retention_note);
-                if result.counts.records_beyond_cap > 0 {
-                    eprintln!("{} record(s) beyond the cap were omitted; narrow the window or raise --max-records.", result.counts.records_beyond_cap);
-                }
-                Ok(())
-            }
-            ProductionCommand::Hunt {
-                disposition_selection,
-                include_source_references,
-                tracking_limits,
-                corpus_label,
-                input,
-                results_dir,
-                format,
-                nuclei_templates,
-                nuclei_report,
-                template_filter,
-                kev_report,
-                output,
-                output_format,
-                from,
-                to,
-                since,
-                trusted_proxy,
-                rules,
-                no_sigma,
-                no_nuclei,
-                uncompressed_findings,
-                bot_ranges,
-                observation_store,
-                disposition_store,
-                ipv4_group_prefix,
-                ipv6_group_prefix,
-                asn_dataset,
-                baseline,
-                baseline_latest,
-                show_triage,
-                limit,
-                report: html_report,
-                lang,
-            } => {
-                // Parse notification policy before any hunt or render work so
-                // an invalid explicit threshold fails clearly. With no webhook
-                // configured, the later notification call is a strict no-op.
-                let slack_config = SlackNotificationConfig::from_env()?;
-                if let Some(run_dir) = results_dir {
-                    if disposition_selection.disposition_scope.is_some()
-                        || disposition_selection.disposition_as_of.is_some()
-                    {
-                        anyhow::bail!(
-                            "disposition scope/as-of cannot be combined with --results-dir"
-                        );
-                    }
-                    if tracking_limits.resolve().is_some() {
-                        anyhow::bail!("tracking limits cannot be combined with --results-dir because no hunt is run");
-                    }
-                    if template_filter.is_active() {
-                        anyhow::bail!(
-                            "template metadata filters cannot be combined with --results-dir because no hunt is run"
-                        );
-                    }
-                    if !run_dir.is_dir() {
-                        anyhow::bail!(
-                            "--results-dir must be an existing hunt or concentration output directory: {}",
-                            run_dir.display()
-                        );
-                    }
-                    let report_output = html_report
-                        .flatten()
-                        .unwrap_or_else(|| run_dir.join("report.html"));
-                    write_html_report(&run_dir, &run_dir, &report_output, limit, lang)?;
-                    notify_slack_from_existing_run(&slack_config, &run_dir, Some(&report_output));
-                    return Ok(());
-                }
-
-                // clap requires one of --input or --results-dir. This branch is
-                // therefore the raw-log hunt path.
-                let input = input.expect("clap requires --input unless --results-dir is present");
-                if no_nuclei && no_sigma {
-                    anyhow::bail!(
-                        "--no-nuclei and --no-sigma cannot be combined; at least one detection path must remain enabled"
-                    );
-                }
-                if output.is_none() {
-                    if html_report.is_some() {
-                        anyhow::bail!("--report requires --output <DIR>");
-                    }
-                    if baseline.is_some() {
-                        anyhow::bail!("--baseline requires --output <DIR>");
-                    }
-                    if baseline_latest.is_some() {
-                        anyhow::bail!("--baseline-latest requires --output <DIR>");
-                    }
-                    if observation_store.is_some() {
-                        anyhow::bail!("--observation-store requires --output <DIR>");
-                    }
-                }
-                if observation_store.is_none()
-                    && (ipv4_group_prefix.is_some()
-                        || ipv6_group_prefix.is_some()
-                        || asn_dataset.is_some())
-                {
-                    anyhow::bail!(
-                        "--ipv4-group-prefix, --ipv6-group-prefix, and --asn-dataset require --observation-store on hunt"
-                    );
-                }
-                let nuclei_inputs = if no_nuclei {
-                    eprintln!("Nuclei pass: disabled with --no-nuclei; prepared Nuclei inputs are not required.");
-                    None
-                } else {
-                    Some(resolve_nuclei_inputs(nuclei_templates, nuclei_report)?)
-                };
-                let kev_report = resolve_optional_local_dataset(kev_report, default_kev_report);
-                let sigma_ruleset = resolve_sigma_ruleset(rules, no_sigma);
-                let bot_range_path = bot_ranges.or_else(|| {
-                    let path = default_bot_range_snapshot();
-                    path.is_file().then_some(path)
-                });
-                let bot_range_database = bot_range_path
-                    .as_deref()
-                    .map(load_bot_range_database)
-                    .transpose()?;
-                let telemetry_profile = format.telemetry_profile_for_input(&input)?;
-                let time_range = if let Some(since) = since {
-                    let duration = chrono::Duration::from_std(since)
-                        .context("--since duration does not fit the supported UTC range")?;
-                    let run_time = Utc::now();
-                    let from = run_time
-                        .checked_sub_signed(duration)
-                        .context("--since resolves before the supported UTC timestamp range")?;
-                    HuntTimeRange {
-                        from: Some(from),
-                        to: None,
-                    }
-                } else {
-                    HuntTimeRange { from, to }
-                };
-                let options = HuntOptions {
-                    include_source_references,
-                    tracking_limits: tracking_limits.resolve(),
-                    uncompressed_findings,
-                    corpus_label,
-                    time_range,
-                    trusted_proxies: TrustedProxySet::new(trusted_proxy),
-                    triage_policy: HuntTriagePolicy::default(),
-                    sigma_ruleset,
-                    bot_range_database,
-                    bot_range_snapshot_path: bot_range_path,
-                    template_filter: template_filter.into_options(),
-                    disposition_store: disposition_selection.load(disposition_store.as_deref())?,
-                };
-                let resolved_nuclei = nuclei_inputs
-                    .as_ref()
-                    .map(|(templates, report)| (templates.as_path(), report.as_path()));
-                let Some(output) = output else {
-                    eprintln!(
-                        "PRIVATE stdout mode: findings can contain raw IP addresses, request paths, hosts, headers, and other log values. Do not share without review."
-                    );
-                    let report = {
-                        let stdout = io::stdout();
-                        let mut stdout = stdout.lock();
-                        production_hunt_to_writer(
-                            &input,
-                            resolved_nuclei,
-                            kev_report.as_deref(),
-                            &mut stdout,
-                            output_format.hunt_format(),
-                            telemetry_profile,
-                            options,
-                        )?
-                    };
-                    print_streaming_hunt_summary(&report);
-                    if slack_config.is_enabled() {
-                        eprintln!("Slack notification skipped (requires --output)");
-                    }
-                    return Ok(());
-                };
-                let report = production_hunt(
-                    &input,
-                    resolved_nuclei,
-                    kev_report.as_deref(),
-                    &output,
-                    telemetry_profile,
-                    options,
-                )?;
-                let sanitized_path = output.join("sanitized-research.json");
-                write_json_pretty(&sanitized_path, &report)?;
-                print_hunt(&report, &sanitized_path);
-                if let Some(store_path) = observation_store {
-                    shenron::production::ensure_separate_output(&input, &store_path)?;
-                    let default_prefixes = FocusPrefixLengths::default();
-                    let prefixes = FocusPrefixLengths {
-                        ipv4: ipv4_group_prefix.unwrap_or(default_prefixes.ipv4),
-                        ipv6: ipv6_group_prefix.unwrap_or(default_prefixes.ipv6),
-                    };
-                    let asn_path = resolve_optional_local_dataset(asn_dataset, default_asn_dataset);
-                    let asn_database = asn_path.as_deref().map(load_asn_database).transpose()?;
-                    let update = update_observation_store(
-                        &store_path,
-                        &output,
-                        prefixes,
-                        asn_database.as_ref(),
-                        ObservationStoreLimits::default(),
-                    )?;
-                    println!(
-                        "Private append-only observation store: {}\n  Run ID: {}\n  Already recorded: {}\n  Runs recorded: {}\n  Retained prefix/ASN entries: {}\n  Entity observations retained / beyond cap: {} / {}\n  Invalid source IPs excluded: {}",
-                        store_path.display(),
-                        terminal_safe(&update.run_id),
-                        update.already_recorded,
-                        update.runs_recorded,
-                        update.retained_entities,
-                        update.retained_entity_observations,
-                        update.entity_observations_beyond_cap,
-                        update.invalid_source_ips_excluded,
-                    );
-                    println!("{}", update.safety_note);
-                }
-                let baseline = match (baseline, baseline_latest) {
-                    (Some(baseline), None) => Some(baseline),
-                    (None, Some(run_root)) => match latest_baseline_run(&run_root, &output)? {
-                        Some(selected) => {
-                            println!(
-                                "Latest baseline selected by directory-name order: {}",
-                                selected.display()
-                            );
-                            Some(selected)
-                        }
-                        None => {
-                            println!(
-                                "no prior run found under {}; skipping temporal comparison",
-                                run_root.display()
-                            );
-                            None
-                        }
-                    },
-                    (None, None) => None,
-                    (Some(_), Some(_)) => unreachable!(
-                        "clap prevents --baseline and --baseline-latest from being combined"
-                    ),
-                };
-                let mut first_seen_source_ips = BTreeSet::new();
-                let mut temporal_comparison = None;
-                if let Some(baseline) = baseline {
-                    let comparison = compare_runs(&baseline, &output)?;
-                    write_comparison(&output, &comparison)?;
-                    first_seen_source_ips.extend(
-                        comparison
-                            .private
-                            .first_seen_entities
-                            .source_ips
-                            .iter()
-                            .cloned(),
-                    );
-                    println!(
-                        "Baseline comparison written: {}\n  Newly observed CVEs: {}\n  First-seen entities: {}\n  Elevated paths: {}",
-                        output.join("comparison-summary.json").display(),
-                        comparison.sanitized.cve_diff.newly_observed_cves.len(),
-                        first_seen_entity_total(&comparison.sanitized),
-                        comparison.sanitized.concentration_delta.elevated_paths,
-                    );
-                    temporal_comparison = Some(comparison);
-                }
-                write_hunt_triage_view(&output, &first_seen_source_ips, show_triage, limit)?;
-                print_daily_review_summary(
-                    &report,
-                    temporal_comparison
-                        .as_ref()
-                        .map(|comparison| &comparison.sanitized),
-                );
-                let report_output = html_report.map(|selected_report| {
-                    selected_report.unwrap_or_else(|| output.join("report.html"))
-                });
-                if let Some(report_output) = &report_output {
-                    write_html_report(&output, &input, report_output, limit, lang)?;
-                }
-                let slack_metrics = SlackNotificationMetrics::from_hunt(&report.metrics);
-                let slack_comparison = temporal_comparison.as_ref().map(|comparison| {
-                    SlackComparisonSummary::from_comparison(&comparison.sanitized)
-                });
-                notify_best_effort(
-                    &slack_config,
-                    &slack_metrics,
-                    slack_comparison,
-                    &output,
-                    report_output.as_deref(),
-                );
-                Ok(())
-            }
-            ProductionCommand::Compare {
-                reference_run,
-                compare_conditions,
-                comparison_points,
-                baseline,
-                current,
-                output,
-                show_entities,
-                show_paths,
-                show_source_ips,
-                limit,
-            } => {
-                shenron::production::ensure_separate_output(&baseline, &output)?;
-                shenron::production::ensure_separate_output(&current, &output)?;
-                for reference in &reference_run {
-                    shenron::production::ensure_separate_output(reference, &output)?;
-                }
-                let points = comparison_points
-                    .map(|path| -> Result<DailyComparisonPoints> {
-                        match path {
-                            None => Ok(DailyComparisonPoints::default()),
-                            Some(path) => {
-                                serde_json::from_reader(File::open(&path)?).with_context(|| {
-                                    format!("reading comparison points {}", path.display())
-                                })
-                            }
-                        }
-                    })
-                    .transpose()?;
-                let mut comparison = compare_runs_with_points(&baseline, &current, points)?;
-                if !reference_run.is_empty() {
-                    comparison.sanitized.reference_distribution =
-                        Some(shenron::comparison::references::compare_reference_runs(
-                            &baseline,
-                            &reference_run,
-                            &current,
-                        )?);
-                }
-                if compare_conditions {
-                    comparison.sanitized.measurement_conditions = Some(
-                        shenron::comparison::conditions::compare_conditions(&baseline, &current)?,
-                    );
-                }
-                write_comparison(&output, &comparison)?;
-                print_temporal_comparison(
-                    &comparison.sanitized,
-                    &comparison.private,
-                    show_entities,
-                    show_paths,
-                    show_source_ips,
-                    limit,
-                );
-                Ok(())
-            }
-            ProductionCommand::Concentration {
-                source_prefixes,
-                tracking_limits,
-                input,
-                format,
-                output,
-                corpus_label,
-                path,
-                path_prefix,
-                source_ip,
-                ipv4_group_prefix,
-                ipv6_group_prefix,
-                asn_dataset,
-                rate_window,
-                response_bucket_min_requests,
-                response_success_share_threshold_percent,
-                from,
-                to,
-                processed_index,
-                reprocess_all,
-                show_paths,
-                show_source_ips,
-                limit,
-            } => {
-                // clap enforces that at most one focus selector kind is set.
-                // Normalize repeated and comma-delimited source values into one
-                // deterministic set; empty elements do not create a focus.
-                let source_ips = source_ip
-                    .into_iter()
-                    .map(|value| value.trim().to_owned())
-                    .filter(|value| !value.is_empty())
-                    .collect::<BTreeSet<_>>();
-                let focus = if let Some(path) = path {
-                    Some(FocusSelector::ExactPath(path))
-                } else if let Some(prefix) = path_prefix {
-                    Some(FocusSelector::PathPrefix(prefix))
-                } else if source_ips.is_empty() {
-                    None
-                } else {
-                    Some(FocusSelector::SourceIp(source_ips))
-                };
-                // Address-block grouping applies to a path or path-prefix focus,
-                // which aggregate connection peers; source-IP focuses already
-                // have an analyst-selected peer set.
-                let groups_path_focus = matches!(
-                    focus,
-                    Some(FocusSelector::ExactPath(_) | FocusSelector::PathPrefix(_))
-                );
-                if !groups_path_focus
-                    && (ipv4_group_prefix.is_some() || ipv6_group_prefix.is_some())
-                {
-                    anyhow::bail!(
-                        "--ipv4-group-prefix and --ipv6-group-prefix require --path or --path-prefix"
-                    );
-                }
-                let default_prefixes = FocusPrefixLengths::default();
-                let focus_prefix_lengths = FocusPrefixLengths {
-                    ipv4: ipv4_group_prefix.unwrap_or(default_prefixes.ipv4),
-                    ipv6: ipv6_group_prefix.unwrap_or(default_prefixes.ipv6),
-                };
-                let asn_database = asn_dataset.as_deref().map(load_asn_database).transpose()?;
-                let rate_window_seconds = normalized_rate_windows(rate_window);
-                let report = production_daily_concentration(
-                    &input,
-                    Some(&output),
-                    format.telemetry_profile_for_input(&input)?,
-                    HuntTimeRange { from, to },
-                    focus.clone(),
-                    focus_prefix_lengths,
-                    asn_database.as_ref(),
-                    &rate_window_seconds,
-                    show_paths,
-                    processed_index.as_deref(),
-                    reprocess_all,
-                    response_bucket_min_requests,
-                    response_success_share_threshold_percent,
-                    corpus_label,
-                    source_prefixes.tracking_limits(tracking_limits.resolve())?,
-                    source_prefixes.resolve(),
-                )?;
-                let private_path = output.join("request-concentration.json");
-                let private = (show_paths
-                    || show_source_ips
-                    || focus.is_some()
-                    || source_prefixes.resolve().is_some())
-                .then(|| load_private_concentration(&private_path))
-                .transpose()?;
-                print_concentration(
-                    &report,
-                    &output.join("sanitized-research.json"),
-                    private.as_ref(),
-                    show_paths,
-                    show_source_ips,
-                    limit,
-                    focus.as_ref(),
-                );
-                print_processed_index_scope(
-                    processed_index.is_some(),
-                    report.files_skipped_as_processed,
-                );
-                Ok(())
-            }
-            ProductionCommand::Daily {
-                source_prefixes,
-                tracking_limits,
-                asn_dataset,
-                input,
-                format,
-                output,
-                corpus_label,
-                output_format,
-                rate_window,
-                response_bucket_min_requests,
-                response_success_share_threshold_percent,
-                from,
-                to,
-                processed_index,
-                reprocess_all,
-            } => {
-                if asn_dataset.is_some() && source_prefixes.resolve().is_none() {
-                    anyhow::bail!("--asn-dataset requires --source-prefix-bits or --source-prefix-bits-v6 for daily");
-                }
-                let asn_database = asn_dataset.as_deref().map(load_asn_database).transpose()?;
-                let rate_window_seconds = normalized_rate_windows(rate_window);
-                let telemetry_profile = format.telemetry_profile_for_input(&input)?;
-                let outcome = production_daily_concentration_detailed(
-                    &input,
-                    output.as_deref(),
-                    telemetry_profile,
-                    HuntTimeRange { from, to },
-                    None,
-                    FocusPrefixLengths::default(),
-                    asn_database.as_ref(),
-                    &rate_window_seconds,
-                    false,
-                    processed_index.as_deref(),
-                    reprocess_all,
-                    response_bucket_min_requests,
-                    response_success_share_threshold_percent,
-                    corpus_label,
-                    source_prefixes.tracking_limits(tracking_limits.resolve())?,
-                    source_prefixes.resolve(),
-                )?;
-                let mut summary =
-                    DailyVolumeSummary::from_report(&outcome.sanitized, processed_index.is_some());
-                summary.source_prefix_path_pairs_beyond_tracking_cap = outcome
-                    .prefix_path_pairs_beyond_cap
-                    .filter(|count| *count > 0);
-                summary.source_prefix_path_tracking = outcome.prefix_path_tracking;
-                match output_format {
-                    DailyOutputFormat::Text => {
-                        print_daily_volume_summary(&summary, output.as_deref())
-                    }
-                    DailyOutputFormat::Json => {
-                        print_input_discovery(&summary.input_discovery, true);
-                        serde_json::to_writer_pretty(io::stdout().lock(), &summary)?;
-                        println!();
-                    }
-                }
-                Ok(())
-            }
+            ProductionCommand::IdentifierAccess(args) => run_identifier_access(args),
+            ProductionCommand::ProbeSources(args) => run_probe_sources(args),
+            ProductionCommand::Context(args) => run_context(args),
+            ProductionCommand::Hunt(args) => run_hunt(args),
+            ProductionCommand::Compare(args) => run_compare(args),
+            ProductionCommand::Concentration(args) => run_concentration(args),
+            ProductionCommand::Daily(args) => run_daily(args),
             ProductionCommand::Trend {
                 results_dir,
                 path,
                 output_format,
-            } => {
-                let report = path_trend(&results_dir, &path)?;
-                match output_format {
-                    TrendOutputFormat::Text => print_path_trend(&report),
-                    TrendOutputFormat::Json => {
-                        serde_json::to_writer_pretty(io::stdout().lock(), &report)?;
-                        println!();
-                    }
-                }
-                Ok(())
-            }
-            ProductionCommand::Ablation {
-                input,
-                format,
-                nuclei_templates,
-                nuclei_report,
-                template_filter,
-                kev_report,
-                output,
-                from,
-                to,
-            } => {
-                let (nuclei_templates, nuclei_report) =
-                    resolve_nuclei_inputs(nuclei_templates, nuclei_report)?;
-                let kev_report = resolve_optional_local_dataset(kev_report, default_kev_report);
-                let report = production_ablation(
-                    &input,
-                    &nuclei_templates,
-                    &nuclei_report,
-                    kev_report.as_deref(),
-                    format.telemetry_profile_for_input(&input)?,
-                    HuntTimeRange { from, to },
-                    &template_filter.into_options(),
-                )?;
-                if let Some(path) = output.as_deref() {
-                    write_json_pretty(path, &report)?;
-                    shenron::input_discovery::write_discovery_manifest(
-                        path,
-                        &report.input_discovery,
-                    )?;
-                }
-                print_ablation(&report, output.as_deref());
-                Ok(())
-            }
-            ProductionCommand::Replay {
-                input,
-                format,
-                nuclei_templates,
-                nuclei_report,
-                template_filter,
-                kev_report,
-                findings,
-                output,
-                from,
-                to,
-            } => {
-                let (nuclei_templates, nuclei_report) =
-                    resolve_nuclei_inputs(nuclei_templates, nuclei_report)?;
-                let kev_report = resolve_optional_local_dataset(kev_report, default_kev_report);
-                if let Some(path) = output.as_deref() {
-                    shenron::production::ensure_separate_output(&input, path)?;
-                }
-                let report = production_historical_replay(
-                    &input,
-                    &nuclei_templates,
-                    &nuclei_report,
-                    kev_report.as_deref(),
-                    &findings,
-                    format.telemetry_profile_for_input(&input)?,
-                    HuntTimeRange { from, to },
-                    &template_filter.into_options(),
-                )?;
-                if let Some(path) = output.as_deref() {
-                    write_json_pretty(path, &report)?;
-                    shenron::input_discovery::write_discovery_manifest(
-                        path,
-                        &report.input_discovery,
-                    )?;
-                }
-                print_historical_replay(&report, output.as_deref());
-                Ok(())
-            }
-            ProductionCommand::CountHypotheses {
-                input,
-                format,
-                nuclei_templates,
-                nuclei_report,
-                template_filter,
-                kev_report,
-                findings,
-                output,
-                from,
-                to,
-                limit,
-            } => {
-                let (nuclei_templates, nuclei_report) =
-                    resolve_nuclei_inputs(nuclei_templates, nuclei_report)?;
-                let kev_report = resolve_optional_local_dataset(kev_report, default_kev_report);
-                if let Some(path) = output.as_deref() {
-                    shenron::production::ensure_separate_output(&input, path)?;
-                }
-                let report = production_count_hypotheses(
-                    &input,
-                    &nuclei_templates,
-                    &nuclei_report,
-                    kev_report.as_deref(),
-                    &findings,
-                    format.telemetry_profile_for_input(&input)?,
-                    HuntTimeRange { from, to },
-                    &template_filter.into_options(),
-                )?;
-                if let Some(path) = output.as_deref() {
-                    write_json_pretty(path, &report)?;
-                    shenron::input_discovery::write_discovery_manifest(
-                        path,
-                        &report.input_discovery,
-                    )?;
-                }
-                print_count_hypotheses(&report, output.as_deref(), limit);
-                Ok(())
-            }
-            ProductionCommand::Explain {
-                disposition_selection,
-                findings,
-                waf_outcome,
-                include_generic,
-                show_request,
-                show_evidence,
-                show_source_ips,
-                show_asn,
-                asn_dataset,
-                reputation_dataset,
-                disposition_store,
-                show_fingerprints,
-                triage_breadth_observations,
-                triage_breadth_templates,
-                triage_depth_observations,
-                triage_window,
-                sequence_window,
-                limit,
-                output,
-                output_format,
-            } => {
-                let asn_dataset = resolve_optional_local_dataset(asn_dataset, default_asn_dataset);
-                let reputation_dataset =
-                    resolve_optional_local_dataset(reputation_dataset, default_reputation_dataset);
-                let asn_database = asn_dataset.as_deref().map(load_asn_database).transpose()?;
-                let reputation_database = reputation_dataset
-                    .as_deref()
-                    .map(load_reputation_database)
-                    .transpose()?;
-                let findings = explain_private_findings(&findings)?;
-                let disposition_store = disposition_selection.load(disposition_store.as_deref())?;
-                // Bound the reachable behavior-score maximum by what the source
-                // profiles can express. Union across recorded sources; legacy
-                // findings without a source fall back to the full-capability
-                // default so they are never penalized.
-                let capabilities = findings
-                    .iter()
-                    .filter_map(|finding| {
-                        finding
-                            .log_source
-                            .map(|source| source.telemetry_profile().capabilities())
-                    })
-                    .reduce(TelemetryCapabilities::union)
-                    .unwrap_or_default();
-                // The --waf-outcome filter is an explicit analyst selection, so
-                // it bounds everything downstream. The full waf-filtered set is
-                // what triage grouping and scoring see.
-                let grouped: Vec<_> = match waf_outcome {
-                    Some(filter) => findings
-                        .into_iter()
-                        .filter(|finding| filter.matches(finding))
-                        .collect(),
-                    None => findings,
-                };
-                // The low-confidence generic filter is display-only: it changes
-                // what is listed, never what is grouped or scored. `hidden` is
-                // disclosed; `listed` drives the per-finding rows and the path
-                // summary; `grouped` drives entity grouping and scoring.
-                let hidden: Vec<_> = if include_generic {
-                    Vec::new()
-                } else {
-                    grouped
-                        .iter()
-                        .filter(|finding| is_low_confidence_generic_match(finding))
-                        .cloned()
-                        .collect()
-                };
-                let listed: Vec<_> = if include_generic {
-                    grouped.clone()
-                } else {
-                    grouped
-                        .iter()
-                        .filter(|finding| !is_low_confidence_generic_match(finding))
-                        .cloned()
-                        .collect()
-                };
-                let analyst_dispositions = disposition_store
-                    .as_ref()
-                    .map(|store| disposition_counts(&grouped, store));
-                let display = ExplainDisplay {
-                    show_request: show_request || show_evidence,
-                    show_evidence,
-                    show_source_ips,
-                    show_asn,
-                    show_fingerprints,
-                };
-                let triage = TriageContext {
-                    policy: TriagePolicy::with_windows(
-                        triage_breadth_observations,
-                        triage_breadth_templates,
-                        triage_depth_observations,
-                        triage_window,
-                    )
-                    .with_sequence_settings(
-                        sequence_window.unwrap_or_else(|| {
-                            Duration::from_secs(DEFAULT_SEQUENCE_WINDOW_SECONDS)
-                        }),
-                        DEFAULT_MAX_SEQUENCE_OBSERVATIONS,
-                    ),
-                    capabilities,
-                };
-                match output_format {
-                    ExplainOutputFormat::Json => {
-                        let report = build_explain_report(
-                            &listed,
-                            &grouped,
-                            &hidden,
-                            &display,
-                            waf_outcome.map(WafOutcomeFilter::label),
-                            limit,
-                            triage,
-                            asn_database.as_ref(),
-                            reputation_database.as_ref(),
-                            analyst_dispositions.clone(),
-                        );
-                        let json = serde_json::to_string_pretty(&report)?;
-                        match output {
-                            Some(path) => {
-                                std::fs::write(&path, json).with_context(|| {
-                                    format!("writing explain report {}", path.display())
-                                })?;
-                                eprintln!("Explain report (JSON) written to: {}", path.display());
-                            }
-                            None => println!("{json}"),
-                        }
-                    }
-                    ExplainOutputFormat::Text => {
-                        if output.is_some() {
-                            anyhow::bail!(
-                                "--output writes a file only for --output-format json; the human-readable text report is written to stdout. Redirect it with `>`, or pass --output-format json to write --output."
-                            );
-                        }
-                        if !hidden.is_empty() {
-                            let hidden_cves = hidden
-                                .iter()
-                                .flat_map(|finding| finding.cves.iter())
-                                .collect::<BTreeSet<_>>();
-                            println!(
-                                "Hidden {} low-confidence matches (response-unverified on generic paths such as /robots.txt), spanning {} CVEs. Pass --include-generic to show them.",
-                                hidden.len(),
-                                hidden_cves.len()
-                            );
-                        }
-                        print_analyst_dispositions(analyst_dispositions.as_ref());
-                        print_explanations(
-                            &listed,
-                            &grouped,
-                            !hidden.is_empty(),
-                            display,
-                            waf_outcome.map(WafOutcomeFilter::label),
-                            limit,
-                            triage,
-                            asn_database.as_ref(),
-                            reputation_database.as_ref(),
-                        );
-                    }
-                }
-                Ok(())
-            }
+            } => run_trend(results_dir, path, output_format),
+            ProductionCommand::Ablation(args) => run_ablation(args),
+            ProductionCommand::Replay(args) => run_replay(args),
+            ProductionCommand::CountHypotheses(args) => run_count_hypotheses(args),
+            ProductionCommand::Explain(args) => run_explain(args),
         },
         Command::Export {
             results_dir,
@@ -2325,234 +1402,1210 @@ fn main() -> Result<()> {
             output,
             include_observables,
             tlp,
-        } => {
-            export_cti_run(&results_dir, &output, format, include_observables, tlp)?;
-            if include_observables {
-                eprintln!(
-                    "PRIVATE export: observed connection-peer IPs and URI paths were included by explicit request. This is not attacker attribution or an attack/exploitation/compromise determination."
-                );
-            }
-            println!(
-                "Local {:?} export written: {}\nNo network transmission was performed.",
-                format,
-                output.display()
-            );
-            Ok(())
+        } => run_export(results_dir, format, output, include_observables, tlp),
+        Command::Candidate { command } => run_candidate(command),
+    }
+}
+
+fn run_hunt(args: HuntArgs) -> Result<()> {
+    let HuntArgs {
+        disposition_selection,
+        include_source_references,
+        tracking_limits,
+        corpus_label,
+        input,
+        results_dir,
+        format,
+        nuclei_templates,
+        nuclei_report,
+        template_filter,
+        kev_report,
+        output,
+        output_format,
+        from,
+        to,
+        since,
+        trusted_proxy,
+        rules,
+        no_sigma,
+        no_nuclei,
+        uncompressed_findings,
+        bot_ranges,
+        observation_store,
+        disposition_store,
+        ipv4_group_prefix,
+        ipv6_group_prefix,
+        asn_dataset,
+        baseline,
+        baseline_latest,
+        show_triage,
+        limit,
+        report: html_report,
+        lang,
+    } = args;
+    // Parse notification policy before any hunt or render work so
+    // an invalid explicit threshold fails clearly. With no webhook
+    // configured, the later notification call is a strict no-op.
+    let slack_config = SlackNotificationConfig::from_env()?;
+    if let Some(run_dir) = results_dir {
+        if disposition_selection.disposition_scope.is_some()
+            || disposition_selection.disposition_as_of.is_some()
+        {
+            anyhow::bail!("disposition scope/as-of cannot be combined with --results-dir");
         }
-        Command::Candidate { command } => match command {
-            CandidateCommand::Build {
-                from_findings,
-                source_address_set,
-                source_ip_set_v4_arn,
-                source_ip_set_v6_arn,
-                output,
-                telemetry,
-                include_response_unverified,
-                include_sigma_ttp,
-                rules,
-            } => {
-                let findings = explain_private_findings(&from_findings)?;
-                let sigma_rules = if include_sigma_ttp {
-                    let rules = rules.as_ref().ok_or_else(|| {
-                        anyhow::anyhow!("--include-sigma-ttp requires --rules <DIR>")
-                    })?;
-                    let ruleset = load_rules(rules);
-                    if ruleset.supported.is_empty() {
-                        anyhow::bail!(
-                            "no supported Sigma rules were found under {}",
-                            rules.display()
-                        );
-                    }
-                    Some(ruleset)
-                } else {
-                    None
-                };
-                let (mut candidates, stats) = build_batch_from_findings_with_sigma(
-                    &findings,
-                    telemetry.explicit_telemetry_profile()?,
-                    include_response_unverified,
-                    sigma_rules
-                        .as_ref()
-                        .map(|ruleset| ruleset.supported.as_slice()),
+        if tracking_limits.resolve().is_some() {
+            anyhow::bail!(
+                "tracking limits cannot be combined with --results-dir because no hunt is run"
+            );
+        }
+        if template_filter.is_active() {
+            anyhow::bail!(
+                "template metadata filters cannot be combined with --results-dir because no hunt is run"
+            );
+        }
+        if !run_dir.is_dir() {
+            anyhow::bail!(
+                "--results-dir must be an existing hunt or concentration output directory: {}",
+                run_dir.display()
+            );
+        }
+        let report_output = html_report
+            .flatten()
+            .unwrap_or_else(|| run_dir.join("report.html"));
+        write_html_report(&run_dir, &run_dir, &report_output, limit, lang)?;
+        notify_slack_from_existing_run(&slack_config, &run_dir, Some(&report_output));
+        return Ok(());
+    }
+
+    // clap requires one of --input or --results-dir. This branch is
+    // therefore the raw-log hunt path.
+    let input = input.expect("clap requires --input unless --results-dir is present");
+    if no_nuclei && no_sigma {
+        anyhow::bail!(
+            "--no-nuclei and --no-sigma cannot be combined; at least one detection path must remain enabled"
+        );
+    }
+    if output.is_none() {
+        if html_report.is_some() {
+            anyhow::bail!("--report requires --output <DIR>");
+        }
+        if baseline.is_some() {
+            anyhow::bail!("--baseline requires --output <DIR>");
+        }
+        if baseline_latest.is_some() {
+            anyhow::bail!("--baseline-latest requires --output <DIR>");
+        }
+        if observation_store.is_some() {
+            anyhow::bail!("--observation-store requires --output <DIR>");
+        }
+    }
+    if observation_store.is_none()
+        && (ipv4_group_prefix.is_some() || ipv6_group_prefix.is_some() || asn_dataset.is_some())
+    {
+        anyhow::bail!(
+            "--ipv4-group-prefix, --ipv6-group-prefix, and --asn-dataset require --observation-store on hunt"
+        );
+    }
+    let nuclei_inputs = if no_nuclei {
+        eprintln!(
+            "Nuclei pass: disabled with --no-nuclei; prepared Nuclei inputs are not required."
+        );
+        None
+    } else {
+        Some(resolve_nuclei_inputs(nuclei_templates, nuclei_report)?)
+    };
+    let kev_report = resolve_optional_local_dataset(kev_report, default_kev_report);
+    let sigma_ruleset = resolve_sigma_ruleset(rules, no_sigma);
+    let bot_range_path = bot_ranges.or_else(|| {
+        let path = default_bot_range_snapshot();
+        path.is_file().then_some(path)
+    });
+    let bot_range_database = bot_range_path
+        .as_deref()
+        .map(load_bot_range_database)
+        .transpose()?;
+    let telemetry_profile = format.telemetry_profile_for_input(&input)?;
+    let time_range = if let Some(since) = since {
+        let duration = chrono::Duration::from_std(since)
+            .context("--since duration does not fit the supported UTC range")?;
+        let run_time = Utc::now();
+        let from = run_time
+            .checked_sub_signed(duration)
+            .context("--since resolves before the supported UTC timestamp range")?;
+        HuntTimeRange {
+            from: Some(from),
+            to: None,
+        }
+    } else {
+        HuntTimeRange { from, to }
+    };
+    let options = HuntOptions {
+        include_source_references,
+        tracking_limits: tracking_limits.resolve(),
+        uncompressed_findings,
+        corpus_label,
+        time_range,
+        trusted_proxies: TrustedProxySet::new(trusted_proxy),
+        triage_policy: HuntTriagePolicy::default(),
+        sigma_ruleset,
+        bot_range_database,
+        bot_range_snapshot_path: bot_range_path,
+        template_filter: template_filter.into_options(),
+        disposition_store: disposition_selection.load(disposition_store.as_deref())?,
+    };
+    let resolved_nuclei = nuclei_inputs
+        .as_ref()
+        .map(|(templates, report)| (templates.as_path(), report.as_path()));
+    let Some(output) = output else {
+        eprintln!(
+            "PRIVATE stdout mode: findings can contain raw IP addresses, request paths, hosts, headers, and other log values. Do not share without review."
+        );
+        let report = {
+            let stdout = io::stdout();
+            let mut stdout = stdout.lock();
+            production_hunt_to_writer(
+                &input,
+                resolved_nuclei,
+                kev_report.as_deref(),
+                &mut stdout,
+                output_format.hunt_format(),
+                telemetry_profile,
+                options,
+            )?
+        };
+        print_streaming_hunt_summary(&report);
+        if slack_config.is_enabled() {
+            eprintln!("Slack notification skipped (requires --output)");
+        }
+        return Ok(());
+    };
+    let report = production_hunt(
+        &input,
+        resolved_nuclei,
+        kev_report.as_deref(),
+        &output,
+        telemetry_profile,
+        options,
+    )?;
+    let sanitized_path = output.join("sanitized-research.json");
+    write_json_pretty(&sanitized_path, &report)?;
+    print_hunt(&report, &sanitized_path);
+    if let Some(store_path) = observation_store {
+        shenron::production::ensure_separate_output(&input, &store_path)?;
+        let default_prefixes = FocusPrefixLengths::default();
+        let prefixes = FocusPrefixLengths {
+            ipv4: ipv4_group_prefix.unwrap_or(default_prefixes.ipv4),
+            ipv6: ipv6_group_prefix.unwrap_or(default_prefixes.ipv6),
+        };
+        let asn_path = resolve_optional_local_dataset(asn_dataset, default_asn_dataset);
+        let asn_database = asn_path.as_deref().map(load_asn_database).transpose()?;
+        let update = update_observation_store(
+            &store_path,
+            &output,
+            prefixes,
+            asn_database.as_ref(),
+            ObservationStoreLimits::default(),
+        )?;
+        println!(
+            "Private append-only observation store: {}\n  Run ID: {}\n  Already recorded: {}\n  Runs recorded: {}\n  Retained prefix/ASN entries: {}\n  Entity observations retained / beyond cap: {} / {}\n  Invalid source IPs excluded: {}",
+            store_path.display(),
+            terminal_safe(&update.run_id),
+            update.already_recorded,
+            update.runs_recorded,
+            update.retained_entities,
+            update.retained_entity_observations,
+            update.entity_observations_beyond_cap,
+            update.invalid_source_ips_excluded,
+        );
+        println!("{}", update.safety_note);
+    }
+    let baseline = match (baseline, baseline_latest) {
+        (Some(baseline), None) => Some(baseline),
+        (None, Some(run_root)) => match latest_baseline_run(&run_root, &output)? {
+            Some(selected) => {
+                println!(
+                    "Latest baseline selected by directory-name order: {}",
+                    selected.display()
                 );
-                if candidates.is_empty() {
-                    anyhow::bail!(
-                        "no candidate patterns could be built from the supplied findings; response-unverified and Sigma findings are excluded by default, and Sigma rules must be faithfully translatable"
-                    );
-                }
-                if let Some(path) = source_address_set {
-                    shenron::production::ensure_separate_output(&path, &output)?;
-                    let set = shenron::address_set::FrozenAddressSet::load(
-                        &path,
-                        source_ip_set_v4_arn,
-                        source_ip_set_v6_arn,
-                    )?;
-                    println!("Frozen source-address set: {} retained networks; {} invalid records excluded; {} duplicate records; {} comment/empty records skipped.\n{}", set.networks.len(), set.invalid_records, set.duplicate_records, set.comment_or_empty_records, shenron::address_set::ADDRESS_SET_NOTE);
-                    for candidate in &mut candidates {
-                        shenron::candidate::with_source_address_set(candidate, set.clone());
-                    }
-                }
-                save_batch(&candidates, &output)?;
-                println!("Candidates written: {}\nSigma TTP candidates (separate evidence class): {}\nOutput directory: {}\nSigma findings excluded without explicit opt-in: {}\nSigma findings skipped because the source rule was missing or not faithfully translatable: {}\nAWS WAF BLOCK findings excluded: {}\nResponse-unverified findings excluded: {}\nFindings skipped for missing method/path: {}\nRecommended initial action: COUNT\nHistorical replay: required before preventive export.\nSigma TTP candidates represent literal rule matches, not CVE evidence or a determination of attack, exploitation, or compromise.", stats.candidates, stats.sigma_candidates, output.display(), stats.excluded_sigma_findings, stats.skipped_sigma_findings_untranslatable, stats.excluded_blocked_findings, stats.excluded_response_unverified_findings, stats.skipped_incomplete_findings);
-                Ok(())
+                Some(selected)
             }
-            CandidateCommand::Replay {
-                candidate,
-                input,
-                format,
-                output,
-            } => {
-                let candidate = replay_candidate(
-                    load_candidate(&candidate)?,
-                    &input,
-                    format.telemetry_profile_for_input(&input)?,
-                    &output,
-                )?;
-                save_candidate(&candidate, &output)?;
-                let discovery = InputDiscoverySummary::from_skipped(
-                    candidate.evidence.skipped_input_files.clone(),
+            None => {
+                println!(
+                    "no prior run found under {}; skipping temporal comparison",
+                    run_root.display()
                 );
-                print_input_discovery(&discovery, false);
-                shenron::input_discovery::write_discovery_manifest(&output, &discovery)?;
-                if candidate.evidence.source_address_unavailable > 0
-                    || candidate.evidence.source_address_invalid > 0
-                {
-                    println!("Source-address evaluation excluded: {} missing peer addresses; {} invalid peer addresses. These observations cannot establish membership.", candidate.evidence.source_address_unavailable, candidate.evidence.source_address_invalid);
-                }
-                println!("Historical replay complete. Candidate written: {}\nRequests evaluated: {}\nOther historical matches: {}\nPreventive export remains COUNT-only.", output.display(), candidate.evidence.historical_requests_evaluated, candidate.evidence.other_historical_matches);
-                Ok(())
-            }
-            CandidateCommand::Evaluate {
-                candidate,
-                plan,
-                output,
-                limit,
-            } => {
-                for input in [&candidate, &plan] {
-                    shenron::production::ensure_separate_output(input, &output)?;
-                }
-                let inputs: shenron::candidate::evaluation::EvaluationPlan =
-                    serde_json::from_reader(File::open(&plan)?)?;
-                for corpus in inputs.corpora {
-                    let input = if corpus.input.is_absolute() {
-                        corpus.input
-                    } else {
-                        plan.parent().unwrap_or(Path::new(".")).join(corpus.input)
-                    };
-                    shenron::production::ensure_separate_output(&input, &output)?;
-                }
-                let result = shenron::candidate::evaluation::evaluate(&candidate, &plan, limit)?;
-                if let Some(parent) = output.parent().filter(|p| !p.as_os_str().is_empty()) {
-                    fs::create_dir_all(parent)?;
-                }
-                write_json_pretty_new(&output, &result)?;
-                eprintln!("{}", result.safety_note);
-                let discovery = InputDiscoverySummary::from_skipped(
-                    result
-                        .corpora
-                        .iter()
-                        .flat_map(|row| row.skipped_input_files.clone())
-                        .collect(),
-                );
-                print_input_discovery(&discovery, false);
-                shenron::input_discovery::write_discovery_manifest(&output, &discovery)?;
-                for (index, row) in result.corpora.iter().enumerate() {
-                    println!("Cohort {}: parsed {} / malformed {} / matched {} / match share {} (source missing/invalid exclusions: {}/{}; absent condition fields: {}; overlapping whole files: {}; displayed path/peer omissions: {}/{})", index + 1, row.parseable_records, row.parse_errors, row.matching_records, row.match_share.map(|v| format!("{:.2}%", v*100.0)).unwrap_or_else(|| "unavailable".into()), row.source_address_unavailable, row.source_address_invalid, row.records_with_absent_condition_fields, row.files_with_identical_bytes_in_another_cohort, row.retained_paths_omitted_from_display, row.retained_peers_omitted_from_display);
-                    println!(
-                        "  Tracking-cap omissions (paths / sources / pairs): {} / {} / {}",
-                        row.matches.paths_beyond_tracking_cap,
-                        row.matches.source_ips_beyond_tracking_cap,
-                        row.matches.source_path_pairs_beyond_tracking_cap
-                    );
-                }
-                println!("COUNT evaluation only; candidate and replay/export evidence unchanged. Cohort labels are analyst declarations, not ground truth.");
-                Ok(())
-            }
-            CandidateCommand::Compatibility {
-                candidate,
-                telemetry,
-            } => {
-                let candidate = load_candidate(&candidate)?;
-                let telemetry = match telemetry {
-                    Some(telemetry) => telemetry.explicit_telemetry_profile()?,
-                    None => candidate.telemetry_profile,
-                };
-                for backend in [
-                    Backend::AwsWafJson,
-                    Backend::TerraformAwsWaf,
-                    Backend::Ossec,
-                ] {
-                    let report = candidate_compatibility(&candidate, backend, telemetry);
-                    println!(
-                        "{}: {:?}\n{}",
-                        report.backend,
-                        report.status,
-                        if report.reasons.is_empty() {
-                            "  faithful export available".to_owned()
-                        } else {
-                            report
-                                .reasons
-                                .iter()
-                                .map(|reason| format!("  - {reason}"))
-                                .collect::<Vec<_>>()
-                                .join("\n")
-                        }
-                    );
-                }
-                Ok(())
-            }
-            CandidateCommand::Explain {
-                candidate,
-                telemetry,
-            } => {
-                let candidate = load_candidate(&candidate)?;
-                if shenron::candidate::uses_source_address_set(&candidate) {
-                    println!("{}", shenron::address_set::ADDRESS_SET_NOTE);
-                }
-                let telemetry = match telemetry {
-                    Some(telemetry) => telemetry.explicit_telemetry_profile()?,
-                    None => candidate.telemetry_profile,
-                };
-                println!("Candidate ID: {}\nCandidate kind: {:?}\nEvidence basis: {:?}\nCVEs: {}\nCISA KEV: {}\nRecommended initial action: COUNT\nReplay completed: {}\nHistorical requests evaluated: {}\nKnown threat findings: {}\nKnown threat findings matched: {}\nKnown threat findings missed: {}\nOther historical matches: {}\nThreat coverage: {:?}\nTelemetry source: {:?}\nConditions:\n{:#?}\n\nBackend compatibility:", candidate.id, candidate.candidate_kind, candidate.evidence_basis, candidate.cves.join(", "), candidate.kev, candidate.evidence.replay_completed, candidate.evidence.historical_requests_evaluated, candidate.evidence.known_threat_findings, candidate.evidence.known_threat_findings_matched, candidate.evidence.known_threat_findings_missed, candidate.evidence.other_historical_matches, candidate.evidence.threat_coverage, candidate.telemetry_profile, candidate.conditions);
-                for backend in [
-                    Backend::AwsWafJson,
-                    Backend::TerraformAwsWaf,
-                    Backend::Ossec,
-                ] {
-                    let report = candidate_compatibility(&candidate, backend, telemetry);
-                    println!("{}: {:?}", report.backend, report.status);
-                    for reason in report.reasons {
-                        println!("  - {reason}");
-                    }
-                }
-                Ok(())
-            }
-            CandidateCommand::Export {
-                candidate,
-                backend,
-                output,
-                telemetry,
-                priority,
-                ossec_rule_id,
-            } => {
-                let candidate = load_candidate(&candidate)?;
-                let telemetry = match telemetry {
-                    Some(telemetry) => telemetry.explicit_telemetry_profile()?,
-                    None => candidate.telemetry_profile,
-                };
-                let report = export_candidate(
-                    &candidate,
-                    backend.backend(),
-                    telemetry,
-                    &output,
-                    priority,
-                    ossec_rule_id,
-                )?;
-                println!("Exported review-only {} artifact: {}\nEvidence sidecar: {}.evidence.json\nRecommended initial action: COUNT\nNo deployment was performed.", report.backend, output.display(), output.file_stem().and_then(|value| value.to_str()).unwrap_or("candidate"));
-                Ok(())
+                None
             }
         },
+        (None, None) => None,
+        (Some(_), Some(_)) => {
+            unreachable!("clap prevents --baseline and --baseline-latest from being combined")
+        }
+    };
+    let mut first_seen_source_ips = BTreeSet::new();
+    let mut temporal_comparison = None;
+    if let Some(baseline) = baseline {
+        let comparison = compare_runs(&baseline, &output)?;
+        write_comparison(&output, &comparison)?;
+        first_seen_source_ips.extend(
+            comparison
+                .private
+                .first_seen_entities
+                .source_ips
+                .iter()
+                .cloned(),
+        );
+        println!(
+            "Baseline comparison written: {}\n  Newly observed CVEs: {}\n  First-seen entities: {}\n  Elevated paths: {}",
+            output.join("comparison-summary.json").display(),
+            comparison.sanitized.cve_diff.newly_observed_cves.len(),
+            first_seen_entity_total(&comparison.sanitized),
+            comparison.sanitized.concentration_delta.elevated_paths,
+        );
+        temporal_comparison = Some(comparison);
     }
+    write_hunt_triage_view(&output, &first_seen_source_ips, show_triage, limit)?;
+    print_daily_review_summary(
+        &report,
+        temporal_comparison
+            .as_ref()
+            .map(|comparison| &comparison.sanitized),
+    );
+    let report_output = html_report
+        .map(|selected_report| selected_report.unwrap_or_else(|| output.join("report.html")));
+    if let Some(report_output) = &report_output {
+        write_html_report(&output, &input, report_output, limit, lang)?;
+    }
+    let slack_metrics = SlackNotificationMetrics::from_hunt(&report.metrics);
+    let slack_comparison = temporal_comparison
+        .as_ref()
+        .map(|comparison| SlackComparisonSummary::from_comparison(&comparison.sanitized));
+    notify_best_effort(
+        &slack_config,
+        &slack_metrics,
+        slack_comparison,
+        &output,
+        report_output.as_deref(),
+    );
+    Ok(())
+}
+
+fn run_explain(args: ExplainArgs) -> Result<()> {
+    let ExplainArgs {
+        disposition_selection,
+        findings,
+        waf_outcome,
+        include_generic,
+        show_request,
+        show_evidence,
+        show_source_ips,
+        show_asn,
+        asn_dataset,
+        reputation_dataset,
+        disposition_store,
+        show_fingerprints,
+        triage_breadth_observations,
+        triage_breadth_templates,
+        triage_depth_observations,
+        triage_window,
+        sequence_window,
+        limit,
+        output,
+        output_format,
+    } = args;
+    let asn_dataset = resolve_optional_local_dataset(asn_dataset, default_asn_dataset);
+    let reputation_dataset =
+        resolve_optional_local_dataset(reputation_dataset, default_reputation_dataset);
+    let asn_database = asn_dataset.as_deref().map(load_asn_database).transpose()?;
+    let reputation_database = reputation_dataset
+        .as_deref()
+        .map(load_reputation_database)
+        .transpose()?;
+    let findings = explain_private_findings(&findings)?;
+    let disposition_store = disposition_selection.load(disposition_store.as_deref())?;
+    // Bound the reachable behavior-score maximum by what the source
+    // profiles can express. Union across recorded sources; legacy
+    // findings without a source fall back to the full-capability
+    // default so they are never penalized.
+    let capabilities = findings
+        .iter()
+        .filter_map(|finding| {
+            finding
+                .log_source
+                .map(|source| source.telemetry_profile().capabilities())
+        })
+        .reduce(TelemetryCapabilities::union)
+        .unwrap_or_default();
+    // The --waf-outcome filter is an explicit analyst selection, so
+    // it bounds everything downstream. The full waf-filtered set is
+    // what triage grouping and scoring see.
+    let grouped: Vec<_> = match waf_outcome {
+        Some(filter) => findings
+            .into_iter()
+            .filter(|finding| filter.matches(finding))
+            .collect(),
+        None => findings,
+    };
+    // The low-confidence generic filter is display-only: it changes
+    // what is listed, never what is grouped or scored. `hidden` is
+    // disclosed; `listed` drives the per-finding rows and the path
+    // summary; `grouped` drives entity grouping and scoring.
+    let hidden: Vec<_> = if include_generic {
+        Vec::new()
+    } else {
+        grouped
+            .iter()
+            .filter(|finding| is_low_confidence_generic_match(finding))
+            .cloned()
+            .collect()
+    };
+    let listed: Vec<_> = if include_generic {
+        grouped.clone()
+    } else {
+        grouped
+            .iter()
+            .filter(|finding| !is_low_confidence_generic_match(finding))
+            .cloned()
+            .collect()
+    };
+    let analyst_dispositions = disposition_store
+        .as_ref()
+        .map(|store| disposition_counts(&grouped, store));
+    let display = ExplainDisplay {
+        show_request: show_request || show_evidence,
+        show_evidence,
+        show_source_ips,
+        show_asn,
+        show_fingerprints,
+    };
+    let triage = TriageContext {
+        policy: TriagePolicy::with_windows(
+            triage_breadth_observations,
+            triage_breadth_templates,
+            triage_depth_observations,
+            triage_window,
+        )
+        .with_sequence_settings(
+            sequence_window.unwrap_or_else(|| Duration::from_secs(DEFAULT_SEQUENCE_WINDOW_SECONDS)),
+            DEFAULT_MAX_SEQUENCE_OBSERVATIONS,
+        ),
+        capabilities,
+    };
+    match output_format {
+        ExplainOutputFormat::Json => {
+            let report = build_explain_report(
+                &listed,
+                &grouped,
+                &hidden,
+                &display,
+                waf_outcome.map(WafOutcomeFilter::label),
+                limit,
+                triage,
+                asn_database.as_ref(),
+                reputation_database.as_ref(),
+                analyst_dispositions.clone(),
+            );
+            let json = serde_json::to_string_pretty(&report)?;
+            match output {
+                Some(path) => {
+                    std::fs::write(&path, json)
+                        .with_context(|| format!("writing explain report {}", path.display()))?;
+                    eprintln!("Explain report (JSON) written to: {}", path.display());
+                }
+                None => println!("{json}"),
+            }
+        }
+        ExplainOutputFormat::Text => {
+            if output.is_some() {
+                anyhow::bail!(
+                    "--output writes a file only for --output-format json; the human-readable text report is written to stdout. Redirect it with `>`, or pass --output-format json to write --output."
+                );
+            }
+            if !hidden.is_empty() {
+                let hidden_cves = hidden
+                    .iter()
+                    .flat_map(|finding| finding.cves.iter())
+                    .collect::<BTreeSet<_>>();
+                println!(
+                    "Hidden {} low-confidence matches (response-unverified on generic paths such as /robots.txt), spanning {} CVEs. Pass --include-generic to show them.",
+                    hidden.len(),
+                    hidden_cves.len()
+                );
+            }
+            print_analyst_dispositions(analyst_dispositions.as_ref());
+            print_explanations(
+                &listed,
+                &grouped,
+                !hidden.is_empty(),
+                display,
+                waf_outcome.map(WafOutcomeFilter::label),
+                limit,
+                triage,
+                asn_database.as_ref(),
+                reputation_database.as_ref(),
+            );
+        }
+    }
+    Ok(())
+}
+
+fn run_concentration(args: ConcentrationArgs) -> Result<()> {
+    let ConcentrationArgs {
+        source_prefixes,
+        tracking_limits,
+        input,
+        format,
+        output,
+        corpus_label,
+        path,
+        path_prefix,
+        source_ip,
+        ipv4_group_prefix,
+        ipv6_group_prefix,
+        asn_dataset,
+        rate_window,
+        response_bucket_min_requests,
+        response_success_share_threshold_percent,
+        from,
+        to,
+        processed_index,
+        reprocess_all,
+        show_paths,
+        show_source_ips,
+        limit,
+    } = args;
+    // clap enforces that at most one focus selector kind is set.
+    // Normalize repeated and comma-delimited source values into one
+    // deterministic set; empty elements do not create a focus.
+    let source_ips = source_ip
+        .into_iter()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .collect::<BTreeSet<_>>();
+    let focus = if let Some(path) = path {
+        Some(FocusSelector::ExactPath(path))
+    } else if let Some(prefix) = path_prefix {
+        Some(FocusSelector::PathPrefix(prefix))
+    } else if source_ips.is_empty() {
+        None
+    } else {
+        Some(FocusSelector::SourceIp(source_ips))
+    };
+    // Address-block grouping applies to a path or path-prefix focus,
+    // which aggregate connection peers; source-IP focuses already
+    // have an analyst-selected peer set.
+    let groups_path_focus = matches!(
+        focus,
+        Some(FocusSelector::ExactPath(_) | FocusSelector::PathPrefix(_))
+    );
+    if !groups_path_focus && (ipv4_group_prefix.is_some() || ipv6_group_prefix.is_some()) {
+        anyhow::bail!(
+            "--ipv4-group-prefix and --ipv6-group-prefix require --path or --path-prefix"
+        );
+    }
+    let default_prefixes = FocusPrefixLengths::default();
+    let focus_prefix_lengths = FocusPrefixLengths {
+        ipv4: ipv4_group_prefix.unwrap_or(default_prefixes.ipv4),
+        ipv6: ipv6_group_prefix.unwrap_or(default_prefixes.ipv6),
+    };
+    let asn_database = asn_dataset.as_deref().map(load_asn_database).transpose()?;
+    let rate_window_seconds = normalized_rate_windows(rate_window);
+    let report = production_daily_concentration(
+        &input,
+        Some(&output),
+        format.telemetry_profile_for_input(&input)?,
+        HuntTimeRange { from, to },
+        focus.clone(),
+        focus_prefix_lengths,
+        asn_database.as_ref(),
+        &rate_window_seconds,
+        show_paths,
+        processed_index.as_deref(),
+        reprocess_all,
+        response_bucket_min_requests,
+        response_success_share_threshold_percent,
+        corpus_label,
+        source_prefixes.tracking_limits(tracking_limits.resolve())?,
+        source_prefixes.resolve(),
+    )?;
+    let private_path = output.join("request-concentration.json");
+    let private =
+        (show_paths || show_source_ips || focus.is_some() || source_prefixes.resolve().is_some())
+            .then(|| load_private_concentration(&private_path))
+            .transpose()?;
+    print_concentration(
+        &report,
+        &output.join("sanitized-research.json"),
+        private.as_ref(),
+        show_paths,
+        show_source_ips,
+        limit,
+        focus.as_ref(),
+    );
+    print_processed_index_scope(processed_index.is_some(), report.files_skipped_as_processed);
+    Ok(())
+}
+
+fn run_context(args: ContextArgs) -> Result<()> {
+    let ContextArgs {
+        input,
+        format,
+        source_ip,
+        from,
+        to,
+        max_records,
+        show_request,
+        show_query,
+        output,
+    } = args;
+    if let Some(path) = &output {
+        shenron::production::ensure_separate_output(&input, path)?;
+    }
+    let result = shenron::investigation::request_context(
+        &input,
+        format.telemetry_profile_for_input(&input)?,
+        &shenron::investigation::ContextOptions {
+            source_ips: source_ip.into_iter().collect(),
+            from,
+            to,
+            maximum_records: max_records,
+            include_query: show_query,
+        },
+    )?;
+    if let Some(path) = output {
+        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            fs::create_dir_all(parent)?;
+        }
+        write_json_pretty(&path, &result)?;
+        shenron::input_discovery::write_discovery_manifest(&path, &result.counts.input_discovery)?;
+        eprintln!("{}", shenron::investigation::SAFETY_NOTE);
+    }
+    print_input_discovery(&result.counts.input_discovery, true);
+    if show_request {
+        eprintln!("{}", shenron::investigation::SAFETY_NOTE);
+        serde_json::to_writer_pretty(io::stdout().lock(), &result)?;
+    } else {
+        serde_json::to_writer_pretty(io::stdout().lock(), &result.counts)?;
+    }
+    println!();
+    eprintln!("{}", result.retention_note);
+    if result.counts.records_beyond_cap > 0 {
+        eprintln!(
+            "{} record(s) beyond the cap were omitted; narrow the window or raise --max-records.",
+            result.counts.records_beyond_cap
+        );
+    }
+    Ok(())
+}
+
+fn run_compare(args: CompareArgs) -> Result<()> {
+    let CompareArgs {
+        reference_run,
+        compare_conditions,
+        comparison_points,
+        baseline,
+        current,
+        output,
+        show_entities,
+        show_paths,
+        show_source_ips,
+        limit,
+    } = args;
+    shenron::production::ensure_separate_output(&baseline, &output)?;
+    shenron::production::ensure_separate_output(&current, &output)?;
+    for reference in &reference_run {
+        shenron::production::ensure_separate_output(reference, &output)?;
+    }
+    let points = comparison_points
+        .map(|path| -> Result<DailyComparisonPoints> {
+            match path {
+                None => Ok(DailyComparisonPoints::default()),
+                Some(path) => serde_json::from_reader(File::open(&path)?)
+                    .with_context(|| format!("reading comparison points {}", path.display())),
+            }
+        })
+        .transpose()?;
+    let mut comparison = compare_runs_with_points(&baseline, &current, points)?;
+    if !reference_run.is_empty() {
+        comparison.sanitized.reference_distribution =
+            Some(shenron::comparison::references::compare_reference_runs(
+                &baseline,
+                &reference_run,
+                &current,
+            )?);
+    }
+    if compare_conditions {
+        comparison.sanitized.measurement_conditions = Some(
+            shenron::comparison::conditions::compare_conditions(&baseline, &current)?,
+        );
+    }
+    write_comparison(&output, &comparison)?;
+    print_temporal_comparison(
+        &comparison.sanitized,
+        &comparison.private,
+        show_entities,
+        show_paths,
+        show_source_ips,
+        limit,
+    );
+    Ok(())
+}
+
+fn run_daily(args: DailyArgs) -> Result<()> {
+    let DailyArgs {
+        source_prefixes,
+        tracking_limits,
+        asn_dataset,
+        input,
+        format,
+        output,
+        corpus_label,
+        output_format,
+        rate_window,
+        response_bucket_min_requests,
+        response_success_share_threshold_percent,
+        from,
+        to,
+        processed_index,
+        reprocess_all,
+    } = args;
+    if asn_dataset.is_some() && source_prefixes.resolve().is_none() {
+        anyhow::bail!(
+            "--asn-dataset requires --source-prefix-bits or --source-prefix-bits-v6 for daily"
+        );
+    }
+    let asn_database = asn_dataset.as_deref().map(load_asn_database).transpose()?;
+    let rate_window_seconds = normalized_rate_windows(rate_window);
+    let telemetry_profile = format.telemetry_profile_for_input(&input)?;
+    let outcome = production_daily_concentration_detailed(
+        &input,
+        output.as_deref(),
+        telemetry_profile,
+        HuntTimeRange { from, to },
+        None,
+        FocusPrefixLengths::default(),
+        asn_database.as_ref(),
+        &rate_window_seconds,
+        false,
+        processed_index.as_deref(),
+        reprocess_all,
+        response_bucket_min_requests,
+        response_success_share_threshold_percent,
+        corpus_label,
+        source_prefixes.tracking_limits(tracking_limits.resolve())?,
+        source_prefixes.resolve(),
+    )?;
+    let mut summary =
+        DailyVolumeSummary::from_report(&outcome.sanitized, processed_index.is_some());
+    summary.source_prefix_path_pairs_beyond_tracking_cap = outcome
+        .prefix_path_pairs_beyond_cap
+        .filter(|count| *count > 0);
+    summary.source_prefix_path_tracking = outcome.prefix_path_tracking;
+    match output_format {
+        DailyOutputFormat::Text => print_daily_volume_summary(&summary, output.as_deref()),
+        DailyOutputFormat::Json => {
+            print_input_discovery(&summary.input_discovery, true);
+            serde_json::to_writer_pretty(io::stdout().lock(), &summary)?;
+            println!();
+        }
+    }
+    Ok(())
+}
+
+fn run_probe_sources(args: ProbeSourcesArgs) -> Result<()> {
+    let ProbeSourcesArgs {
+        input,
+        format,
+        output,
+        from,
+        to,
+        trusted_proxy,
+        show_source_ips,
+        show_paths,
+        limit,
+        output_format,
+        options,
+    } = args;
+    let report = shenron::probe_sources::run(
+        &input,
+        format.telemetry_profile_for_input(&input)?,
+        &HuntTimeRange { from, to },
+        &TrustedProxySet::new(trusted_proxy),
+        &options,
+        output.as_deref(),
+    )?;
+    let json = matches!(output_format, DailyOutputFormat::Json);
+    if json {
+        print_input_discovery(&report.summary.input_discovery, true);
+        let view = shenron::probe_sources::display(&report, show_source_ips, show_paths, limit);
+        serde_json::to_writer_pretty(io::stdout().lock(), &view)?;
+        println!();
+    } else {
+        shenron::probe_sources::write_text(
+            io::stdout().lock(),
+            &report,
+            show_source_ips,
+            show_paths,
+            limit,
+        )?;
+    }
+    Ok(())
+}
+
+fn run_identifier_access(args: IdentifierAccessArgs) -> Result<()> {
+    let IdentifierAccessArgs {
+        input,
+        format,
+        output,
+        from,
+        to,
+        corpus_label,
+        trusted_proxy,
+        show_paths,
+        show_source_ips,
+        limit,
+        options,
+    } = args;
+    let report = shenron::identifier_access::run(
+        &input,
+        format.telemetry_profile_for_input(&input)?,
+        &HuntTimeRange { from, to },
+        &options,
+        &output,
+        corpus_label.as_deref(),
+        &TrustedProxySet::new(trusted_proxy),
+    )?;
+    shenron::identifier_access::write_text(
+        io::stdout().lock(),
+        &report,
+        show_paths,
+        show_source_ips,
+        limit,
+    )
+}
+
+fn run_replay(args: ReplayArgs) -> Result<()> {
+    let ReplayArgs {
+        input,
+        format,
+        nuclei_templates,
+        nuclei_report,
+        template_filter,
+        kev_report,
+        findings,
+        output,
+        from,
+        to,
+    } = args;
+    let (nuclei_templates, nuclei_report) = resolve_nuclei_inputs(nuclei_templates, nuclei_report)?;
+    let kev_report = resolve_optional_local_dataset(kev_report, default_kev_report);
+    if let Some(path) = output.as_deref() {
+        shenron::production::ensure_separate_output(&input, path)?;
+    }
+    let report = production_historical_replay(
+        &input,
+        &nuclei_templates,
+        &nuclei_report,
+        kev_report.as_deref(),
+        &findings,
+        format.telemetry_profile_for_input(&input)?,
+        HuntTimeRange { from, to },
+        &template_filter.into_options(),
+    )?;
+    if let Some(path) = output.as_deref() {
+        write_json_pretty(path, &report)?;
+        shenron::input_discovery::write_discovery_manifest(path, &report.input_discovery)?;
+    }
+    print_historical_replay(&report, output.as_deref());
+    Ok(())
+}
+
+fn run_count_hypotheses(args: CountHypothesesArgs) -> Result<()> {
+    let CountHypothesesArgs {
+        input,
+        format,
+        nuclei_templates,
+        nuclei_report,
+        template_filter,
+        kev_report,
+        findings,
+        output,
+        from,
+        to,
+        limit,
+    } = args;
+    let (nuclei_templates, nuclei_report) = resolve_nuclei_inputs(nuclei_templates, nuclei_report)?;
+    let kev_report = resolve_optional_local_dataset(kev_report, default_kev_report);
+    if let Some(path) = output.as_deref() {
+        shenron::production::ensure_separate_output(&input, path)?;
+    }
+    let report = production_count_hypotheses(
+        &input,
+        &nuclei_templates,
+        &nuclei_report,
+        kev_report.as_deref(),
+        &findings,
+        format.telemetry_profile_for_input(&input)?,
+        HuntTimeRange { from, to },
+        &template_filter.into_options(),
+    )?;
+    if let Some(path) = output.as_deref() {
+        write_json_pretty(path, &report)?;
+        shenron::input_discovery::write_discovery_manifest(path, &report.input_discovery)?;
+    }
+    print_count_hypotheses(&report, output.as_deref(), limit);
+    Ok(())
+}
+
+fn run_ablation(args: AblationArgs) -> Result<()> {
+    let AblationArgs {
+        input,
+        format,
+        nuclei_templates,
+        nuclei_report,
+        template_filter,
+        kev_report,
+        output,
+        from,
+        to,
+    } = args;
+    let (nuclei_templates, nuclei_report) = resolve_nuclei_inputs(nuclei_templates, nuclei_report)?;
+    let kev_report = resolve_optional_local_dataset(kev_report, default_kev_report);
+    let report = production_ablation(
+        &input,
+        &nuclei_templates,
+        &nuclei_report,
+        kev_report.as_deref(),
+        format.telemetry_profile_for_input(&input)?,
+        HuntTimeRange { from, to },
+        &template_filter.into_options(),
+    )?;
+    if let Some(path) = output.as_deref() {
+        write_json_pretty(path, &report)?;
+        shenron::input_discovery::write_discovery_manifest(path, &report.input_discovery)?;
+    }
+    print_ablation(&report, output.as_deref());
+    Ok(())
+}
+
+fn run_observation_store(command: ObservationStoreCommand) -> Result<()> {
+    let stdout = io::stdout();
+    let mut stdout = stdout.lock();
+    match command {
+        ObservationStoreCommand::Read { store, limit } => serde_json::to_writer_pretty(
+            &mut stdout,
+            &shenron::observation_store::read_observation_store(&store, limit)?,
+        )?,
+        ObservationStoreCommand::Compact { store, output } => serde_json::to_writer_pretty(
+            &mut stdout,
+            &shenron::observation_store::compact_observation_store(&store, &output)?,
+        )?,
+    }
+    io::Write::write_all(&mut stdout, b"\n")?;
+    Ok(())
+}
+
+fn run_disposition(command: DispositionCommand) -> Result<()> {
+    match command {
+        DispositionCommand::Read { store, selection } => {
+            let store = selection.load(Some(&store))?.expect("explicit store");
+            eprintln!("{DISPOSITION_SAFETY_NOTE}");
+            serde_json::to_writer_pretty(io::stdout().lock(), &store.selected_entries())?;
+            println!();
+            Ok(())
+        }
+        DispositionCommand::Set {
+            store,
+            source,
+            template_id,
+            method,
+            path,
+            query,
+            disposition,
+            comment,
+            corpus_scope,
+            reviewer,
+            evidence_run,
+            nuclei_revision,
+            review_after,
+        } => {
+            let mut key =
+                DispositionKey::new(&source, &template_id, &method, &path, query.as_deref());
+            key.corpus_scope = corpus_scope;
+            let review = (reviewer.is_some()
+                || evidence_run.is_some()
+                || nuclei_revision.is_some()
+                || review_after.is_some())
+            .then_some(DispositionReview {
+                reviewer,
+                evidence_run,
+                nuclei_revision,
+                review_after,
+            });
+            let result =
+                record_disposition_with_review(&store, key, disposition.into(), comment, review)?;
+            println!(
+                "Private analyst disposition store: {}\n  Already recorded: {}\n  Effective pattern dispositions: {}",
+                store.display(),
+                result.already_recorded,
+                result.effective_entries,
+            );
+            println!("{DISPOSITION_SAFETY_NOTE}");
+            Ok(())
+        }
+    }
+}
+
+fn run_candidate(command: CandidateCommand) -> Result<()> {
+    match command {
+        CandidateCommand::Build {
+            from_findings,
+            source_address_set,
+            source_ip_set_v4_arn,
+            source_ip_set_v6_arn,
+            output,
+            telemetry,
+            include_response_unverified,
+            include_sigma_ttp,
+            rules,
+        } => {
+            let findings = explain_private_findings(&from_findings)?;
+            let sigma_rules = if include_sigma_ttp {
+                let rules = rules
+                    .as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("--include-sigma-ttp requires --rules <DIR>"))?;
+                let ruleset = load_rules(rules);
+                if ruleset.supported.is_empty() {
+                    anyhow::bail!(
+                        "no supported Sigma rules were found under {}",
+                        rules.display()
+                    );
+                }
+                Some(ruleset)
+            } else {
+                None
+            };
+            let (mut candidates, stats) = build_batch_from_findings_with_sigma(
+                &findings,
+                telemetry.explicit_telemetry_profile()?,
+                include_response_unverified,
+                sigma_rules
+                    .as_ref()
+                    .map(|ruleset| ruleset.supported.as_slice()),
+            );
+            if candidates.is_empty() {
+                anyhow::bail!(
+                    "no candidate patterns could be built from the supplied findings; response-unverified and Sigma findings are excluded by default, and Sigma rules must be faithfully translatable"
+                );
+            }
+            if let Some(path) = source_address_set {
+                shenron::production::ensure_separate_output(&path, &output)?;
+                let set = shenron::address_set::FrozenAddressSet::load(
+                    &path,
+                    source_ip_set_v4_arn,
+                    source_ip_set_v6_arn,
+                )?;
+                println!("Frozen source-address set: {} retained networks; {} invalid records excluded; {} duplicate records; {} comment/empty records skipped.\n{}", set.networks.len(), set.invalid_records, set.duplicate_records, set.comment_or_empty_records, shenron::address_set::ADDRESS_SET_NOTE);
+                for candidate in &mut candidates {
+                    shenron::candidate::with_source_address_set(candidate, set.clone());
+                }
+            }
+            save_batch(&candidates, &output)?;
+            println!("Candidates written: {}\nSigma TTP candidates (separate evidence class): {}\nOutput directory: {}\nSigma findings excluded without explicit opt-in: {}\nSigma findings skipped because the source rule was missing or not faithfully translatable: {}\nAWS WAF BLOCK findings excluded: {}\nResponse-unverified findings excluded: {}\nFindings skipped for missing method/path: {}\nRecommended initial action: COUNT\nHistorical replay: required before preventive export.\nSigma TTP candidates represent literal rule matches, not CVE evidence or a determination of attack, exploitation, or compromise.", stats.candidates, stats.sigma_candidates, output.display(), stats.excluded_sigma_findings, stats.skipped_sigma_findings_untranslatable, stats.excluded_blocked_findings, stats.excluded_response_unverified_findings, stats.skipped_incomplete_findings);
+            Ok(())
+        }
+        CandidateCommand::Replay {
+            candidate,
+            input,
+            format,
+            output,
+        } => {
+            let candidate = replay_candidate(
+                load_candidate(&candidate)?,
+                &input,
+                format.telemetry_profile_for_input(&input)?,
+                &output,
+            )?;
+            save_candidate(&candidate, &output)?;
+            let discovery =
+                InputDiscoverySummary::from_skipped(candidate.evidence.skipped_input_files.clone());
+            print_input_discovery(&discovery, false);
+            shenron::input_discovery::write_discovery_manifest(&output, &discovery)?;
+            if candidate.evidence.source_address_unavailable > 0
+                || candidate.evidence.source_address_invalid > 0
+            {
+                println!("Source-address evaluation excluded: {} missing peer addresses; {} invalid peer addresses. These observations cannot establish membership.", candidate.evidence.source_address_unavailable, candidate.evidence.source_address_invalid);
+            }
+            println!("Historical replay complete. Candidate written: {}\nRequests evaluated: {}\nOther historical matches: {}\nPreventive export remains COUNT-only.", output.display(), candidate.evidence.historical_requests_evaluated, candidate.evidence.other_historical_matches);
+            Ok(())
+        }
+        CandidateCommand::Evaluate {
+            candidate,
+            plan,
+            output,
+            limit,
+        } => {
+            for input in [&candidate, &plan] {
+                shenron::production::ensure_separate_output(input, &output)?;
+            }
+            let inputs: shenron::candidate::evaluation::EvaluationPlan =
+                serde_json::from_reader(File::open(&plan)?)?;
+            for corpus in inputs.corpora {
+                let input = if corpus.input.is_absolute() {
+                    corpus.input
+                } else {
+                    plan.parent().unwrap_or(Path::new(".")).join(corpus.input)
+                };
+                shenron::production::ensure_separate_output(&input, &output)?;
+            }
+            let result = shenron::candidate::evaluation::evaluate(&candidate, &plan, limit)?;
+            if let Some(parent) = output.parent().filter(|p| !p.as_os_str().is_empty()) {
+                fs::create_dir_all(parent)?;
+            }
+            write_json_pretty_new(&output, &result)?;
+            eprintln!("{}", result.safety_note);
+            let discovery = InputDiscoverySummary::from_skipped(
+                result
+                    .corpora
+                    .iter()
+                    .flat_map(|row| row.skipped_input_files.clone())
+                    .collect(),
+            );
+            print_input_discovery(&discovery, false);
+            shenron::input_discovery::write_discovery_manifest(&output, &discovery)?;
+            for (index, row) in result.corpora.iter().enumerate() {
+                println!("Cohort {}: parsed {} / malformed {} / matched {} / match share {} (source missing/invalid exclusions: {}/{}; absent condition fields: {}; overlapping whole files: {}; displayed path/peer omissions: {}/{})", index + 1, row.parseable_records, row.parse_errors, row.matching_records, row.match_share.map(|v| format!("{:.2}%", v*100.0)).unwrap_or_else(|| "unavailable".into()), row.source_address_unavailable, row.source_address_invalid, row.records_with_absent_condition_fields, row.files_with_identical_bytes_in_another_cohort, row.retained_paths_omitted_from_display, row.retained_peers_omitted_from_display);
+                println!(
+                    "  Tracking-cap omissions (paths / sources / pairs): {} / {} / {}",
+                    row.matches.paths_beyond_tracking_cap,
+                    row.matches.source_ips_beyond_tracking_cap,
+                    row.matches.source_path_pairs_beyond_tracking_cap
+                );
+            }
+            println!("COUNT evaluation only; candidate and replay/export evidence unchanged. Cohort labels are analyst declarations, not ground truth.");
+            Ok(())
+        }
+        CandidateCommand::Compatibility {
+            candidate,
+            telemetry,
+        } => {
+            let candidate = load_candidate(&candidate)?;
+            let telemetry = match telemetry {
+                Some(telemetry) => telemetry.explicit_telemetry_profile()?,
+                None => candidate.telemetry_profile,
+            };
+            for backend in [
+                Backend::AwsWafJson,
+                Backend::TerraformAwsWaf,
+                Backend::Ossec,
+            ] {
+                let report = candidate_compatibility(&candidate, backend, telemetry);
+                println!(
+                    "{}: {:?}\n{}",
+                    report.backend,
+                    report.status,
+                    if report.reasons.is_empty() {
+                        "  faithful export available".to_owned()
+                    } else {
+                        report
+                            .reasons
+                            .iter()
+                            .map(|reason| format!("  - {reason}"))
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    }
+                );
+            }
+            Ok(())
+        }
+        CandidateCommand::Explain {
+            candidate,
+            telemetry,
+        } => {
+            let candidate = load_candidate(&candidate)?;
+            if shenron::candidate::uses_source_address_set(&candidate) {
+                println!("{}", shenron::address_set::ADDRESS_SET_NOTE);
+            }
+            let telemetry = match telemetry {
+                Some(telemetry) => telemetry.explicit_telemetry_profile()?,
+                None => candidate.telemetry_profile,
+            };
+            println!("Candidate ID: {}\nCandidate kind: {:?}\nEvidence basis: {:?}\nCVEs: {}\nCISA KEV: {}\nRecommended initial action: COUNT\nReplay completed: {}\nHistorical requests evaluated: {}\nKnown threat findings: {}\nKnown threat findings matched: {}\nKnown threat findings missed: {}\nOther historical matches: {}\nThreat coverage: {:?}\nTelemetry source: {:?}\nConditions:\n{:#?}\n\nBackend compatibility:", candidate.id, candidate.candidate_kind, candidate.evidence_basis, candidate.cves.join(", "), candidate.kev, candidate.evidence.replay_completed, candidate.evidence.historical_requests_evaluated, candidate.evidence.known_threat_findings, candidate.evidence.known_threat_findings_matched, candidate.evidence.known_threat_findings_missed, candidate.evidence.other_historical_matches, candidate.evidence.threat_coverage, candidate.telemetry_profile, candidate.conditions);
+            for backend in [
+                Backend::AwsWafJson,
+                Backend::TerraformAwsWaf,
+                Backend::Ossec,
+            ] {
+                let report = candidate_compatibility(&candidate, backend, telemetry);
+                println!("{}: {:?}", report.backend, report.status);
+                for reason in report.reasons {
+                    println!("  - {reason}");
+                }
+            }
+            Ok(())
+        }
+        CandidateCommand::Export {
+            candidate,
+            backend,
+            output,
+            telemetry,
+            priority,
+            ossec_rule_id,
+        } => {
+            let candidate = load_candidate(&candidate)?;
+            let telemetry = match telemetry {
+                Some(telemetry) => telemetry.explicit_telemetry_profile()?,
+                None => candidate.telemetry_profile,
+            };
+            let report = export_candidate(
+                &candidate,
+                backend.backend(),
+                telemetry,
+                &output,
+                priority,
+                ossec_rule_id,
+            )?;
+            println!("Exported review-only {} artifact: {}\nEvidence sidecar: {}.evidence.json\nRecommended initial action: COUNT\nNo deployment was performed.", report.backend, output.display(), output.file_stem().and_then(|value| value.to_str()).unwrap_or("candidate"));
+            Ok(())
+        }
+    }
+}
+
+fn run_export(
+    results_dir: PathBuf,
+    format: CtiExportFormat,
+    output: PathBuf,
+    include_observables: bool,
+    tlp: Option<TlpLevel>,
+) -> Result<()> {
+    export_cti_run(&results_dir, &output, format, include_observables, tlp)?;
+    if include_observables {
+        eprintln!(
+            "PRIVATE export: observed connection-peer IPs and URI paths were included by explicit request. This is not attacker attribution or an attack/exploitation/compromise determination."
+        );
+    }
+    println!(
+        "Local {:?} export written: {}\nNo network transmission was performed.",
+        format,
+        output.display()
+    );
+    Ok(())
+}
+
+fn run_trend(
+    results_dir: Vec<PathBuf>,
+    path: String,
+    output_format: TrendOutputFormat,
+) -> Result<()> {
+    let report = path_trend(&results_dir, &path)?;
+    match output_format {
+        TrendOutputFormat::Text => print_path_trend(&report),
+        TrendOutputFormat::Json => {
+            serde_json::to_writer_pretty(io::stdout().lock(), &report)?;
+            println!();
+        }
+    }
+    Ok(())
 }
 
 fn is_low_confidence_generic_match(finding: &shenron::production::FindingExplanation) -> bool {

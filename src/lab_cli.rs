@@ -45,6 +45,7 @@ const CISA_KEV_URL: &str =
 #[derive(Debug, Subcommand)]
 #[allow(clippy::large_enum_variant)]
 pub enum LabCommand {
+    /// Generate a deterministic synthetic corpus with separate ground truth. Writes local files only.
     Generate {
         #[arg(long, value_enum, default_value_t = ProfileArg::Deterministic)]
         profile: ProfileArg,
@@ -73,6 +74,7 @@ pub enum LabCommand {
         #[arg(long, value_enum, default_value_t = TelemetryFormatArg::AwsWaf)]
         format: TelemetryFormatArg,
     },
+    /// Score findings or a synthetic corpus against ground truth; exits non-zero unless PASS.
     Validate {
         #[arg(long)]
         findings: Option<PathBuf>,
@@ -87,14 +89,17 @@ pub enum LabCommand {
         #[arg(long)]
         report: Option<PathBuf>,
     },
+    /// Measure local AWS WAF JSON parse throughput for one corpus file. Nothing is written.
     Measure {
         #[arg(long)]
         corpus: PathBuf,
     },
+    /// Update, inventory, and statically analyze public Nuclei templates. Templates are never executed.
     Nuclei {
         #[command(subcommand)]
         command: NucleiCommand,
     },
+    /// Join a local CISA KEV snapshot with Nuclei coverage offline.
     Kev {
         #[command(subcommand)]
         command: KevCommand,
@@ -206,7 +211,7 @@ pub enum NucleiCommand {
         #[arg(long)]
         report: Option<PathBuf>,
     },
-    /// Statistically inventory untrusted local Nuclei YAML. Nothing is executed.
+    /// Statically inventory untrusted local Nuclei YAML. Nothing is executed.
     Inventory {
         #[arg(long)]
         templates: PathBuf,
