@@ -65,6 +65,7 @@ ALB と、先頭が `#Version: 1.0`・`#Fields:` の2行で始まる CloudFront 
 
 ## できること
 
+- `stack`：CTI に依存せず、フィールドの値ごとの要求数・送信元数と度数分布を計数し、まれな値と多い値を上限付きで列挙します。プロファイルに無いフィールドはゼロとせず利用不可として開示します。完全な値は private に保持し、sanitized と既定表示にはメソッド・ステータスも含めて値を出しません。まれさはそのコーパス内の頻度であり、悪性・攻撃・自動化の判定ではありません。詳細は [Field frequency observations](docs/stack.md) を参照してください。
 - `rare-success`：少数の送信元だけに成功ステータスが観測されたパスと、探索の形の後に成功ステータスが観測された前後関係を、1回のオフライン読み込みで集計します。ID テンプレートと探索条件は既存処理を共有します。成功は設定したステータスクラスだけを意味し、アプリケーションの結果や因果関係の判定ではありません。管理画面や正規の連携も同じ形になります。既定の表示と sanitized 成果物は集計だけで、パスと送信元はそれぞれ明示指定時だけ表示します。詳細は [Rare response-status patterns](docs/rare-success.md) を参照してください。
 - `ioc`：運用者が渡した TSV／限定した STIX 2.1 指標をローカルの履歴ログへ遡及照合します。IP／CIDR は索引で照合し、観測 peer と検証済み client の一致を別集計、有効期間外の一致も残します。既定の標準出力と `sanitized-ioc.json` は件数だけで、値・ラベル・指標ファイルの情報・上限付き証跡は private に分離し、外部送信しません。一致は攻撃・侵害・意図・帰属・同一運営主体の判定ではなく、CDN・NAT・共有クラウドの IP は無関係な利用者とも一致し得ます。詳細は [IOC observations](docs/ioc.md) を参照してください。
 
@@ -112,6 +113,7 @@ Shenron は**単一バイナリ**です。準備系コマンドだけが公開�
 | `hunt` | 唯一の検知入口。Nuclei(CVE)＋Sigma を1パスで照合し、入力フィールド可用性・parse 品質・時刻カバレッジも集計表示。`--output <DIR>` で private/sanitized の全成果物、`--output` 無しなら findings を stdout のみ。`--no-nuclei` は setup 不要の Sigma のみ。`--since` / `--baseline-latest` / `--report` / `--observation-store` で運用を形作る |
 | `explain` | run の private findings を 接続元/クライアント IP・ASN・JA4 単位でトリアージ（挙動優先度スコア・リクエスト列・時間窓レート） |
 | `concentration` | CTI なしのリクエスト量分布。`--path` / `--path-prefix` / `--source-ip` でフォーカス |
+| `stack` | フィールドの値ごとの頻度と送信元数を計数。まれな値・多い値は明示表示のみで、sanitized には値を含めません |
 | `rare-success` | 少数の送信元に成功ステータスが観測されたパスと、先行する探索の形を上限付きで計数。既定は集計のみで、因果関係やセキュリティ上の結論は導きません |
 | `request-anomalies` | エンコードの形とリクエスト行の種類を上限付きで計測。専用の Combined 救済は他コマンドへ影響せず、攻撃・悪用・侵害を断定しません |
 | `ioc` | 運用者のローカル指標を履歴ログへ照合し、上限付き private 証跡と集計だけの sanitized 出力を作成。侵害・帰属の判定ではありません |
@@ -279,6 +281,7 @@ JA4 のように、選択した telemetry/backend では忠実に表現できな
 - [Analyst dispositions](docs/analyst-dispositions.md)
 - [Request spelling observations](docs/request-anomalies.md)
 - [Rare response-status patterns](docs/rare-success.md)
+- [Field frequency observations](docs/stack.md)
 - [Probe-source request shapes](docs/probe-sources.md)
 - [Identifier-access observations](docs/identifier-access.md)
 - [Response-size observations](docs/response-sizes.md)

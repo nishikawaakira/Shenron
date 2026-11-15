@@ -37,6 +37,7 @@ pub mod response_sizes;
 pub mod sigma;
 pub mod sigma_pack;
 pub mod slack;
+pub mod stack;
 pub mod trend;
 pub mod triage;
 pub mod triage_view;

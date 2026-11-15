@@ -47,6 +47,13 @@ Four design pillars: (1) static conversion — templates are never executed; (2)
 
 ## Capabilities
 
+`stack` counts observed field-value frequencies without CTI, including bounded
+rare/top lists, source counts and frequency histograms. Unsupported telemetry
+is unavailable rather than zero. Full values stay private; sanitized/default
+output contains no values, including method/status values. Rarity is a corpus
+observation, not maliciousness, attack or automation. See
+[field frequency observations](docs/stack.md).
+
 `rare-success` counts paths with few successful response sources, sharing
 identifier templates and the existing probe-shape classifier in one offline
 pass. Success means a configured status class; prior probe-shaped activity is
@@ -152,6 +159,7 @@ post-hunt Slack notification).
 | `hunt` | The single detection entry point — Nuclei CVE + Sigma in one pass, with aggregate input-field availability, parse quality, and timestamp coverage. `--output <DIR>` writes the full private/sanitized artifacts; without `--output`, findings stream to stdout only. `--no-nuclei` runs Sigma-only with no setup; `--since`, `--baseline-latest`, `--report`, `--observation-store` shape a run |
 | `explain` | Triage a run's private findings by connection/client IP, ASN, or JA4 with behavior-priority scores, request sequences, and windowed rates |
 | `concentration` | Request-volume distribution without CTI; `--path` / `--path-prefix` / `--source-ip` focus |
+| `stack` | [Stack field-value frequencies](docs/stack.md) with bounded private rare/top lists, canonical source counts and value-free sanitized/default output |
 | `rare-success` | [Count paths with few successful sources](docs/rare-success.md) and dated prior probe-shaped observations; bounded private evidence and aggregate-only default output |
 | `request-anomalies` | [Count encoding shapes and request-line forms](docs/request-anomalies.md), including command-local Combined recovery; aggregate-only by default, without inferring exploitation |
 | `ioc` | [Match operator-provided local indicators](docs/ioc.md) against historical logs with bounded private evidence and counts-only sanitized output; no compromise or attribution determination |
