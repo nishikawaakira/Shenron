@@ -269,6 +269,7 @@ mod tests {
             path: "/private/corpus.log".into(),
             byte_length: Some(42),
             sha256: None,
+            input_parsing: None,
         };
         assert_eq!(
             input_fingerprint(&file).unwrap_err().to_string(),

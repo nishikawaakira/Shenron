@@ -46,6 +46,11 @@ Shenron は、Web アクセスログを対象にした Rust 製の「受動的�
 
 ## 対応する入力
 
+- ALB アクセスログ（`--format alb`）：リクエスト URL 由来のホスト、接続元とポート、応答、TLS、trace ID を共通形式に正規化します。処理時間の合成や WAF action の推定はしません。
+- CloudFront 標準ログのレガシー TSV（`--format cloudfront`）：列順はファイルごとの `#Fields:` から取得し、ヘッダーなしの場合は既定順の使用を private manifest に記録します。UA／Referer は1回だけデコードし、Cookie は raw を含めて保持しません。検証済み client IP は `--trusted-proxy` の明示設定時だけ利用します。JSON／Parquet などの新形式は対象外です。
+
+ALB と、先頭が `#Version: 1.0`・`#Fields:` の2行で始まる CloudFront は `--format auto` でも判別します。ヘッダーなしの CloudFront は明示指定が必要です。詳細は [Production hunting](docs/production-hunting.md#alb-and-legacy-cloudfront-inputs) を参照してください。
+
 - AWS WAF のログ（JSONL、`.gz` も可）
 - nginx の Combined ログ
 - nginx の本文付き拡張ログ（`--format nginx-postdata` を明示指定。Combined の後に Content-Type・TLS protocol・cipher・request duration・`postdata[<body>]` が必要で、`--format auto` の検出対象外）。`response-sizes` の本文依存の解析にはこの形式を使います。既存の解析コマンドでは標準 Combined も引き続き利用できます。詳細は [Response-size observations](docs/response-sizes.md) を参照してください。
@@ -65,6 +70,7 @@ Shenron は、Web アクセスログを対象にした Rust 製の「受動的�
 - 小さく明示的な Sigma サブセットによるログ照合
 - Nuclei の CVE テンプレートの静的解析と、検知可能性（detectability）の評価
 - `hunt`：検証済み Nuclei 検出条件を過去ログに照合し、全件のフィールド可用性・解析品質・時刻カバレッジも生値なしの集計として表示（FIND）
+- `request-anomalies`：エンコードの形と標準でないリクエスト行を、最大2回のバイトデコードで計測します。Combined の救済はこのコマンドだけで行い、`hunt` などの parser・結果は変えません。既定の標準出力と `sanitized-request-anomalies.json` は集計のみで、例は `--show-examples`、送信元は `--show-source-ips` で明示表示します。文字列の形や 2xx は、攻撃・悪用の成立・侵害の判定ではありません。詳細は [Request spelling observations](docs/request-anomalies.md) を参照してください。
 - `probe-sources`：Nuclei・Sigma の finding に依存せず、接続元ごとのパスの幅、オフラインのパスカタログとの一致、応答ステータス、選択したコーパス内で 2xx が観測されなかったパスの割合を上限付きで計数します。設定可能な確認条件とその充足状況を示し、`probe-shaped` は人が確認する優先度のための観測ラベルです。攻撃・侵害・悪意・攻撃者特定の判定でも、遮断の推奨でもありません。CDN・LB・NAT・プロキシ、正規の監視・診断・クローラーも同じ形になり得ます。既定の標準出力と `sanitized-research.json` は集計だけで、個別の接続元は `--show-source-ips`、例示パスは追加の `--show-paths` で表示します。User-Agent 値は private 成果物だけに保存します。詳細は [Probe-source request shapes](docs/probe-sources.md) を参照してください。
 - `identifier-access`：送信元・メソッド・ホスト・テンプレート・ID 位置ごとに、数値／UUID の ID だけが異なるリクエストを上限付きで集計し、ID の種類数、ステータス／サイズの観測、同じ peer の別エントリからの先行書き込みを記録します。`--method GET --method HEAD` などでメソッドを明示的に絞れます。`content`／`rejected` はステータスとサイズに基づく観測であり、攻撃・認可の欠陥・情報開示の判定ではありません。標準出力は集計と測定値の表で、送信元は `--show-source-ips`、テンプレート等は `--show-paths` で表示します。ID 値を含む `identifier-access.json` と、集計だけの `sanitized-identifier-access.json` を分離します。詳細は [Identifier-access observations](docs/identifier-access.md) を参照してください。
 - `response-sizes` / `production response-sizes`：`--format nginx-postdata` の本文付きログで、送信バイト数の差を補正した応答サイズから、対応する対照と読み出しの長さ候補を比較します。1文字ずつの読み出しは試した文字位置として別集計し、長さとは扱いません。`fit_rate` は HEX で包んだ読み出しの偶奇だけを検査します。ゼロは空文字列と NULL を区別せず、負の候補値も NULL と断定しません。内容の復元や情報開示の判定は行いません。既定の標準出力と `sanitized-response-sizes.json` は集計だけで、送信元は `--show-source-ips`、式は `--show-expressions` で明示表示します。式・ホスト・証跡は private の `response-sizes.json` に保存します。詳細は [Response-size observations](docs/response-sizes.md) を参照してください。
@@ -105,6 +111,7 @@ Shenron は**単一バイナリ**です。準備系コマンドだけが公開�
 | `hunt` | 唯一の検知入口。Nuclei(CVE)＋Sigma を1パスで照合し、入力フィールド可用性・parse 品質・時刻カバレッジも集計表示。`--output <DIR>` で private/sanitized の全成果物、`--output` 無しなら findings を stdout のみ。`--no-nuclei` は setup 不要の Sigma のみ。`--since` / `--baseline-latest` / `--report` / `--observation-store` で運用を形作る |
 | `explain` | run の private findings を 接続元/クライアント IP・ASN・JA4 単位でトリアージ（挙動優先度スコア・リクエスト列・時間窓レート） |
 | `concentration` | CTI なしのリクエスト量分布。`--path` / `--path-prefix` / `--source-ip` でフォーカス |
+| `request-anomalies` | エンコードの形とリクエスト行の種類を上限付きで計測。専用の Combined 救済は他コマンドへ影響せず、攻撃・悪用・侵害を断定しません |
 | `ioc` | 運用者のローカル指標を履歴ログへ照合し、上限付き private 証跡と集計だけの sanitized 出力を作成。侵害・帰属の判定ではありません |
 | `probe-sources` | オフラインのパスカタログと上限付きの接続元別リクエスト形状を観測し、人手確認の条件・根拠を表示。攻撃の判定や遮断の推奨ではありません |
 | `identifier-access` | 送信元ごとの ID 変化、ステータス／サイズ、先行書き込みの参照を上限付きで計数。認可の欠陥・情報開示の判定ではありません |
@@ -189,7 +196,7 @@ Shenron はディレクトリツリーと gzip ローテーションを読み、
 ソート可能なディレクトリ名から直近の有効 run を選びます。窓自体の厳密な再現が必要な場合は
 `--from/--to` を明示してください。
 
-ログ入力コマンドの既定は `--format auto` です。AWS WAF JSON と vhost 前置き Apache Combined は自動識別します。標準 nginx Combined と標準 Apache Combined は構造が同一で安全に区別できないため、その場合だけ `--format nginx` または `--format apache` を指定してください。`--format apache` は標準行と vhost 前置き行の両方を受け付け、`--format apache-vhost` は vhost 前置きを厳格に要求します。
+ログ入力コマンドの既定は `--format auto` です。AWS WAF JSON、ALB、ヘッダー付きレガシー CloudFront と vhost 前置き Apache Combined は自動識別します。標準 nginx Combined と標準 Apache Combined は構造が同一で安全に区別できないため、その場合だけ `--format nginx` または `--format apache` を指定してください。`--format apache` は標準行と vhost 前置き行の両方を受け付け、`--format apache-vhost` は vhost 前置きを厳格に要求します。
 
 `setup` は `SHENRON_DATA_DIR` があればその配下、なければ `$XDG_DATA_HOME/shenron`、さらに無ければ `~/.local/share/shenron` に `nuclei-templates/`、凍結済みの `nuclei-report.json`、CISA KEV の `known_exploited_vulnerabilities.json`、凍結結合結果の `kev-report.json`、provenance を持つ `kev-manifest.json`、任意の `reputation.jsonl`、`asn-ranges.tsv`、`bot-ranges.json` を保存します。`hunt`、`ablation`、`replay`、`count-hypotheses` は既定でこの場所を参照します。`hunt --output <DIR>` は従来どおり full run artifacts をそのディレクトリへ保存します。`--output` を省略すると run ディレクトリやファイルは作らず、private findings だけを標準出力へ出します（`--output-format jsonl|csv`）。`--report`、`--baseline`、`--baseline-latest`、`--observation-store` は `--output` が必須です。従来どおり `--nuclei-templates`、`--nuclei-report`、`--kev-report` で明示指定もできます。`--kev-report` 省略時は準備済みの既定レポートがあれば参照し、無ければ空集合として扱います。`setup --skip-kev` で KEV 準備だけを省略できます。
 
@@ -268,6 +275,7 @@ JA4 のように、選択した telemetry/backend では忠実に表現できな
 - [Threat-hunting workflow](docs/threat-hunting-workflow.md)
 - [Daily-hunting runbook](docs/daily-hunting-runbook.md)
 - [Analyst dispositions](docs/analyst-dispositions.md)
+- [Request spelling observations](docs/request-anomalies.md)
 - [Probe-source request shapes](docs/probe-sources.md)
 - [Identifier-access observations](docs/identifier-access.md)
 - [Response-size observations](docs/response-sizes.md)

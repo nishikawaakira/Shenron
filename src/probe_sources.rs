@@ -746,6 +746,9 @@ pub fn run(
             },
         )?);
     }
+    for input in &corpus {
+        analysis.summary.input_discovery.record_parsing(input);
+    }
     let report = analysis.finish(options);
     if let Some(output) = output {
         fs::create_dir_all(output)?;

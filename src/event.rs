@@ -172,6 +172,8 @@ pub struct HttpHeader {
 #[serde(rename_all = "snake_case")]
 pub enum LogSource {
     AwsWaf,
+    Alb,
+    CloudFront,
     NginxCombined,
     NginxPostdata,
     ApacheCombined,
@@ -185,6 +187,8 @@ impl LogSource {
     pub fn telemetry_profile(self) -> TelemetryProfile {
         match self {
             Self::AwsWaf => TelemetryProfile::AwsWaf,
+            Self::Alb => TelemetryProfile::Alb,
+            Self::CloudFront => TelemetryProfile::CloudFront,
             Self::NginxCombined => TelemetryProfile::NginxCombined,
             Self::NginxPostdata => TelemetryProfile::NginxPostdata,
             Self::ApacheCombined => TelemetryProfile::ApacheCombined,
@@ -198,6 +202,8 @@ impl LogSource {
 pub enum TelemetryProfile {
     #[default]
     AwsWaf,
+    Alb,
+    CloudFront,
     NginxCombined,
     /// Explicit extended Combined format with logged request body and duration.
     NginxPostdata,
@@ -217,6 +223,7 @@ pub enum TelemetryProfile {
 pub enum HeaderCapability {
     Arbitrary,
     RefererAndUserAgent,
+    UserAgentOnly,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -263,6 +270,9 @@ impl TelemetryCapabilities {
         let headers = match (self.headers, other.headers) {
             (HeaderCapability::Arbitrary, _) | (_, HeaderCapability::Arbitrary) => {
                 HeaderCapability::Arbitrary
+            }
+            (HeaderCapability::UserAgentOnly, HeaderCapability::UserAgentOnly) => {
+                HeaderCapability::UserAgentOnly
             }
             _ => HeaderCapability::RefererAndUserAgent,
         };
@@ -340,6 +350,20 @@ impl TelemetryProfile {
                 waf_labels: false,
                 request_body: false,
             },
+            Self::Alb => TelemetryCapabilities {
+                headers: HeaderCapability::UserAgentOnly,
+                host: true,
+                referer: false,
+                tls_protocol: true,
+                tls_cipher: true,
+                ..Self::NginxCombined.capabilities()
+            },
+            Self::CloudFront => TelemetryCapabilities {
+                host: true,
+                tls_protocol: true,
+                tls_cipher: true,
+                ..Self::NginxCombined.capabilities()
+            },
             Self::ApacheVhostCombined => TelemetryCapabilities {
                 host: true,
                 ..Self::ApacheCombined.capabilities()
@@ -415,6 +439,7 @@ pub struct WebEvent {
     pub waf_non_terminating_rule_ids: Vec<String>,
     pub log_source: LogSource,
     /// The unmodified input record when the parsing path requests retention.
+    /// CloudFront cookie fields are redacted before retention.
     /// Aggregate-only streaming paths may leave this empty to avoid an unused
     /// per-record allocation.
     pub raw: String,

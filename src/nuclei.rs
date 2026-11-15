@@ -699,6 +699,55 @@ impl NucleiDetection {
         parse_combined_line(&line, format).map_err(|error| error.to_string())
     }
 
+    fn synthetic_aws_access_event(&self, profile: TelemetryProfile) -> Result<WebEvent, String> {
+        use crate::aws_access_log::{parse_alb_line, AwsAccessLogFormat, AwsAccessLogLines};
+        let mut target = self.path.clone();
+        if let Some(query) = &self.query {
+            target.push('?');
+            target.push_str(query);
+        }
+        if let Some(fragment) = &self.fragment {
+            target.push('#');
+            target.push_str(fragment);
+        }
+        let header = |name: &str| {
+            self.headers
+                .iter()
+                .find(|(key, _)| key.eq_ignore_ascii_case(name))
+                .map(|(_, value)| value.as_str())
+                .unwrap_or("-")
+        };
+        if profile == TelemetryProfile::Alb {
+            let escape = |value: &str| value.replace('\\', "\\\\").replace('"', "\\\"");
+            let line = format!(
+                r#"https 2026-01-01T00:00:00Z app/fixture 192.0.2.1:1234 - 0 0 0 200 - 0 10 "{} https://example.test:443{} HTTP/1.1" "{}" - - - "fixture""#,
+                self.method,
+                escape(&target),
+                escape(header("User-Agent"))
+            );
+            parse_alb_line(&line, crate::event::RawRetention::Drop)
+                .map_err(|error| error.to_string())
+        } else {
+            let encode = |value: &str| {
+                value
+                    .replace('%', "%25")
+                    .replace(' ', "%20")
+                    .replace('\t', "%09")
+                    .replace('\n', "%0A")
+            };
+            let (path, query, _) = crate::access_log::split_target(&target);
+            let text = format!("#Fields: date time c-ip cs-method cs-uri-stem cs-uri-query cs(User-Agent) cs(Referer)\n2026-01-01\t00:00:00\t192.0.2.1\t{}\t{}\t{}\t{}\t{}\n", self.method, path, query.as_deref().unwrap_or("-"), encode(header("User-Agent")), encode(header("Referer")));
+            AwsAccessLogLines::new(
+                text.as_bytes(),
+                AwsAccessLogFormat::CloudFront,
+                crate::event::RawRetention::Drop,
+            )
+            .next()
+            .ok_or_else(|| "synthetic CloudFront record unavailable".to_owned())?
+            .map_err(|error| error.to_string())
+        }
+    }
+
     fn requires_unavailable_combined_header(&self) -> bool {
         self.headers.iter().any(|(name, _)| {
             !name.eq_ignore_ascii_case("referer") && !name.eq_ignore_ascii_case("user-agent")
@@ -1108,15 +1157,26 @@ fn telemetry_report(
         }
         metrics.http_cve_templates += 1;
         let mut level = item.analysis.detectability;
-        let unavailable_headers = matches!(
+        let aws_access_unavailable_headers = matches!(
             telemetry,
-            TelemetryProfile::NginxCombined
-                | TelemetryProfile::NginxPostdata
-                | TelemetryProfile::ApacheCombined
-        ) && item
-            .detections
-            .iter()
-            .any(NucleiDetection::requires_unavailable_combined_header);
+            TelemetryProfile::Alb | TelemetryProfile::CloudFront
+        ) && item.detections.iter().any(|detection| {
+            detection.headers.iter().any(|(name, _)| {
+                !name.eq_ignore_ascii_case("user-agent")
+                    && !(telemetry == TelemetryProfile::CloudFront
+                        && name.eq_ignore_ascii_case("referer"))
+            })
+        });
+        let unavailable_headers = aws_access_unavailable_headers
+            || matches!(
+                telemetry,
+                TelemetryProfile::NginxCombined
+                    | TelemetryProfile::NginxPostdata
+                    | TelemetryProfile::ApacheCombined
+            ) && item
+                .detections
+                .iter()
+                .any(NucleiDetection::requires_unavailable_combined_header);
         let mut template_reasons = Vec::new();
         if unavailable_headers {
             // The IR matches all required headers conjunctively, so an
@@ -1140,6 +1200,7 @@ fn telemetry_report(
             metrics.observable += 1;
         }
         let source_compatible = item.analysis.conversion_status == ConversionStatus::Supported
+            && !aws_access_unavailable_headers
             && (!matches!(capabilities.headers, HeaderCapability::RefererAndUserAgent)
                 || !unavailable_headers);
         let mut validated = false;
@@ -1147,6 +1208,13 @@ fn telemetry_report(
             metrics.convertible += 1;
             validated = match telemetry {
                 TelemetryProfile::AwsWaf => true,
+                TelemetryProfile::Alb | TelemetryProfile::CloudFront => {
+                    item.detections.iter().all(|detection| {
+                        detection
+                            .synthetic_aws_access_event(telemetry)
+                            .is_ok_and(|event| detection.matches(&event))
+                    })
+                }
                 TelemetryProfile::NginxCombined | TelemetryProfile::NginxPostdata => {
                     item.detections.iter().all(|detection| {
                         detection

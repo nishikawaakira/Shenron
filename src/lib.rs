@@ -2,6 +2,7 @@
 
 pub mod access_log;
 pub mod address_set;
+pub mod aws_access_log;
 pub mod bot_ranges;
 pub mod candidate;
 pub mod comparison;
@@ -23,12 +24,14 @@ pub mod nuclei;
 pub mod observation_store;
 pub mod output;
 pub mod paths;
+mod percent_encoding;
 pub mod probe_sources;
 pub mod processed_index;
 pub mod production;
 pub mod report;
 pub mod reputation;
 pub mod reputation_update;
+pub mod request_anomalies;
 pub mod response_sizes;
 pub mod sigma;
 pub mod sigma_pack;

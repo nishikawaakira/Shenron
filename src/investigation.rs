@@ -215,6 +215,7 @@ pub fn request_context(
                 });
                 Ok(())
             })?;
+        report.counts.input_discovery.record_parsing(&provenance);
         report.corpus.push(provenance);
     }
     report.records.sort_by(|a, b| {

@@ -259,7 +259,7 @@ fn parse_response_size_postdata(
     Ok(event)
 }
 
-fn combined_regex() -> &'static Regex {
+pub(crate) fn combined_regex() -> &'static Regex {
     static REGEX: OnceLock<Regex> = OnceLock::new();
     REGEX.get_or_init(|| {
         Regex::new(
@@ -269,7 +269,7 @@ fn combined_regex() -> &'static Regex {
     })
 }
 
-fn apache_vhost_combined_regex() -> &'static Regex {
+pub(crate) fn apache_vhost_combined_regex() -> &'static Regex {
     static REGEX: OnceLock<Regex> = OnceLock::new();
     REGEX.get_or_init(|| {
         Regex::new(
@@ -323,7 +323,7 @@ fn decode_log_value(value: &str) -> Option<String> {
     Some(decoded)
 }
 
-fn valid_percent_escapes(value: &str) -> bool {
+pub(crate) fn valid_percent_escapes(value: &str) -> bool {
     let bytes = value.as_bytes();
     let mut index = 0;
     while index < bytes.len() {
@@ -342,7 +342,7 @@ fn valid_percent_escapes(value: &str) -> bool {
     true
 }
 
-fn split_target(target: &str) -> (String, Option<String>, Option<String>) {
+pub(crate) fn split_target(target: &str) -> (String, Option<String>, Option<String>) {
     let (target, fragment) = target.split_once('#').map_or_else(
         || (target, None),
         |(before, after)| (before, (!after.is_empty()).then(|| after.to_owned())),
