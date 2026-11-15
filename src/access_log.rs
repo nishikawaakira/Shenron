@@ -259,7 +259,7 @@ fn parse_response_size_postdata(
     Ok(event)
 }
 
-fn combined_regex() -> &'static Regex {
+pub(crate) fn combined_regex() -> &'static Regex {
     static REGEX: OnceLock<Regex> = OnceLock::new();
     REGEX.get_or_init(|| {
         Regex::new(
@@ -269,7 +269,7 @@ fn combined_regex() -> &'static Regex {
     })
 }
 
-fn apache_vhost_combined_regex() -> &'static Regex {
+pub(crate) fn apache_vhost_combined_regex() -> &'static Regex {
     static REGEX: OnceLock<Regex> = OnceLock::new();
     REGEX.get_or_init(|| {
         Regex::new(

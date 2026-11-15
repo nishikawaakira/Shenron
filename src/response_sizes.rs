@@ -18,6 +18,7 @@ use crate::{
     event::{canonical_address_or_raw, RawRetention, TelemetryProfile, TrustedProxySet, WebEvent},
     input_discovery::{discover_input_files, InputDiscoverySummary},
     output::write_json_pretty_new_batch,
+    percent_encoding::hex_pair,
     production::{
         ensure_separate_output, stream_events_with_fingerprint, terminal_safe,
         with_fingerprinted_input, HuntTimeRange,
@@ -192,10 +193,6 @@ fn unescape_nginx(value: &str) -> Vec<u8> {
     result
 }
 
-fn hex_pair(a: u8, b: u8) -> Option<u8> {
-    Some(((a as char).to_digit(16)? * 16 + (b as char).to_digit(16)?) as u8)
-}
-
 enum DecodePart {
     Target,
     Body,
@@ -215,20 +212,7 @@ fn decode(mut bytes: Vec<u8>, part: DecodePart) -> Option<String> {
         }
     }
     for _ in 0..2 {
-        let mut result = Vec::with_capacity(bytes.len());
-        let mut i = 0;
-        while i < bytes.len() {
-            if bytes[i] == b'%' && i + 2 < bytes.len() {
-                if let Some(v) = hex_pair(bytes[i + 1], bytes[i + 2]) {
-                    result.push(v);
-                    i += 3;
-                    continue;
-                }
-            }
-            result.push(bytes[i]);
-            i += 1;
-        }
-        bytes = result;
+        bytes = crate::percent_encoding::decode_once(&bytes);
     }
     String::from_utf8(bytes).ok()
 }

@@ -47,6 +47,14 @@ Four design pillars: (1) static conversion — templates are never executed; (2)
 
 ## Capabilities
 
+`request-anomalies` measures encoded request spellings and nonstandard request
+lines with at most two byte-decoding passes and bounded private evidence.
+Its command-local Combined recovery leaves hunt and other parsers unchanged.
+Default stdout and `sanitized-request-anomalies.json` contain aggregates only;
+examples/peers require explicit display flags. These shapes and 2xx counts do
+not determine attack, exploitation or compromise. See
+[request spelling observations](docs/request-anomalies.md).
+
 `shenron ioc` retrospectively matches operator-provided TSV or a narrow STIX 2.1
 indicator subset against local history, with indexed IP/CIDR lookup, separate
 observed-peer/verified-client counts, validity annotations and bounded private
@@ -136,6 +144,7 @@ post-hunt Slack notification).
 | `hunt` | The single detection entry point — Nuclei CVE + Sigma in one pass, with aggregate input-field availability, parse quality, and timestamp coverage. `--output <DIR>` writes the full private/sanitized artifacts; without `--output`, findings stream to stdout only. `--no-nuclei` runs Sigma-only with no setup; `--since`, `--baseline-latest`, `--report`, `--observation-store` shape a run |
 | `explain` | Triage a run's private findings by connection/client IP, ASN, or JA4 with behavior-priority scores, request sequences, and windowed rates |
 | `concentration` | Request-volume distribution without CTI; `--path` / `--path-prefix` / `--source-ip` focus |
+| `request-anomalies` | [Count encoding shapes and request-line forms](docs/request-anomalies.md), including command-local Combined recovery; aggregate-only by default, without inferring exploitation |
 | `ioc` | [Match operator-provided local indicators](docs/ioc.md) against historical logs with bounded private evidence and counts-only sanitized output; no compromise or attribution determination |
 | `probe-sources` | [Bounded per-source request-shape observations](docs/probe-sources.md), with an offline path catalog, auditable review conditions and private opt-in details; not blocking recommendations |
 | `identifier-access` | [Bounded identifier-access observations](docs/identifier-access.md), with per-source ID variation, status/size measurements and prior-write references; not authorization or disclosure findings |
