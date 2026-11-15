@@ -47,6 +47,15 @@ Four design pillars: (1) static conversion — templates are never executed; (2)
 
 ## Capabilities
 
+`shenron ioc` retrospectively matches operator-provided TSV or a narrow STIX 2.1
+indicator subset against local history, with indexed IP/CIDR lookup, separate
+observed-peer/verified-client counts, validity annotations and bounded private
+evidence. Default stdout and `sanitized-ioc.json` contain counts only; values,
+labels and source-file provenance remain private. No indicator is transmitted.
+A match is not a determination of an attack, compromise, intent, attribution or
+shared operator; CDN, NAT and shared-cloud addresses may also match unrelated
+users. See [IOC observations](docs/ioc.md).
+
 The hunt pipeline streams web logs (including gzip) → normalized `WebEvent` → validated Nuclei and/or a deliberately small Sigma subset → private findings. It supports AWS WAF action, labels, request metadata, and optional JA3/JA4 fingerprints. Analysis commands are offline by default, never upload raw customer data, execute exploits, change AWS, deploy candidates, or take automatic BLOCK actions. Explicit `shenron` preparation commands such as `nuclei update`, `reputation update`, and `bot-ranges update` may download public threat-intelligence inputs. The sole opt-in analysis-side exception is the post-hunt Slack notification described below: it sends sanitized aggregate counters only when `SHENRON_SLACK_WEBHOOK` is set, never IPs, paths, hosts, headers, log values, or private findings.
 
 It also includes a reproducible synthetic validation loop: project-owned AWS WAF-shaped corpora, separate ground truth, mutation tests, regression fixtures, and machine-readable validation results. See [validation](docs/validation.md) and [synthetic corpus generation](docs/synthetic-corpus.md).
@@ -120,6 +129,7 @@ post-hunt Slack notification).
 | `hunt` | The single detection entry point — Nuclei CVE + Sigma in one pass, with aggregate input-field availability, parse quality, and timestamp coverage. `--output <DIR>` writes the full private/sanitized artifacts; without `--output`, findings stream to stdout only. `--no-nuclei` runs Sigma-only with no setup; `--since`, `--baseline-latest`, `--report`, `--observation-store` shape a run |
 | `explain` | Triage a run's private findings by connection/client IP, ASN, or JA4 with behavior-priority scores, request sequences, and windowed rates |
 | `concentration` | Request-volume distribution without CTI; `--path` / `--path-prefix` / `--source-ip` focus |
+| `ioc` | [Match operator-provided local indicators](docs/ioc.md) against historical logs with bounded private evidence and counts-only sanitized output; no compromise or attribution determination |
 | `probe-sources` | [Bounded per-source request-shape observations](docs/probe-sources.md), with an offline path catalog, auditable review conditions and private opt-in details; not blocking recommendations |
 | `identifier-access` | [Bounded identifier-access observations](docs/identifier-access.md), with per-source ID variation, status/size measurements and prior-write references; not authorization or disclosure findings |
 | `response-sizes` | [Request-adjusted response sizes and character positions](docs/response-sizes.md), with explicit `nginx-postdata` input; also available as `production response-sizes`. Estimates lengths, never content or disclosure |
