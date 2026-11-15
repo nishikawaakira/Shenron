@@ -3760,8 +3760,6 @@ fn count_hypotheses_reports_a_sanitized_monotonic_per_cve_ladder() {
 
 #[test]
 fn hunt_uses_validated_matchers_and_separates_sensitive_output() {
-    use sha2::{Digest, Sha256};
-
     let output = tempdir().unwrap();
     let report = hunt(
         Path::new("tests/fixtures/production/waf.jsonl"),
@@ -3837,17 +3835,11 @@ fn hunt_uses_validated_matchers_and_separates_sensitive_output() {
     let manifest_json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
     assert_eq!(
         manifest_json["inputs"]["nuclei_report"]["sha256"],
-        format!(
-            "{:x}",
-            Sha256::digest(fs::read("tests/fixtures/production/nuclei-report.json").unwrap())
-        )
+        "93eaf2a9a1727f4b024f605f1a8ddb091888e624335c0c378742a62d9c31f9ce"
     );
     assert_eq!(
         manifest_json["inputs"]["kev_report"]["sha256"],
-        format!(
-            "{:x}",
-            Sha256::digest(fs::read("tests/fixtures/production/kev-report.json").unwrap())
-        )
+        "bb0739b666865abab9d7efd398c5d40b11c84a1c1159d43162ee14bf12dec127"
     );
     assert!(manifest_json["inputs"]["nuclei_templates"]["sha256"].is_null());
     assert!(!manifest.contains("secret-token"));
