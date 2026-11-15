@@ -397,13 +397,25 @@ fn lab_matchers_lists_supported_template_literals_and_respects_frozen_report_gat
 
 // These tests use only file:// remotes. CI never contacts GitHub while
 // exercising the clone, fetch, default-branch, and pinned-checkout paths.
+fn file_url(path: &Path) -> String {
+    let path = path.to_str().unwrap();
+    #[cfg(windows)]
+    let path = format!(
+        "/{}",
+        path.strip_prefix(r"\\?\")
+            .unwrap_or(path)
+            .replace('\\', "/")
+    );
+    format!("file://{path}")
+}
+
 #[test]
 fn lab_update_checks_out_an_explicit_local_revision() {
     let directory = tempdir().unwrap();
     let (source, first_revision, _) = local_template_repo(directory.path());
     let destination = directory.path().join("checkouts/nuclei-templates");
     let report = directory.path().join("nuclei-report.json");
-    let repository = format!("file://{}", source.display());
+    let repository = file_url(&source);
 
     let mut command = Command::cargo_bin("shenron").unwrap();
     command.env("GIT_ALLOW_PROTOCOL", "file");
@@ -434,7 +446,7 @@ fn lab_update_uses_the_local_remote_default_branch_tip_when_unpinned() {
     let (source, _, latest_revision) = local_template_repo(directory.path());
     let destination = directory.path().join("nuclei-templates");
     let report = directory.path().join("nuclei-report.json");
-    let repository = format!("file://{}", source.display());
+    let repository = file_url(&source);
 
     let mut command = Command::cargo_bin("shenron").unwrap();
     command.env("GIT_ALLOW_PROTOCOL", "file");
