@@ -369,11 +369,14 @@ impl Index {
             let normalized = normalize_host(host);
             add_hits(&mut hits, self.hosts.get(&normalized), "host");
             if let Some(path) = &event.uri_path {
-                if let Some(paths) = self.urls.get(&normalized) {
-                    add_hits(&mut hits, paths.get(path), "url");
+                let port = host_port(host).1;
+                if matches!(port, None | Some("80" | "443")) {
+                    if let Some(paths) = self.urls.get(&normalized) {
+                        add_hits(&mut hits, paths.get(path), "url");
+                    }
                 }
-                // Non-default URL ports require an explicitly recorded host port.
-                if let Some(port) = host_port(host).1 {
+                // An explicit non-default port must not also match a portless URL.
+                if let Some(port) = port {
                     if let Some(paths) = self.urls.get(&format!("{normalized}:{port}")) {
                         add_hits(&mut hits, paths.get(path), "url");
                     }

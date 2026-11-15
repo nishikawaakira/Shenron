@@ -88,12 +88,22 @@ equalities of the same observable type joined by uppercase `OR`:
 
 Address families must match the STIX observable type. Domain values match host.
 HTTP/HTTPS URLs match their normalized host and path. Only the scheme's default
-port is removed from an indicator (`http:80`, `https:443`); an omitted/default
-port compares with the event host after port removal. A non-default indicator
+port is removed from an indicator (`http:80`, `https:443`). A non-default indicator
 port is retained and matches only when the event host explicitly records that
-port; portless vhost telemetry cannot establish it. Event matching tries both
-the normalized host and, when available, its explicitly recorded port. Scheme
-itself is not tested because the requested observation is host/path equality.
+port; portless vhost telemetry cannot establish it. URL lookup uses the event's
+recorded host port as follows; host/domain indicator lookup is unchanged:
+
+| Recorded event host port | URL authorities looked up |
+| --- | --- |
+| Absent | Normalized host only |
+| `80` or `443` | Normalized host and normalized host with the recorded port |
+| Any other numeric port | Normalized host with the recorded port only |
+
+Thus an explicit `:8443` never also matches a portless/default-port URL.
+Scheme itself is not recorded by these host fields, so `80` and `443` are both
+treated as default-port observations for this lookup. No non-default port is
+inferred. Scheme itself is not tested because the requested observation is
+host/path equality.
 An absent URL path means `/`. Query-bearing URLs are rejected, as are fragments
 and userinfo; none is silently discarded. Event queries do not change `uri_path`.
 Single-quoted STIX strings support escaped quote/backslash only.

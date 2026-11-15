@@ -729,7 +729,7 @@ fn ioc_host_and_url_normalization_preserves_values_and_requires_explicit_nondefa
     };
     assert_eq!(
         find_url("https://example.test:443/review/items")["matches"],
-        5
+        4
     );
     let nondefault = find_url("https://EXAMPLE.TEST.:8443/review/items");
     assert_eq!(nondefault["matches"], 1);
@@ -740,7 +740,7 @@ fn ioc_host_and_url_normalization_preserves_values_and_requires_explicit_nondefa
     );
     assert_eq!(
         find_url("https://[2001:db8::1]:443/review/items")["matches"],
-        2
+        1
     );
     let ipv6 = find_url("https://[2001:DB8::1]:8443/review/items");
     assert_eq!(ipv6["matches"], 1);
@@ -759,5 +759,72 @@ fn ioc_host_and_url_normalization_preserves_values_and_requires_explicit_nondefa
     ] {
         assert!(!sanitized.contains(value));
         assert!(!String::from_utf8_lossy(&stdout).contains(value));
+    }
+}
+
+#[test]
+fn ioc_url_authority_lookup_obeys_the_recorded_port_matrix_without_changing_host_matches() {
+    let root = tempfile::tempdir().unwrap();
+    let input = root.path().join("logs.jsonl");
+    let indicators = root.path().join("bundle.json");
+    let hosts = [
+        "Example.TEST:8443",
+        "example.test.",
+        "example.test:443",
+        "example.test",
+        "[2001:db8::1]:8443",
+        "example.test:80",
+        "example.test:8080",
+    ];
+    let mut log = String::new();
+    for host in hosts {
+        let mut record: Value = serde_json::from_str(&event("192.0.2.1", 0, None)).unwrap();
+        record["httpRequest"]["headers"][0]["value"] = json!(host);
+        log += &(record.to_string() + "\n");
+    }
+    fs::write(&input, log).unwrap();
+    let cases = [
+        ("https://example.test/review/items", vec![2, 3, 4, 6]),
+        ("https://example.test:443/review/items", vec![2, 3, 4, 6]),
+        ("https://example.test:8443/review/items", vec![1]),
+        ("https://[2001:db8::1]:8443/review/items", vec![5]),
+        ("http://example.test/review/items", vec![2, 3, 4, 6]),
+        ("http://example.test:8080/review/items", vec![7]),
+    ];
+    let mut objects = vec![stix("[domain-name:value = 'example.test']")];
+    for (i, (url, _)) in cases.iter().enumerate() {
+        let mut indicator = stix(&format!("[url:value = '{url}']"));
+        // Distinct validity bounds keep equivalent default-port spellings as separate test rows.
+        indicator["valid_from"] = json!(format!("2025-01-{:02}T00:00:00Z", i + 1));
+        objects.push(indicator);
+    }
+    fs::write(
+        &indicators,
+        json!({"type":"bundle", "objects":objects}).to_string(),
+    )
+    .unwrap();
+    let (report, stdout) = run(root.path(), &input, &indicators, "out", &[]);
+    let rows = report["indicators"].as_array().unwrap();
+    assert_eq!(rows[0]["matches"], 6);
+    for (row, (url, expected)) in rows[1..].iter().zip(cases) {
+        assert_eq!(row["values"], json!([url]));
+        let actual: Vec<_> = row["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["line_number"].as_u64().unwrap())
+            .collect();
+        assert_eq!(actual, expected, "{url}");
+    }
+    let sanitized = fs::read_to_string(root.path().join("out/sanitized-ioc.json")).unwrap();
+    for private in [
+        "example.test",
+        "2001:db8",
+        "/review/items",
+        "bundle.json",
+        "private-stix-name",
+    ] {
+        assert!(!sanitized.contains(private));
+        assert!(!String::from_utf8_lossy(&stdout).contains(private));
     }
 }
