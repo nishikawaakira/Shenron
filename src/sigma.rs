@@ -74,7 +74,9 @@ impl CompiledRule {
         event: &WebEvent,
         keyword_haystack: &OnceCell<String>,
     ) -> bool {
-        source_matches(&self.logsource, event.log_source)
+        // ALB can retain peer/status evidence without a parsed request.
+        !(event.log_source == LogSource::Alb && event.uri_path.is_none())
+            && source_matches(&self.logsource, event.log_source)
             && evaluate_condition(&self.condition, &self.selections, event, keyword_haystack)
     }
 }
@@ -460,6 +462,21 @@ fn source_matches(logsource: &Logsource, source: LogSource) -> bool {
         return false;
     }
     match source {
+        LogSource::Alb | LogSource::CloudFront => {
+            let service = if source == LogSource::Alb {
+                "alb"
+            } else {
+                "cloudfront"
+            };
+            logsource
+                .product
+                .as_deref()
+                .is_none_or(|product| product.eq_ignore_ascii_case("aws"))
+                && logsource
+                    .service
+                    .as_deref()
+                    .is_none_or(|value| value.eq_ignore_ascii_case(service))
+        }
         LogSource::AwsWaf => {
             logsource
                 .product

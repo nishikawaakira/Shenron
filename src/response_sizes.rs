@@ -878,6 +878,7 @@ pub fn run(
         analysis.summary.truncated_body += truncated_body;
         analysis.summary.error_log_lines += error_log_lines;
         analysis.summary.invalid_utf8_lines += invalid_utf8_lines;
+        analysis.summary.input_discovery.record_parsing(&provenance);
         corpus.push(provenance);
     }
     let report = analysis.finish();

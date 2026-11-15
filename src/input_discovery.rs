@@ -21,6 +21,10 @@ pub struct InputDiscoverySummary {
     /// enumerating its contents. The field name is retained for compatibility.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub files_skipped: usize,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub parse_error_reasons: BTreeMap<String, u64>,
+    #[serde(skip)]
+    parsing_inputs: Vec<crate::production::PathProvenance>,
     #[serde(skip)]
     pub skipped: Vec<SkippedInputFile>,
 }
@@ -33,27 +37,49 @@ impl InputDiscoverySummary {
     pub fn from_skipped(skipped: Vec<SkippedInputFile>) -> Self {
         Self {
             files_skipped: skipped.len(),
+            parse_error_reasons: BTreeMap::new(),
+            parsing_inputs: Vec::new(),
             skipped,
         }
     }
 
+    pub(crate) fn record_parsing(&mut self, input: &crate::production::PathProvenance) {
+        if let Some(parsing) = &input.input_parsing {
+            for (reason, count) in &parsing.parse_error_reasons {
+                *self.parse_error_reasons.entry(reason.clone()).or_default() += count;
+            }
+            self.parsing_inputs.push(input.clone());
+        }
+    }
+
     pub fn disclosure(&self) -> Option<String> {
-        if self.files_skipped == 0 {
-            return None;
+        let mut lines = Vec::new();
+        if self.files_skipped != 0 {
+            let mut counts = BTreeMap::new();
+            for file in &self.skipped {
+                *counts.entry(file.reason.as_str()).or_insert(0usize) += 1;
+            }
+            lines.push(format!(
+                "Files skipped: {} ({})",
+                self.files_skipped,
+                counts
+                    .into_iter()
+                    .map(|(reason, count)| format!("{reason}: {count}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
         }
-        let mut counts = BTreeMap::new();
-        for file in &self.skipped {
-            *counts.entry(file.reason.as_str()).or_insert(0usize) += 1;
+        if !self.parse_error_reasons.is_empty() {
+            lines.push(format!(
+                "Parse error reasons: {}",
+                self.parse_error_reasons
+                    .iter()
+                    .map(|(reason, count)| format!("{reason}: {count}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
         }
-        Some(format!(
-            "Files skipped: {} ({})",
-            self.files_skipped,
-            counts
-                .into_iter()
-                .map(|(reason, count)| format!("{reason}: {count}"))
-                .collect::<Vec<_>>()
-                .join(", ")
-        ))
+        (!lines.is_empty()).then(|| lines.join("\n"))
     }
 
     pub fn reject_symlinks(&self) -> anyhow::Result<()> {
@@ -160,26 +186,28 @@ fn supported_extension(path: &Path, profile: Option<TelemetryProfile>) -> bool {
     }
 }
 
-/// File-output commands keep exclusion paths in a private companion manifest,
-/// never in their aggregate JSON. Runs without exclusions create nothing extra.
+/// File-output commands keep exclusion paths and AWS parsing provenance in a
+/// private companion manifest, never in aggregate JSON. Legacy runs without
+/// exclusions create nothing extra.
 pub fn write_discovery_manifest(
     output: &Path,
     summary: &InputDiscoverySummary,
 ) -> anyhow::Result<()> {
-    if summary.skipped.is_empty() {
+    if summary.skipped.is_empty() && summary.parsing_inputs.is_empty() {
         return Ok(());
     }
     let name = output.file_name().context("output requires a file name")?;
     let mut name = name.to_os_string();
     name.push(".run-manifest.json");
-    crate::output::write_json_pretty(
-        output.with_file_name(name),
-        &serde_json::json!({
-            "report_kind": "RUN_MANIFEST",
-            "safety_note": "PRIVATE input discovery provenance: skipped input paths may contain private information. Not sanitized; do not share without review.",
-            "skipped_input_files": summary.skipped,
-        }),
-    )
+    let mut manifest = serde_json::json!({
+        "report_kind": "RUN_MANIFEST",
+        "safety_note": "PRIVATE input discovery provenance: skipped input paths may contain private information. Not sanitized; do not share without review.",
+        "skipped_input_files": summary.skipped,
+    });
+    if !summary.parsing_inputs.is_empty() {
+        manifest["corpus"] = serde_json::to_value(&summary.parsing_inputs)?;
+    }
+    crate::output::write_json_pretty(output.with_file_name(name), &manifest)
 }
 
 #[cfg(test)]

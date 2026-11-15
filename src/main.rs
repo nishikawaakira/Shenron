@@ -1152,10 +1152,14 @@ fn run_response_sizes(args: ResponseSizesArgs) -> Result<()> {
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum InputFormat {
-    /// Detect AWS WAF or vhost-prefixed Apache logs; ambiguous Combined logs require an explicit format.
+    /// Detect AWS WAF, ALB, headered CloudFront or vhost-prefixed Apache logs; ambiguous Combined logs require an explicit format.
     Auto,
     /// AWS WAF JSON logs.
     AwsWaf,
+    /// Application Load Balancer access logs.
+    Alb,
+    /// Legacy CloudFront standard TSV logs, with optional #Fields headers.
+    Cloudfront,
     /// Standard nginx Combined Log Format.
     Nginx,
     /// Explicit nginx Combined plus content type, TLS, request time and postdata body.
@@ -1218,6 +1222,8 @@ impl InputFormat {
                 "auto format selection requires an input log path; pass an explicit telemetry format"
             ),
             Self::AwsWaf => Ok(TelemetryProfile::AwsWaf),
+            Self::Alb => Ok(TelemetryProfile::Alb),
+            Self::Cloudfront => Ok(TelemetryProfile::CloudFront),
             Self::Nginx => Ok(TelemetryProfile::NginxCombined),
             Self::NginxPostdata => Ok(TelemetryProfile::NginxPostdata),
             Self::Apache => Ok(TelemetryProfile::ApacheCombined),
@@ -1236,6 +1242,8 @@ const AUTO_DETECTION_ERROR: &str = "Could not determine the input format safely.
 #[derive(Debug, Default)]
 struct DetectedInputFormats {
     aws_waf: bool,
+    alb: bool,
+    cloudfront: bool,
     standard_combined: bool,
     apache_vhost: bool,
 }
@@ -1246,6 +1254,20 @@ fn resolve_input_format(input: &Path, requested: InputFormat) -> Result<InputFor
     }
 
     let detected = detect_input_formats(input)?;
+    if detected.alb || detected.cloudfront {
+        if detected.aws_waf
+            || detected.standard_combined
+            || detected.apache_vhost
+            || (detected.alb && detected.cloudfront)
+        {
+            anyhow::bail!(AUTO_DETECTION_ERROR);
+        }
+        return Ok(if detected.alb {
+            InputFormat::Alb
+        } else {
+            InputFormat::Cloudfront
+        });
+    }
     match (
         detected.aws_waf,
         detected.standard_combined,
@@ -1265,14 +1287,28 @@ fn detect_input_formats(input: &Path) -> Result<DetectedInputFormats> {
         let reader = sniff_gzip_reader(
             File::open(&path).with_context(|| format!("opening {}", path.display()))?,
         )?;
-        for line in BufReader::new(reader).lines() {
+        let mut cloudfront_version = false;
+        for (line_index, line) in BufReader::new(reader).lines().enumerate() {
             let line = line.with_context(|| format!("reading {}", path.display()))?;
             let line = line.trim();
+            if line_index == 0 && line == "#Version: 1.0" {
+                cloudfront_version = true;
+            }
+            if line_index == 1 && cloudfront_version && line.starts_with("#Fields:") {
+                detected.cloudfront = true;
+            }
             if line.is_empty() {
                 continue;
             }
             records_examined += 1;
-            if is_aws_waf_record(line) {
+            if line.split_once(' ').is_some_and(|(kind, rest)| {
+                matches!(kind, "http" | "https" | "h2" | "grpcs" | "ws" | "wss")
+                    && rest.split_once(' ').is_some_and(|(time, _)| {
+                        time.ends_with('Z') && DateTime::parse_from_rfc3339(time).is_ok()
+                    })
+            }) {
+                detected.alb = true;
+            } else if is_aws_waf_record(line) {
                 detected.aws_waf = true;
             } else if parse_combined_line(line, AccessLogFormat::ApacheVhostCombined).is_ok() {
                 detected.apache_vhost = true;

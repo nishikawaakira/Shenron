@@ -685,6 +685,8 @@ pub struct PathProvenance {
     pub path: String,
     pub byte_length: Option<u64>,
     pub sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_parsing: Option<crate::aws_access_log::InputParsingProvenance>,
 }
 
 #[derive(Serialize)]
@@ -873,6 +875,8 @@ impl<W: Write> PrivateFindingWriter<W> {
                         .log_source
                         .map(|value| match value {
                             LogSource::AwsWaf => "aws_waf",
+                            LogSource::Alb => "alb",
+                            LogSource::CloudFront => "cloud_front",
                             LogSource::NginxCombined => "nginx_combined",
                             LogSource::NginxPostdata => "nginx_postdata",
                             LogSource::ApacheCombined => "apache_combined",
@@ -1463,6 +1467,7 @@ fn hunt_with_destination(
                 Ok(())
             },
         )?;
+        metrics.input_discovery.record_parsing(&provenance);
         corpus.push(provenance);
     }
     private.flush()?;
@@ -1988,6 +1993,9 @@ fn concentration_run(
             },
         )?);
     }
+    for input in &corpus {
+        report.input_discovery.record_parsing(input);
+    }
     report.request_concentration = accumulator.summary();
     let mut prefix_path_pairs_beyond_cap = None;
     let mut prefix_path_tracking = None;
@@ -2250,7 +2258,7 @@ pub fn ablation_with_optional_kev_and_filter(
     // Keep the same frozen-report input contract as hunt even though KEV
     // membership is not a volume-comparison dimension.
     let _kev_cves = kev_cves(kev_report)?;
-    let discovery = discover_input_files(input, Some(telemetry_profile))?;
+    let mut discovery = discover_input_files(input, Some(telemetry_profile))?;
     let files = discovery.files;
     let mut total_events_evaluated = 0;
     let mut requests_outside_time_range = 0;
@@ -2259,48 +2267,57 @@ pub fn ablation_with_optional_kev_and_filter(
     let mut accumulators = std::array::from_fn::<_, 5, _>(|_| AblationAccumulator::default());
     let mut progress = ProgressReporter::new("ablation");
     for path in &files {
-        stream_events_with_raw_retention(path, telemetry_profile, RawRetention::Drop, |result| {
-            progress.tick();
-            let event = match result {
-                Ok(event) => event,
-                Err(_) => {
-                    parse_errors += 1;
+        let provenance = stream_events_with_raw_retention(
+            path,
+            telemetry_profile,
+            RawRetention::Drop,
+            |result| {
+                progress.tick();
+                let event = match result {
+                    Ok(event) => event,
+                    Err(_) => {
+                        parse_errors += 1;
+                        return Ok(());
+                    }
+                };
+                if !time_range.includes(event.timestamp) {
+                    if event.timestamp.is_some() {
+                        requests_outside_time_range += 1;
+                    } else {
+                        requests_without_timestamp_excluded += 1;
+                    }
                     return Ok(());
                 }
-            };
-            if !time_range.includes(event.timestamp) {
-                if event.timestamp.is_some() {
-                    requests_outside_time_range += 1;
-                } else {
-                    requests_without_timestamp_excluded += 1;
-                }
-                return Ok(());
-            }
-            total_events_evaluated += 1;
-            let mut event_cves = std::array::from_fn::<_, 5, _>(|_| BTreeSet::new());
-            for detection in &detections {
-                let matches = [
-                    detection.matches_path_only(&event),
-                    detection.matches_path_and_query(&event),
-                    detection.matches_path_query_headers(&event),
-                    detection.matches(&event),
-                    detection.matches(&event)
-                        && detection.request_specificity() == RequestSpecificity::RequestSpecific,
-                ];
-                for (index, matched) in matches.into_iter().enumerate() {
-                    if matched {
-                        event_cves[index].extend(detection.cves.iter().cloned());
+                total_events_evaluated += 1;
+                let mut event_cves = std::array::from_fn::<_, 5, _>(|_| BTreeSet::new());
+                for detection in &detections {
+                    let matches = [
+                        detection.matches_path_only(&event),
+                        detection.matches_path_and_query(&event),
+                        detection.matches_path_query_headers(&event),
+                        detection.matches(&event),
+                        detection.matches(&event)
+                            && detection.request_specificity()
+                                == RequestSpecificity::RequestSpecific,
+                    ];
+                    for (index, matched) in matches.into_iter().enumerate() {
+                        if matched {
+                            event_cves[index].extend(detection.cves.iter().cloned());
+                        }
                     }
                 }
-            }
-            for (accumulator, cves) in accumulators.iter_mut().zip(event_cves) {
-                if !cves.is_empty() {
-                    accumulator.matched_events += 1;
-                    accumulator.distinct_event_cve_matches += cves.len();
+                for (accumulator, cves) in accumulators.iter_mut().zip(event_cves) {
+                    if !cves.is_empty() {
+                        accumulator.matched_events += 1;
+                        accumulator.distinct_event_cve_matches += cves.len();
+                    }
                 }
-            }
-            Ok(())
-        })?;
+                Ok(())
+            },
+        )?;
+        if let Some(input) = provenance {
+            discovery.summary.record_parsing(&input);
+        }
     }
     let strategy_names = [
         "path_only",
@@ -2428,7 +2445,7 @@ pub fn historical_replay_with_optional_kev_and_filter(
         );
     }
 
-    let discovery = discover_input_files(input, Some(telemetry_profile))?;
+    let mut discovery = discover_input_files(input, Some(telemetry_profile))?;
     let files = discovery.files;
     let mut total_events_evaluated = 0;
     let mut requests_outside_time_range = 0;
@@ -2442,64 +2459,73 @@ pub fn historical_replay_with_optional_kev_and_filter(
 
     let mut progress = ProgressReporter::new("replay");
     for path in &files {
-        stream_events_with_raw_retention(path, telemetry_profile, RawRetention::Drop, |result| {
-            progress.tick();
-            let event = match result {
-                Ok(event) => event,
-                Err(_) => {
-                    parse_errors += 1;
+        let provenance = stream_events_with_raw_retention(
+            path,
+            telemetry_profile,
+            RawRetention::Drop,
+            |result| {
+                progress.tick();
+                let event = match result {
+                    Ok(event) => event,
+                    Err(_) => {
+                        parse_errors += 1;
+                        return Ok(());
+                    }
+                };
+                if !time_range.includes(event.timestamp) {
+                    if event.timestamp.is_some() {
+                        requests_outside_time_range += 1;
+                    } else {
+                        requests_without_timestamp_excluded += 1;
+                    }
                     return Ok(());
                 }
-            };
-            if !time_range.includes(event.timestamp) {
-                if event.timestamp.is_some() {
-                    requests_outside_time_range += 1;
-                } else {
-                    requests_without_timestamp_excluded += 1;
+                total_events_evaluated += 1;
+                let matched_cves = detection_index
+                    .matching_templates(&detections, &event)
+                    .into_iter()
+                    .flat_map(|detection| detection.cves.iter().cloned())
+                    .collect::<BTreeSet<_>>();
+                if matched_cves.is_empty() {
+                    return Ok(());
                 }
-                return Ok(());
-            }
-            total_events_evaluated += 1;
-            let matched_cves = detection_index
-                .matching_templates(&detections, &event)
-                .into_iter()
-                .flat_map(|detection| detection.cves.iter().cloned())
-                .collect::<BTreeSet<_>>();
-            if matched_cves.is_empty() {
-                return Ok(());
-            }
 
-            matched_events_total += 1;
-            record_replay_outcome(&mut aggregate_outcomes, &event);
-            let request_id = event.request_id.as_deref();
-            let mut matched_known_for_any_cve = false;
-            for cve in matched_cves {
-                let accumulator = per_cve.entry(cve).or_default();
-                let known_match = request_id
-                    .is_some_and(|request_id| accumulator.known_request_ids.contains(request_id));
-                if known_match {
-                    let request_id = request_id.expect("known_match requires a request ID");
-                    accumulator
-                        .known_matched_request_ids
-                        .insert(request_id.to_owned());
-                    aggregate_known_matched_request_ids.insert(request_id.to_owned());
-                    matched_known_for_any_cve = true;
-                } else if request_id.is_some() {
-                    accumulator.other_matches_with_request_id += 1;
-                } else {
-                    accumulator.other_matches_without_request_id += 1;
+                matched_events_total += 1;
+                record_replay_outcome(&mut aggregate_outcomes, &event);
+                let request_id = event.request_id.as_deref();
+                let mut matched_known_for_any_cve = false;
+                for cve in matched_cves {
+                    let accumulator = per_cve.entry(cve).or_default();
+                    let known_match = request_id.is_some_and(|request_id| {
+                        accumulator.known_request_ids.contains(request_id)
+                    });
+                    if known_match {
+                        let request_id = request_id.expect("known_match requires a request ID");
+                        accumulator
+                            .known_matched_request_ids
+                            .insert(request_id.to_owned());
+                        aggregate_known_matched_request_ids.insert(request_id.to_owned());
+                        matched_known_for_any_cve = true;
+                    } else if request_id.is_some() {
+                        accumulator.other_matches_with_request_id += 1;
+                    } else {
+                        accumulator.other_matches_without_request_id += 1;
+                    }
+                    record_replay_outcome(&mut accumulator.outcomes, &event);
                 }
-                record_replay_outcome(&mut accumulator.outcomes, &event);
-            }
-            if !matched_known_for_any_cve {
-                if request_id.is_some() {
-                    aggregate_other_matches_with_request_id += 1;
-                } else {
-                    aggregate_other_matches_without_request_id += 1;
+                if !matched_known_for_any_cve {
+                    if request_id.is_some() {
+                        aggregate_other_matches_with_request_id += 1;
+                    } else {
+                        aggregate_other_matches_without_request_id += 1;
+                    }
                 }
-            }
-            Ok(())
-        })?;
+                Ok(())
+            },
+        )?;
+        if let Some(input) = provenance {
+            discovery.summary.record_parsing(&input);
+        }
     }
 
     let mut cve_coverage = per_cve
@@ -2649,7 +2675,7 @@ pub fn count_hypotheses_with_optional_kev_and_filter(
         })
         .collect::<BTreeMap<_, _>>();
 
-    let discovery = discover_input_files(input, Some(telemetry_profile))?;
+    let mut discovery = discover_input_files(input, Some(telemetry_profile))?;
     let files = discovery.files;
     let mut total_events_evaluated = 0;
     let mut requests_outside_time_range = 0;
@@ -2657,64 +2683,73 @@ pub fn count_hypotheses_with_optional_kev_and_filter(
     let mut parse_errors = 0;
     let mut progress = ProgressReporter::new("count-hypotheses");
     for path in &files {
-        stream_events_with_raw_retention(path, telemetry_profile, RawRetention::Drop, |result| {
-            progress.tick();
-            let event = match result {
-                Ok(event) => event,
-                Err(_) => {
-                    parse_errors += 1;
+        let provenance = stream_events_with_raw_retention(
+            path,
+            telemetry_profile,
+            RawRetention::Drop,
+            |result| {
+                progress.tick();
+                let event = match result {
+                    Ok(event) => event,
+                    Err(_) => {
+                        parse_errors += 1;
+                        return Ok(());
+                    }
+                };
+                if !time_range.includes(event.timestamp) {
+                    if event.timestamp.is_some() {
+                        requests_outside_time_range += 1;
+                    } else {
+                        requests_without_timestamp_excluded += 1;
+                    }
                     return Ok(());
                 }
-            };
-            if !time_range.includes(event.timestamp) {
-                if event.timestamp.is_some() {
-                    requests_outside_time_range += 1;
-                } else {
-                    requests_without_timestamp_excluded += 1;
-                }
-                return Ok(());
-            }
-            total_events_evaluated += 1;
-            let mut event_cves = std::array::from_fn::<_, 5, _>(|_| BTreeSet::new());
-            for detection in &detections {
-                let matches = [
-                    detection.matches_path_only(&event),
-                    detection.matches_path_and_query(&event),
-                    detection.matches_path_query_headers(&event),
-                    detection.matches(&event),
-                    detection.matches(&event)
-                        && detection.request_specificity() == RequestSpecificity::RequestSpecific,
-                ];
-                for (index, matched) in matches.into_iter().enumerate() {
-                    if matched {
-                        event_cves[index].extend(detection.cves.iter().cloned());
+                total_events_evaluated += 1;
+                let mut event_cves = std::array::from_fn::<_, 5, _>(|_| BTreeSet::new());
+                for detection in &detections {
+                    let matches = [
+                        detection.matches_path_only(&event),
+                        detection.matches_path_and_query(&event),
+                        detection.matches_path_query_headers(&event),
+                        detection.matches(&event),
+                        detection.matches(&event)
+                            && detection.request_specificity()
+                                == RequestSpecificity::RequestSpecific,
+                    ];
+                    for (index, matched) in matches.into_iter().enumerate() {
+                        if matched {
+                            event_cves[index].extend(detection.cves.iter().cloned());
+                        }
                     }
                 }
-            }
-            let request_id = event.request_id.as_deref();
-            for (index, cves) in event_cves.into_iter().enumerate() {
-                for cve in cves {
-                    let accumulator = per_cve.entry(cve).or_default();
-                    let rung = &mut accumulator.rungs[index];
-                    rung.matched_events += 1;
-                    if request_id.is_some_and(|request_id| {
-                        accumulator.known_request_ids.contains(request_id)
-                    }) {
-                        rung.known_matched_request_ids.insert(
-                            request_id
-                                .expect("known match requires a request ID")
-                                .to_owned(),
-                        );
-                    } else if request_id.is_some() {
-                        rung.other_matches_with_request_id += 1;
-                    } else {
-                        rung.other_matches_without_request_id += 1;
+                let request_id = event.request_id.as_deref();
+                for (index, cves) in event_cves.into_iter().enumerate() {
+                    for cve in cves {
+                        let accumulator = per_cve.entry(cve).or_default();
+                        let rung = &mut accumulator.rungs[index];
+                        rung.matched_events += 1;
+                        if request_id.is_some_and(|request_id| {
+                            accumulator.known_request_ids.contains(request_id)
+                        }) {
+                            rung.known_matched_request_ids.insert(
+                                request_id
+                                    .expect("known match requires a request ID")
+                                    .to_owned(),
+                            );
+                        } else if request_id.is_some() {
+                            rung.other_matches_with_request_id += 1;
+                        } else {
+                            rung.other_matches_without_request_id += 1;
+                        }
+                        record_replay_outcome(&mut rung.outcomes, &event);
                     }
-                    record_replay_outcome(&mut rung.outcomes, &event);
                 }
-            }
-            Ok(())
-        })?;
+                Ok(())
+            },
+        )?;
+        if let Some(input) = provenance {
+            discovery.summary.record_parsing(&input);
+        }
     }
 
     let strategy_names = [
@@ -2960,6 +2995,7 @@ fn path_provenance(path: &Path) -> PathProvenance {
         // A template checkout is a directory, so its pinned Nuclei revision is
         // recorded instead of attempting to invent a directory-wide hash.
         sha256: is_file.then(|| sha256_file(path)).flatten(),
+        input_parsing: None,
     }
 }
 
@@ -3352,7 +3388,7 @@ mod corpus_provenance_tests {
                     bytes: bytes.clone(),
                 };
                 let mut events = 0;
-                let (length, hash) = stream_fingerprinted_events(
+                let (length, hash, _) = stream_fingerprinted_events(
                     reader,
                     TelemetryProfile::ApacheCombined,
                     &TrustedProxySet::default(),
@@ -3492,7 +3528,28 @@ where
         bytes: 0,
     }));
     let decoded = sniff_gzip_reader(SharedFingerprintReader(state.clone()))?;
-    if profile == TelemetryProfile::AwsWaf {
+    let mut input_parsing = None;
+    if matches!(
+        profile,
+        TelemetryProfile::Alb | TelemetryProfile::CloudFront
+    ) {
+        let format = if profile == TelemetryProfile::Alb {
+            crate::aws_access_log::AwsAccessLogFormat::Alb
+        } else {
+            crate::aws_access_log::AwsAccessLogFormat::CloudFront
+        };
+        let mut lines = crate::aws_access_log::AwsAccessLogLines::new(decoded, format, retention);
+        while let Some(event) = lines.next() {
+            if let Some(error) = lines.io_error() {
+                bail!("reading decoded input: {error}");
+            }
+            callback(
+                lines.line_number(),
+                event.map_err(|error| error.to_string()),
+            )?;
+        }
+        input_parsing = Some(lines.parsing_provenance());
+    } else if profile == TelemetryProfile::AwsWaf {
         let mut lines = WafLines::with_raw_retention(decoded, retention);
         while let Some(event) = lines.next() {
             if let Some(error) = lines.io_error() {
@@ -3525,6 +3582,7 @@ where
         path: path.display().to_string(),
         byte_length: Some(state.bytes),
         sha256: Some(format!("{:x}", state.hash.clone().finalize())),
+        input_parsing,
     })
 }
 
@@ -3567,10 +3625,23 @@ pub(crate) fn stream_events_with_raw_retention<F>(
     telemetry_profile: TelemetryProfile,
     raw_retention: RawRetention,
     callback: F,
-) -> anyhow::Result<()>
+) -> anyhow::Result<Option<PathProvenance>>
 where
     F: FnMut(Result<WebEvent, String>) -> anyhow::Result<()>,
 {
+    if matches!(
+        telemetry_profile,
+        TelemetryProfile::Alb | TelemetryProfile::CloudFront
+    ) {
+        return stream_events_with_fingerprint(
+            path,
+            telemetry_profile,
+            &TrustedProxySet::default(),
+            raw_retention,
+            callback,
+        )
+        .map(Some);
+    }
     stream_events_with_trusted_proxies_and_raw_retention(
         path,
         telemetry_profile,
@@ -3578,6 +3649,7 @@ where
         raw_retention,
         callback,
     )
+    .map(|_| None)
 }
 
 pub(crate) fn stream_events_with_trusted_proxies<F>(
@@ -3611,7 +3683,7 @@ where
     F: FnMut(Result<WebEvent, String>) -> anyhow::Result<()>,
 {
     let file = File::open(path).with_context(|| format!("opening {}", path.display()))?;
-    let (byte_length, sha256) = stream_fingerprinted_events(
+    let (byte_length, sha256, input_parsing) = stream_fingerprinted_events(
         file,
         telemetry_profile,
         trusted_proxies,
@@ -3622,6 +3694,7 @@ where
         path: path.display().to_string(),
         byte_length: Some(byte_length),
         sha256: Some(sha256),
+        input_parsing,
     })
 }
 
@@ -3652,6 +3725,7 @@ pub fn read_fingerprinted_input(path: &Path) -> anyhow::Result<(Vec<u8>, PathPro
             path: path.display().to_string(),
             byte_length: Some(state.bytes),
             sha256: Some(format!("{:x}", state.hash.clone().finalize())),
+            input_parsing: None,
         },
     ))
 }
@@ -3675,13 +3749,21 @@ fn stream_fingerprinted_events<R: Read + 'static, F>(
     proxies: &TrustedProxySet,
     raw_retention: RawRetention,
     callback: F,
-) -> anyhow::Result<(u64, String)>
+) -> anyhow::Result<(
+    u64,
+    String,
+    Option<crate::aws_access_log::InputParsingProvenance>,
+)>
 where
     F: FnMut(Result<WebEvent, String>) -> anyhow::Result<()>,
 {
-    fingerprint_decoded_reader(reader, |decoded| {
-        stream_reader_events(decoded, profile, proxies, raw_retention, callback)
-    })
+    let mut parsing = None;
+    let (length, hash) = fingerprint_decoded_reader(reader, |decoded| {
+        parsing =
+            stream_reader_events_with_metadata(decoded, profile, proxies, raw_retention, callback)?;
+        Ok(())
+    })?;
+    Ok((length, hash, parsing))
 }
 
 /// Reuse single-pass stored-byte provenance with a command-specific decoded parser.
@@ -3695,6 +3777,7 @@ where
         path: path.display().to_string(),
         byte_length: Some(byte_length),
         sha256: Some(sha256),
+        input_parsing: None,
     })
 }
 
@@ -3745,12 +3828,54 @@ fn stream_reader_events<F>(
     telemetry_profile: TelemetryProfile,
     trusted_proxies: &TrustedProxySet,
     raw_retention: RawRetention,
-    mut callback: F,
+    callback: F,
 ) -> anyhow::Result<()>
 where
     F: FnMut(Result<WebEvent, String>) -> anyhow::Result<()>,
 {
+    stream_reader_events_with_metadata(
+        reader,
+        telemetry_profile,
+        trusted_proxies,
+        raw_retention,
+        callback,
+    )
+    .map(|_| ())
+}
+
+fn stream_reader_events_with_metadata<F>(
+    reader: Box<dyn Read>,
+    telemetry_profile: TelemetryProfile,
+    trusted_proxies: &TrustedProxySet,
+    raw_retention: RawRetention,
+    mut callback: F,
+) -> anyhow::Result<Option<crate::aws_access_log::InputParsingProvenance>>
+where
+    F: FnMut(Result<WebEvent, String>) -> anyhow::Result<()>,
+{
     match telemetry_profile {
+        TelemetryProfile::Alb | TelemetryProfile::CloudFront => {
+            let format = if telemetry_profile == TelemetryProfile::Alb {
+                crate::aws_access_log::AwsAccessLogFormat::Alb
+            } else {
+                crate::aws_access_log::AwsAccessLogFormat::CloudFront
+            };
+            let mut lines =
+                crate::aws_access_log::AwsAccessLogLines::new(reader, format, raw_retention);
+            while let Some(item) = lines.next() {
+                if let Some(error) = lines.io_error() {
+                    bail!("reading decoded input: {error}");
+                }
+                callback(
+                    item.map(|mut event| {
+                        trusted_proxies.resolve_client_ip(&mut event);
+                        event
+                    })
+                    .map_err(|error| error.to_string()),
+                )?;
+            }
+            return Ok(Some(lines.parsing_provenance()));
+        }
         TelemetryProfile::AwsWaf => {
             for item in WafLines::with_raw_retention(reader, raw_retention) {
                 callback(
@@ -3815,7 +3940,7 @@ where
             bail!("counterfactual telemetry profiles are analysis-only and cannot parse production logs")
         }
     }
-    Ok(())
+    Ok(None)
 }
 
 /// Refuse an output path nested in, or containing, immutable raw input.

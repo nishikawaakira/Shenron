@@ -2,6 +2,7 @@
 
 pub mod access_log;
 pub mod address_set;
+pub mod aws_access_log;
 pub mod bot_ranges;
 pub mod candidate;
 pub mod comparison;

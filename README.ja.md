@@ -46,6 +46,11 @@ Shenron は、Web アクセスログを対象にした Rust 製の「受動的�
 
 ## 対応する入力
 
+- ALB アクセスログ（`--format alb`）：リクエスト URL 由来のホスト、接続元とポート、応答、TLS、trace ID を共通形式に正規化します。処理時間の合成や WAF action の推定はしません。
+- CloudFront 標準ログのレガシー TSV（`--format cloudfront`）：列順はファイルごとの `#Fields:` から取得し、ヘッダーなしの場合は既定順の使用を private manifest に記録します。UA／Referer は1回だけデコードし、Cookie は raw を含めて保持しません。検証済み client IP は `--trusted-proxy` の明示設定時だけ利用します。JSON／Parquet などの新形式は対象外です。
+
+ALB と、先頭が `#Version: 1.0`・`#Fields:` の2行で始まる CloudFront は `--format auto` でも判別します。ヘッダーなしの CloudFront は明示指定が必要です。詳細は [Production hunting](docs/production-hunting.md#alb-and-legacy-cloudfront-inputs) を参照してください。
+
 - AWS WAF のログ（JSONL、`.gz` も可）
 - nginx の Combined ログ
 - nginx の本文付き拡張ログ（`--format nginx-postdata` を明示指定。Combined の後に Content-Type・TLS protocol・cipher・request duration・`postdata[<body>]` が必要で、`--format auto` の検出対象外）。`response-sizes` の本文依存の解析にはこの形式を使います。既存の解析コマンドでは標準 Combined も引き続き利用できます。詳細は [Response-size observations](docs/response-sizes.md) を参照してください。
@@ -189,7 +194,7 @@ Shenron はディレクトリツリーと gzip ローテーションを読み、
 ソート可能なディレクトリ名から直近の有効 run を選びます。窓自体の厳密な再現が必要な場合は
 `--from/--to` を明示してください。
 
-ログ入力コマンドの既定は `--format auto` です。AWS WAF JSON と vhost 前置き Apache Combined は自動識別します。標準 nginx Combined と標準 Apache Combined は構造が同一で安全に区別できないため、その場合だけ `--format nginx` または `--format apache` を指定してください。`--format apache` は標準行と vhost 前置き行の両方を受け付け、`--format apache-vhost` は vhost 前置きを厳格に要求します。
+ログ入力コマンドの既定は `--format auto` です。AWS WAF JSON、ALB、ヘッダー付きレガシー CloudFront と vhost 前置き Apache Combined は自動識別します。標準 nginx Combined と標準 Apache Combined は構造が同一で安全に区別できないため、その場合だけ `--format nginx` または `--format apache` を指定してください。`--format apache` は標準行と vhost 前置き行の両方を受け付け、`--format apache-vhost` は vhost 前置きを厳格に要求します。
 
 `setup` は `SHENRON_DATA_DIR` があればその配下、なければ `$XDG_DATA_HOME/shenron`、さらに無ければ `~/.local/share/shenron` に `nuclei-templates/`、凍結済みの `nuclei-report.json`、CISA KEV の `known_exploited_vulnerabilities.json`、凍結結合結果の `kev-report.json`、provenance を持つ `kev-manifest.json`、任意の `reputation.jsonl`、`asn-ranges.tsv`、`bot-ranges.json` を保存します。`hunt`、`ablation`、`replay`、`count-hypotheses` は既定でこの場所を参照します。`hunt --output <DIR>` は従来どおり full run artifacts をそのディレクトリへ保存します。`--output` を省略すると run ディレクトリやファイルは作らず、private findings だけを標準出力へ出します（`--output-format jsonl|csv`）。`--report`、`--baseline`、`--baseline-latest`、`--observation-store` は `--output` が必須です。従来どおり `--nuclei-templates`、`--nuclei-report`、`--kev-report` で明示指定もできます。`--kev-report` 省略時は準備済みの既定レポートがあれば参照し、無ければ空集合として扱います。`setup --skip-kev` で KEV 準備だけを省略できます。
 

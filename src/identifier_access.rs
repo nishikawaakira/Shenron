@@ -909,6 +909,9 @@ pub fn run(
             },
         )?);
     }
+    for input in &corpus {
+        analysis.summary.input_discovery.record_parsing(input);
+    }
     let report = analysis.finish(options);
     let mut manifest = serde_json::json!({
         "safety_note":"Private corpus paths and analyst configuration; review before sharing. SHA-256 identifies input bytes, not a Shenron finding.",

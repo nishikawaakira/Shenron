@@ -49,6 +49,79 @@ limits of causal interpretation.
 
 Production hunting is read-only and local. Shenron never modifies source logs, calls AWS, creates a WAF rule, replays traffic, scans a target, or executes a Nuclei template. Use a local JSON, JSONL, gzip, or directory-tree export.
 
+## ALB and legacy CloudFront inputs
+
+All shared log readers accept `--format alb` (Application Load Balancer) and
+`--format cloudfront` (legacy standard TSV). This includes hunt, concentration,
+daily, context, probe-sources, identifier-access, IOC matching and candidate
+evaluation; no AWS access or network lookup occurs. Auto detection accepts an
+ALB request type followed by a UTC ISO 8601 timestamp, or a CloudFront file
+beginning with `#Version: 1.0` immediately followed by `#Fields:`. Headerless
+CloudFront requires an explicit format. Existing ambiguous Combined formats
+still require explicit selection.
+
+ALB's quoted request line supplies method, HTTP version, host (from the absolute
+URL, with its port removed), path and query. The target uses the same splitting
+and percent-escape validation as Combined logs. Client address/port, edge status,
+sent bytes, User-Agent, TLS cipher/protocol and trace ID map to `WebEvent`;
+`-` remains unavailable. ALB `sent_bytes` and CloudFront `sc-bytes` include
+response headers as well as the body, so these logged sizes are not directly
+equivalent to nginx `$body_bytes_sent`. Optional trailing ALB columns and future extensions
+are ignored. SNI `domain_name` is not used as Host, and target status is not
+retained. The three processing times are not summed or substituted for request
+duration: `request_time_seconds` remains unavailable, including when any time is
+`-1`. Referer, country, fingerprints and WAF decisions are not inferred.
+
+An ALB request field containing three `-` tokens (for example `"- - - "`,
+with arbitrary surrounding/inter-token whitespace) retains the event's peer,
+port, response status/bytes, timestamp, UA, TLS and trace ID. Method, protocol,
+host and URI components remain unavailable. These rows, and the existing single
+`-` request placeholder, are counted in private per-file
+`input_parsing.alb_unparsed_requests`, not as parse errors. This counter is
+emitted only for ALB, including zero. Existing missing-path counts apply;
+request-pattern Nuclei/Sigma matching does not match ALB rows without a path.
+Other malformed request lines remain parse errors. The event timestamp is
+ALB's `time` (when the response was generated), not `request_creation_time`.
+
+CloudFront column positions come from each file's `#Fields:` header. Without
+one, the documented legacy standard-log order is used and
+`corpus[*].input_parsing.cloudfront_default_fields` is `true` in the private
+run manifest; it is `false` when headers supply the order. Date/time is UTC;
+`x-host-header` supplies host, never `cs(Host)` (the distribution domain).
+`cs-uri-stem` and `cs-uri-query` supply the unchanged percent-encoded target.
+UA and Referer are percent-decoded exactly once; `+` and all other non-percent
+characters remain unchanged. Status/response bytes, client port, HTTP version,
+TLS cipher/protocol and edge request ID are retained when recorded. Missing
+fields remain unavailable; this parser does not use timing or response-content
+fields to populate request duration or request Content-Type. Standard logging
+v2 destinations, real-time logs, JSON and Parquet are outside this parser.
+
+`cs(Cookie)` is never copied into an event or header. Even when raw retention is
+requested for Sigma keyword matching, that column is replaced with `-` before
+retention; private artifacts also exclude it. Stored-byte SHA-256 fingerprints
+still identify the original, unmodified local input. `x-forwarded-for` is used
+for verified `client_ip` only through explicit `--trusted-proxy` configuration;
+without it, only the observed peer is populated. A peer may be a proxy or NAT,
+and neither a request pattern nor an edge status determines attack, compromise,
+intent or identity. No WAF action is inferred from either source.
+
+CloudFront headers/comments do not count as requests or parse errors, but physical source
+line references include them. Rejected records contribute to the existing
+parse-error totals; per-file `input_parsing.parse_error_reasons` in private
+corpus provenance counts fixed reasons (`invalid-format`, `invalid-timestamp`,
+`invalid-request`, `invalid-number`, `invalid-address`, `invalid-encoding`,
+`invalid-fields`, `invalid-utf8`, `line-too-long`). A bad record does not prevent
+subsequent records from being parsed. The same numeric `parse_error_reasons`
+are included in aggregate input-quality summaries and text disclosures when
+nonempty; no path or observed value accompanies them. Replay, ablation and
+count-hypotheses record new-format corpus provenance in their private companion
+`<output-file>.run-manifest.json`, including fallback use. An unreadable/invalid gzip stream fails
+the run. No field values enter these counters. Legacy source manifests omit
+`input_parsing`, preserving their existing bytes.
+
+See the AWS [ALB access-log fields](https://docs.aws.amazon.com/elasticloadbalancing/latest/application/load-balancer-access-logs.html#access-log-entry-format)
+and [CloudFront standard-log reference](https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/standard-logs-reference.html).
+
 Prepare public Nuclei templates, CISA KEV, reputation, ASN, and published crawler-range
 inputs once. This
 downloads public intelligence only and never sends customer data:

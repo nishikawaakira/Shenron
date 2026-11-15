@@ -114,7 +114,14 @@ Slack notification is opt-in and environment-only. Set `SHENRON_SLACK_WEBHOOK` o
 
 Defensive candidates can be built from private hunt findings, replayed locally, reviewed for backend compatibility, and exported as COUNT-only AWS WAF JSON, Terraform rule fragments, or OSSEC detection XML. Export never deploys a control and refuses non-faithful translations. See the [candidate model](docs/waf-candidate-model.md).
 
-Log-reading commands default to `--format auto`. Auto mode safely recognizes AWS WAF JSON and vhost-prefixed Apache Combined logs. Standard nginx and Apache Combined logs have the same shape, so Shenron does not guess between them: pass `--format nginx` or `--format apache`. The Apache mode accepts both standard and vhost-prefixed Combined lines; `--format apache-vhost` remains available when a vhost prefix must be required. See [telemetry capabilities](docs/telemetry-capabilities.md).
+Supported inputs include AWS WAF JSON, nginx/Apache Combined, explicit
+`nginx-postdata`, ALB access logs (`--format alb`) and legacy CloudFront standard
+TSV (`--format cloudfront`). ALB/CloudFront retain observed TLS and request IDs;
+CloudFront Cookies are excluded even from raw/private records. Missing fields
+remain unavailable. These formats use the same offline analysis pipeline; see
+[input normalization](docs/production-hunting.md#alb-and-legacy-cloudfront-inputs).
+
+Log-reading commands default to `--format auto`. Auto mode safely recognizes AWS WAF JSON, ALB, CloudFront with leading `#Version: 1.0` / `#Fields:` headers, and vhost-prefixed Apache Combined logs. Headerless CloudFront requires `--format cloudfront`; `nginx-postdata` remains explicit-only. Standard nginx and Apache Combined logs have the same shape, so Shenron does not guess between them: pass `--format nginx` or `--format apache`. The Apache mode accepts both standard and vhost-prefixed Combined lines; `--format apache-vhost` remains available when a vhost prefix must be required. See [telemetry capabilities](docs/telemetry-capabilities.md).
 
 ## Commands
 
@@ -219,8 +226,8 @@ directory trees and gzip rotations, records the resolved moving boundary, and
 selects the latest valid prior run by sortable directory name. Use explicit
 `--from/--to` instead when the window itself must be exactly reproducible.
 
-AWS WAF JSON and vhost-prefixed Apache Combined logs are recognized
-automatically. Because standard nginx and Apache Combined lines are
+AWS WAF JSON, ALB, headered legacy CloudFront and vhost-prefixed Apache
+Combined logs are recognized automatically. Because standard nginx and Apache Combined lines are
 structurally identical, select those explicitly with `--format nginx` or
 `--format apache`.
 

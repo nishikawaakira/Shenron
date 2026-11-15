@@ -532,6 +532,9 @@ pub fn run(
         summary.matches_without_source_ip += row.matches_without_source_ip;
         summary.matches_with_invalid_source_ip += row.matches_with_invalid_source_ip;
     }
+    for input in &corpus {
+        summary.input_discovery.record_parsing(input);
+    }
     let report = Report {
         safety_note: SAFETY_NOTE,
         summary,

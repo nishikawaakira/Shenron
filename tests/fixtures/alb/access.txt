@@ -1,0 +1,2 @@
+https 2026-01-02T03:04:05.123456Z app/fixture/0001 192.0.2.10:54321 198.51.100.2:80 0.001 0.002 0.003 404 502 100 512 "GET https://example.test:443/.env?q=%252e+z HTTP/2.0" "Fixture/1.0" TLS_AES_128_GCM_SHA256 TLSv1.3 fixture-target "Root=fixture-request" "sni.example.test" "fixture-cert" 0 2026-01-02T03:04:05.100000Z "forward" "-" "-" "198.51.100.2:80" "502" "-" "-" fixture-connection
+http 2026-01-02T03:05:05Z app/fixture/0001 [2001:db8::10]:54322 - -1 -1 -1 200 - 0 0 "GET http://example.test:80/robots.txt HTTP/1.1" "-" - - - "-"
