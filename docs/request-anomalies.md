@@ -109,13 +109,6 @@ matches `iis-unicode` but not `iis-unicode-ascii`. JavaScript's legacy
 [`escape()`](https://tc39.es/ecma262/multipage/additional-ecmascript-features-for-web-browsers.html#sec-escape-string)
 also produces `%uXXXX` for code units above U+00FF; the shape does not identify
 a client implementation or its intent.
-
-As operator-reported context, an sctx measurement dated 2026-11-14 across
-3,201 hosts counted `%u` plus four hex digits on 17 hosts / 1,573 requests.
-The operator associated 15 of those hosts with ASP.NET-related Japanese text
-spellings. C0/C1 plus continuation-byte shapes appeared on 41 hosts / 16,172
-requests, many associated with EUC-JP search terms. These are observations from
-that corpus, not validation results for Shenron or general detection rates.
 The narrower features provide separate counts for review; they do not turn
 either broad family, or a narrower match, into an attack or intent conclusion.
 
