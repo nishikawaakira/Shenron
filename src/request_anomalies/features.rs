@@ -16,11 +16,13 @@ pub enum Feature {
     DoubleEncoding,
     EmptyRequest,
     IisUnicode,
+    IisUnicodeAscii,
     InvalidPercentEscape,
     InvalidUtf8,
     LongTarget,
     NonHttpRequestLine,
     NulByte,
+    OverlongTraversal,
     OverlongUtf8,
     PathParameterTraversal,
     Traversal,
@@ -28,7 +30,7 @@ pub enum Feature {
 }
 
 impl Feature {
-    pub const ALL: [Self; 18] = [
+    pub const ALL: [Self; 20] = [
         Self::AbsoluteForm,
         Self::AsteriskForm,
         Self::AuthorityForm,
@@ -38,11 +40,13 @@ impl Feature {
         Self::DoubleEncoding,
         Self::EmptyRequest,
         Self::IisUnicode,
+        Self::IisUnicodeAscii,
         Self::InvalidPercentEscape,
         Self::InvalidUtf8,
         Self::LongTarget,
         Self::NonHttpRequestLine,
         Self::NulByte,
+        Self::OverlongTraversal,
         Self::OverlongUtf8,
         Self::PathParameterTraversal,
         Self::Traversal,
@@ -60,11 +64,13 @@ impl Feature {
             Self::DoubleEncoding => "double-encoding",
             Self::EmptyRequest => "empty-request",
             Self::IisUnicode => "iis-unicode",
+            Self::IisUnicodeAscii => "iis-unicode-ascii",
             Self::InvalidPercentEscape => "invalid-percent-escape",
             Self::InvalidUtf8 => "invalid-utf8",
             Self::LongTarget => "long-target",
             Self::NonHttpRequestLine => "non-http-request-line",
             Self::NulByte => "nul-byte",
+            Self::OverlongTraversal => "overlong-traversal",
             Self::OverlongUtf8 => "overlong-utf8",
             Self::PathParameterTraversal => "path-parameter-traversal",
             Self::Traversal => "traversal",
@@ -95,6 +101,67 @@ fn overlong(bytes: &[u8]) -> bool {
         })
 }
 
+fn iis_unicode_ascii(bytes: &[u8]) -> bool {
+    if bytes[0] != b'%' || !matches!(bytes[1], b'u' | b'U') {
+        return false;
+    }
+    let (Some(high), Some(low)) = (hex_pair(bytes[2], bytes[3]), hex_pair(bytes[4], bytes[5]))
+    else {
+        return false;
+    };
+    let value = u16::from(high) << 8 | u16::from(low);
+    value <= 0x7f || matches!(value, 0xff0e | 0xff0f | 0xff3c | 0x2215 | 0x2216)
+}
+
+fn dot(bytes: &[u8]) -> Option<(usize, bool)> {
+    const SPELLINGS: &[&[u8]] = &[
+        b"\xc0\xae",
+        b"\xe0\x80\xae",
+        b"\xf0\x80\x80\xae",
+        // Explicit legacy spelling: 2E is not a UTF-8 continuation byte.
+        b"\xc0\x2e",
+    ];
+    if bytes.starts_with(b".") {
+        return Some((1, false));
+    }
+    SPELLINGS
+        .iter()
+        .find(|s| bytes.starts_with(s))
+        .map(|s| (s.len(), true))
+}
+
+fn separator(bytes: &[u8]) -> Option<(usize, bool)> {
+    const SPELLINGS: &[&[u8]] = &[
+        b"\xc0\xaf",
+        b"\xc1\x9c",
+        b"\xe0\x80\xaf",
+        b"\xe0\x81\x9c",
+        b"\xf0\x80\x80\xaf",
+    ];
+    if bytes.starts_with(b"/") || bytes.starts_with(b"\\") {
+        return Some((1, false));
+    }
+    SPELLINGS
+        .iter()
+        .find(|s| bytes.starts_with(s))
+        .map(|s| (s.len(), true))
+}
+
+fn overlong_traversal(bytes: &[u8]) -> bool {
+    (0..bytes.len()).any(|start| {
+        let Some((first, first_nonshortest)) = dot(&bytes[start..]) else {
+            return false;
+        };
+        let Some((second, second_nonshortest)) = dot(&bytes[start + first..]) else {
+            return false;
+        };
+        let Some((_, separator_nonshortest)) = separator(&bytes[start + first + second..]) else {
+            return false;
+        };
+        first_nonshortest || second_nonshortest || separator_nonshortest
+    })
+}
+
 pub(super) fn inspect_bytes(bytes: &[u8], part: &'static str, found: &mut Observations) {
     if bytes.windows(5).any(|s| {
         s[0] == b'%' && s[1..3].eq_ignore_ascii_case(b"25") && hex_pair(s[3], s[4]).is_some()
@@ -106,6 +173,9 @@ pub(super) fn inspect_bytes(bytes: &[u8], part: &'static str, found: &mut Observ
     }) {
         mark(found, Feature::IisUnicode, part);
     }
+    if bytes.windows(6).any(iis_unicode_ascii) {
+        mark(found, Feature::IisUnicodeAscii, part);
+    }
     if bytes.iter().enumerate().any(|(i, b)| {
         *b == b'%'
             && bytes
@@ -116,6 +186,9 @@ pub(super) fn inspect_bytes(bytes: &[u8], part: &'static str, found: &mut Observ
     }
     let first = decode_once(bytes);
     let second = decode_once(&first);
+    if overlong_traversal(&first) || overlong_traversal(&second) {
+        mark(found, Feature::OverlongTraversal, part);
+    }
     for stage in [bytes, first.as_slice(), second.as_slice()] {
         if stage.contains(&0) {
             mark(found, Feature::NulByte, part);

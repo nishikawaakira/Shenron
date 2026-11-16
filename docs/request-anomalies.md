@@ -49,6 +49,7 @@ feature totals must not be summed as distinct requests.
 | --- | --- |
 | `double-encoding` | Literal `%25` immediately followed by two hex digits, such as `%252e`. `%2e`, `%25` and `%25zz` do not meet this definition. |
 | `overlong-utf8` | Literally or after either pass: C0/C1 plus a continuation byte; E0 followed by 80–9F and a continuation; F0 followed by 80–8F and two continuations. These non-shortest 2/3/4-byte shapes are not repaired into characters. |
+| `overlong-traversal` | After the first or second percent-decoding pass, an adjacent dot + dot + separator byte sequence using the exact spellings below, with at least one non-shortest/explicit legacy token. Counts byte shapes in inspected targets/bodies/request lines, not a normalized server path; no character substitution or third pass. |
 | `nul-byte` | Byte 00 literally or after either pass. |
 | `crlf` | Byte 0A or 0D literally or after either pass. |
 | `control-char` | C0 bytes 01–09, 0B–0C, 0E–1F, or DEL 7F, literally or after either pass. NUL and CR/LF are separate features. |
@@ -57,6 +58,7 @@ feature totals must not be summed as distinct requests.
 | `path-parameter-traversal` | In the raw path or after one/two passes, a `/`- or `\`-delimited segment contains `;` and the part before its first `;` is exactly `..`, including `..;jsessionid=x`, `%2e%2e;` and `..%3b`. Counted independently of `traversal` / `traversal-encoded`; query/body occurrences do not match. |
 | `backslash-path` | A path backslash literally or after one/two passes, including `%5c` and `%255c`. Query/body backslashes do not match. |
 | `iis-unicode` | `%u` or `%U` followed by four hex digits. It records spelling, not decoded characters. |
+| `iis-unicode-ascii` | Literal `%u` or `%U` followed by four hex digits whose code-unit value is U+0000–U+007F or one of U+FF0E, U+FF0F, U+FF3C, U+2215, U+2216. Hex case is ignored. Records spelling only; `%uXXXX` is never replaced with a character. |
 | `invalid-utf8` | The bytes after the second pass fail strict UTF-8 validation. Valid multilingual UTF-8 alone does not match. |
 | `long-target` | Target byte length after logger unescaping and before percent decoding is strictly greater than `--max-target-length` (2048). Body length is not used. |
 | `absolute-form` | Request target begins with `http://` or `https://` (case-insensitive). Its authority is excluded from path features. |
@@ -74,6 +76,48 @@ behavior. Overlong and IIS spellings are not substituted for dots in traversal.
 The `..;` feature observes a string shape, not a successful routing or access-control
 bypass or an attack. Legitimate applications also use `;jsessionid=` path parameters.
 Sanitized feature counts always include `path-parameter-traversal`, even at zero.
+
+The exact byte tokens for `overlong-traversal` are:
+
+| Token | ASCII | Non-shortest / explicit legacy spellings |
+| --- | --- | --- |
+| Dot | `2E` | `C0 AE`, `E0 80 AE`, `F0 80 80 AE`, and the explicit legacy spelling `C0 2E` |
+| Separator | `2F`, `5C` | `C0 AF`, `C1 9C`, `E0 80 AF`, `E0 81 9C`, `F0 80 80 AF` |
+
+Two dot tokens must be followed immediately by a separator token, with at least
+one token from the last column. A lone `C0 AE` or ordinary ASCII `../` is
+insufficient. `C0 2E` is deliberately included as a spelling exception: `2E`
+is not a UTF-8 continuation byte, and this match does not assert decoder
+acceptance. Existing `overlong-utf8`, `invalid-utf8`, `traversal` and
+`traversal-encoded` definitions and counts are unchanged. Neither narrower
+feature substitutes characters for `%uXXXX` or repairs UTF-8; a match does not
+establish a successful traversal.
+Both new feature keys always appear in sanitized counts, including at zero.
+
+## Legacy Japanese encodings and interpretation
+
+On EUC-JP and Shift_JIS sites, the broad `overlong-utf8` and `invalid-utf8`
+features can count ordinary text rather than an encoding anomaly for that
+site. EUC-JP search text such as `%C0%B8`, and even an isolated `%C0%AE`, does
+not meet the narrower dot + dot + separator definition. Ordinary legacy text
+can still satisfy that shape, however: in EUC-JP, `C0 AE` is 成 and `C0 AF` is
+政, so `..政` (`..%C0%AF`), `成./` (`%C0%AE./`) and `成成政`
+(`%C0%AE%C0%AE%C0%AF`) match `overlong-traversal`; in Shift_JIS, half-width
+`..ﾀｯ` (`..%C0%AF`) has the same bytes. Review query-string and body matches
+with the site's character encoding in mind. Japanese `%u30af`
+matches `iis-unicode` but not `iis-unicode-ascii`. JavaScript's legacy
+[`escape()`](https://tc39.es/ecma262/multipage/additional-ecmascript-features-for-web-browsers.html#sec-escape-string)
+also produces `%uXXXX` for code units above U+00FF; the shape does not identify
+a client implementation or its intent.
+
+As operator-reported context, an sctx measurement dated 2026-11-14 across
+3,201 hosts counted `%u` plus four hex digits on 17 hosts / 1,573 requests.
+The operator associated 15 of those hosts with ASP.NET-related Japanese text
+spellings. C0/C1 plus continuation-byte shapes appeared on 41 hosts / 16,172
+requests, many associated with EUC-JP search terms. These are observations from
+that corpus, not validation results for Shenron or general detection rates.
+The narrower features provide separate counts for review; they do not turn
+either broad family, or a narrower match, into an attack or intent conclusion.
 
 ## Profile support and unavailable fields
 
