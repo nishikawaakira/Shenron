@@ -221,7 +221,7 @@ fn path_parameter_traversal_matches_exact_dot_prefixes_at_each_decoding_depth() 
             0
         );
     }
-    assert_eq!(Feature::ALL.len(), 18);
+    assert_eq!(Feature::ALL.len(), 20);
     assert!(Feature::ALL
         .windows(2)
         .all(|pair| pair[0].label() < pair[1].label()));
@@ -919,4 +919,292 @@ fn shared_discovery_sorts_before_example_admission_and_rejects_broken_gzip() {
     assert!(!output.join("request-anomalies.json").exists());
     assert!(!output.join("sanitized-request-anomalies.json").exists());
     assert!(!output.join("run-manifest.json").exists());
+}
+
+#[test]
+fn japanese_legacy_encoding_and_isolated_dot_spellings_do_not_match_narrow_features() {
+    for (target, iis, overlong, invalid_utf8) in [
+        ("/search?q=%u30af", 1, 0, 0),
+        ("/search?q=%C0%B8", 0, 1, 1),
+        ("/search?q=%C0%AE", 0, 1, 1),
+        ("/search?q=%83%65%83%58%83%67", 0, 0, 1),
+        ("/search?q=%c0%2e", 0, 0, 1),
+    ] {
+        let report = waf_report(target, &Options::default());
+        assert_eq!(
+            report.summary.features[&Feature::IisUnicodeAscii].requests,
+            0,
+            "{target}"
+        );
+        assert_eq!(
+            report.summary.features[&Feature::OverlongTraversal].requests,
+            0,
+            "{target}"
+        );
+        assert_eq!(report.summary.features[&Feature::IisUnicode].requests, iis);
+        assert_eq!(
+            report.summary.features[&Feature::OverlongUtf8].requests,
+            overlong
+        );
+        assert_eq!(
+            report.summary.features[&Feature::InvalidUtf8].requests,
+            invalid_utf8
+        );
+    }
+}
+
+#[test]
+fn iis_unicode_ascii_matches_only_literal_ascii_and_listed_separator_code_units() {
+    let options = Options::default();
+    for code in (0..=0x7f).chain([0xff0e, 0xff0f, 0xff3c, 0x2215, 0x2216]) {
+        let target = if code % 2 == 0 {
+            format!("/search?q=%u{code:04x}")
+        } else {
+            format!("/search?q=%U{code:04X}")
+        };
+        let report = waf_report(&target, &options);
+        assert_eq!(
+            report.summary.features[&Feature::IisUnicodeAscii].requests,
+            1,
+            "{target}"
+        );
+        assert_eq!(report.summary.features[&Feature::IisUnicode].requests, 1);
+        assert_eq!(report.summary.features[&Feature::NulByte].requests, 0);
+        assert_eq!(
+            report.summary.features[&Feature::OverlongTraversal].requests,
+            0
+        );
+        let example = &report.feature_examples[&Feature::IisUnicodeAscii][0];
+        assert_eq!(example.raw_target.as_deref(), Some(target.as_str()));
+        assert_eq!(
+            example.observed_in.iter().copied().collect::<Vec<_>>(),
+            ["target"]
+        );
+    }
+    for target in [
+        "/%u0080",
+        "/%u30af",
+        "/%uff0d",
+        "/%uff10",
+        "/%uff3b",
+        "/%uff3d",
+        "/%u2214",
+        "/%u2217",
+        "/%uD800",
+        "/%u005",
+        "/%u00G1",
+        "/%25u0053",
+    ] {
+        assert_eq!(
+            waf_report(target, &options).summary.features[&Feature::IisUnicodeAscii].requests,
+            0,
+            "{target}"
+        );
+    }
+    for target in ["/search?q=%u0053ELECT", "/..%u2215", "/%u002e%u002e%u002f"] {
+        let report = waf_report(target, &options);
+        assert_eq!(
+            report.summary.features[&Feature::IisUnicodeAscii].requests,
+            1
+        );
+        assert_eq!(report.summary.features[&Feature::Traversal].requests, 0);
+        assert_eq!(
+            report.summary.features[&Feature::TraversalEncoded].requests,
+            0
+        );
+        assert_eq!(
+            report.summary.features[&Feature::OverlongTraversal].requests,
+            0
+        );
+    }
+}
+
+#[test]
+fn overlong_traversal_requires_two_dot_tokens_and_a_separator_with_one_nonshortest_token() {
+    let options = Options::default();
+    let dots: &[&[u8]] = &[
+        b".",
+        b"\xc0\xae",
+        b"\xe0\x80\xae",
+        b"\xf0\x80\x80\xae",
+        b"\xc0\x2e",
+    ];
+    let separators: &[&[u8]] = &[
+        b"/",
+        b"\\",
+        b"\xc0\xaf",
+        b"\xc1\x9c",
+        b"\xe0\x80\xaf",
+        b"\xe0\x81\x9c",
+        b"\xf0\x80\x80\xaf",
+    ];
+    let encode = |bytes: &[u8]| {
+        bytes
+            .iter()
+            .map(|byte| format!("%{byte:02x}"))
+            .collect::<String>()
+    };
+    for first in dots {
+        for second in dots {
+            for separator in separators {
+                let target = format!(
+                    "/a/{}{}{}b",
+                    encode(first),
+                    encode(second),
+                    encode(separator)
+                );
+                let expected =
+                    u64::from(first.len() > 1 || second.len() > 1 || separator.len() > 1);
+                let report = waf_report(&target, &options);
+                assert_eq!(
+                    report.summary.features[&Feature::OverlongTraversal].requests,
+                    expected,
+                    "{target}"
+                );
+            }
+        }
+    }
+    for target in [
+        "/%c0%ae%c0%ae%c0%af",
+        "/..%c0%af",
+        "/%c0%2e%c0%2e/",
+        "/.%c0%2e/",
+        "/%c0%2e.%c0%af",
+        "/%25c0%25ae%25c0%25ae%25c0%25af",
+        "/..%c0%af/..%c0%af",
+    ] {
+        let report = waf_report(target, &options);
+        assert_eq!(
+            report.summary.features[&Feature::OverlongTraversal].requests,
+            1,
+            "{target}"
+        );
+        assert_eq!(
+            report.summary.features[&Feature::IisUnicodeAscii].requests,
+            0
+        );
+    }
+    for target in [
+        "/../",
+        "/..%2f",
+        "/.%c0%af",
+        "/%c0%ae%2f",
+        "/%c0%aeX%c0%ae%c0%af",
+        "/%c0%ae%c0%ae",
+        "/%c1%ae%c1%ae/",
+        "/%e0%81%ae../",
+        "/..%f0%80%81%9c",
+        "/%ef%bc%8e%ef%bc%8e%ef%bc%8f",
+        "/%2525c0%2525ae%2525c0%2525ae%2525c0%2525af",
+    ] {
+        assert_eq!(
+            waf_report(target, &options).summary.features[&Feature::OverlongTraversal].requests,
+            0,
+            "{target}"
+        );
+    }
+    let legacy = waf_report("/%c0%2e%c0%2e/", &options);
+    assert_eq!(legacy.summary.features[&Feature::OverlongUtf8].requests, 0);
+    assert_eq!(legacy.summary.features[&Feature::InvalidUtf8].requests, 1);
+}
+
+#[test]
+fn narrow_encoding_features_inspect_bodies_without_rewriting_or_retaining_them() {
+    let dir = tempdir().unwrap();
+    let input = dir.path().join("body.log");
+    let body = "value=%u0053ELECT&path=%c0%ae%c0%ae%c0%af";
+    fs::write(
+        &input,
+        format!(
+            "{} \"application/synthetic\" \"-\" \"-\" 0.1 postdata[{body}]",
+            combined("POST /normal HTTP/1.1", "192.0.2.1", "200")
+        ),
+    )
+    .unwrap();
+    let report = run(
+        &input,
+        TelemetryProfile::NginxPostdata,
+        &HuntTimeRange::default(),
+        &Options::default(),
+        None,
+    )
+    .unwrap();
+    for feature in [Feature::IisUnicodeAscii, Feature::OverlongTraversal] {
+        assert_eq!(report.summary.features[&feature].requests, 1);
+        let example = &report.feature_examples[&feature][0];
+        assert_eq!(
+            example.observed_in.iter().copied().collect::<Vec<_>>(),
+            ["request-body"]
+        );
+        assert_eq!(example.raw_target.as_deref(), Some("/normal"));
+    }
+    assert!(!serde_json::to_string(&report).unwrap().contains(body));
+}
+
+#[test]
+fn narrow_encoding_feature_keys_are_always_serialized_and_artifacts_remain_private_and_reproducible(
+) {
+    let ordinary = waf_report("/normal", &Options::default());
+    let summary = serde_json::to_value(&ordinary.summary).unwrap();
+    assert_eq!(summary["features"].as_object().unwrap().len(), 20);
+    for key in ["iis-unicode-ascii", "overlong-traversal"] {
+        assert_eq!(summary["features"][key]["requests"], 0);
+    }
+    let dir = tempdir().unwrap();
+    let input = dir.path().join("synthetic.jsonl");
+    let targets = [
+        "/normal",
+        "/private?q=%u0053ELECT",
+        "/private/%c0%ae%c0%ae%c0%af",
+    ];
+    fs::write(
+        &input,
+        targets
+            .iter()
+            .map(|target| waf(target, None, "192.0.2.1", 1767225600000).to_string())
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
+    .unwrap();
+    let mut stdout = Vec::new();
+    for name in ["a", "b"] {
+        stdout.push(
+            command(dir.path())
+                .args(["request-anomalies", "--input"])
+                .arg(&input)
+                .args(["--format", "aws-waf", "--output"])
+                .arg(dir.path().join(name))
+                .assert()
+                .success()
+                .get_output()
+                .stdout
+                .clone(),
+        );
+    }
+    assert_eq!(stdout[0], stdout[1]);
+    for artifact in [
+        "request-anomalies.json",
+        "sanitized-request-anomalies.json",
+        "run-manifest.json",
+    ] {
+        assert_eq!(
+            fs::read(dir.path().join("a").join(artifact)).unwrap(),
+            fs::read(dir.path().join("b").join(artifact)).unwrap()
+        );
+    }
+    let sanitized =
+        fs::read_to_string(dir.path().join("a/sanitized-request-anomalies.json")).unwrap();
+    let parsed: Value = serde_json::from_str(&sanitized).unwrap();
+    assert_eq!(parsed["features"]["iis-unicode-ascii"]["requests"], 1);
+    assert_eq!(parsed["features"]["overlong-traversal"]["requests"], 1);
+    for private in [
+        "192.0.2.1",
+        "/private",
+        "%u0053ELECT",
+        "%c0%ae",
+        "synthetic.jsonl",
+    ] {
+        assert!(!sanitized.contains(private));
+        assert!(!String::from_utf8_lossy(&stdout[0]).contains(private));
+    }
 }
