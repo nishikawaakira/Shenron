@@ -1,5 +1,7 @@
 # Shenron
 
+![Shenron — 台湾の廟の陶片装飾をモチーフにした龍](docs/assets/shenron-github-cover.png)
+
 [English README](README.md)
 
 非一致リクエストも確認する `context`、原本の行参照、スコープ付き判定と再レビュー期限、比較条件の開示、複数 run の基準値比較、`candidate evaluate` の使い方は [Investigation workflow](docs/investigation-workflow.md) を参照してください。すべて明示指定のローカルレビュー機能であり、自動判定は行わず、既定の動作も変更しません。

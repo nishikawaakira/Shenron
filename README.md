@@ -1,5 +1,7 @@
 # Shenron
 
+![Shenron — a dragon inspired by Taiwanese temple ceramic art](docs/assets/shenron-github-cover.png)
+
 [日本語版 README](README.ja.md)
 
 Shenron is a passive Rust threat-hunting engine for historical web telemetry. Its purpose is not merely to alert on suspicious requests: it helps analysts turn public threat intelligence into local evidence and into reviewable AWS WAF rule candidates validated by historical replay.

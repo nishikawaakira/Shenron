@@ -1,0 +1,13 @@
+Generated with the built-in image_gen tool.
+
+Use case: ads-marketing
+Asset type: polished horizontal GitHub repository cover for Shenron, a Rust tool for offline analysis of historical web telemetry.
+Primary request: create a striking, refined cover featuring a Taiwanese temple dragon and the exact project name "Shenron".
+Subject: a single beautiful long serpentine Taiwanese dragon inspired by intricate ceramic and cut-porcelain dragon sculptures on Taiwanese temple roof ridges (jiannian / 剪黏): expressive dignified face, branching antler-like horns, flowing whiskers, sinuous scaled body, intricate glazed ceramic fragments, small ornamental claws. The dragon should feel culturally rooted in Taiwanese temple craft, contemporary and elegant, watchful and thoughtful.
+Style/medium: premium editorial illustration with tactile ceramic / porcelain mosaic details and carefully controlled lighting; crisp, sophisticated, memorable even at thumbnail size.
+Scene/backdrop: deep quiet charcoal background with restrained traditional cloud curves; subtle linear trails suggesting streams of log data, abstract and without readable log content.
+Composition/framing: wide landscape 2:1 composition, ideally 1536 x 768 pixels. Dragon occupies the right half, its flowing body curling gracefully through the composition; clean negative space at left for the name. Generous crop-safe margins, all lettering inside the central safe area. Do not crop the face or horns.
+Text (verbatim): "Shenron"
+Typography: large beautifully typeset warm ivory wordmark on the left, clearly readable with excellent spacing, quietly technical and confident. This is the only text.
+Lighting/mood: dark luminous atmosphere, glazed jade-green scales, small muted vermilion and antique-gold accents naturally associated with Taiwanese temple ceramics. A visual identity suitable for a serious open-source analysis tool, not a video game.
+Constraints: one dragon only, no people, no identifiable real-world site, no flags, no national symbols, no invented Chinese text, no badges or GitHub logo, no code blocks, no dashboards, no watermark, no additional tagline. No weapons, flames, threat labels, scary attack scenes, anime franchise resemblance or cartoon mascot. Entire cover is a finished artwork, not a mockup on a screen.
