@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     output::Finding,
-    sigma::load_rules,
+    sigma::load_explicit_rules,
     waf::{sniff_gzip_reader, WafLines},
 };
 
@@ -1015,7 +1015,7 @@ pub fn validate_corpus(
     manifest_path: Option<&Path>,
 ) -> Result<ValidationReport> {
     let truth = read_truth(truth_path)?;
-    let rules = load_rules(rules_path);
+    let rules = load_explicit_rules(rules_path)?;
 
     let reader = sniff_gzip_reader(
         File::open(corpus).with_context(|| format!("opening {}", corpus.display()))?,

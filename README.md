@@ -4,15 +4,50 @@
 
 [日本語版 README](README.ja.md)
 
+Shenron is for operators who have historical AWS WAF, ALB, CloudFront,
+Apache, or nginx logs and want to compare them with public threat intelligence.
+Analysis runs offline, keeps logs local, and leaves your WAF untouched.
+Exported WAF rules use COUNT only and are meant for human review.
+
 Shenron is a passive Rust threat-hunting engine for historical web telemetry. Its purpose is not merely to alert on suspicious requests: it helps analysts turn public threat intelligence into local evidence and into reviewable AWS WAF rule candidates validated by historical replay.
 
-## How it works (architecture overview)
+## Quick start
 
-For opt-in non-matching request context (`context`), original-line evidence,
-scoped dispositions and review deadlines, comparison-condition disclosures,
-multiple frozen reference runs, and `candidate evaluate`, see the
-[investigation workflow](docs/investigation-workflow.md). These are local review
-tools, not automatic classifications; existing defaults remain unchanged.
+Download the archive for your OS and architecture from the [Releases](../../releases) page.
+Verify it against the accompanying `.sha256` checksum, extract it, and put
+`shenron` (Windows: `shenron.exe`) on your PATH. Tagged releases cover Linux
+(`x86_64`/`aarch64`, glibc and static musl), macOS (Intel and Apple Silicon),
+and Windows (`x86_64`). The archives include the license and READMEs.
+
+With Git installed, run these commands from the directory where you want the
+checkout. The last two commands use only local files.
+
+```bash
+git clone https://github.com/nishikawaakira/Shenron.git
+cd Shenron
+shenron validate-rules --rules ./sigma-rules/
+shenron hunt --input ./tests/fixtures/aws-waf/ --format aws-waf --rules ./tests/fixtures/rules/ --no-nuclei
+```
+
+The test corpus includes a deliberately malformed line to demonstrate parse
+error reporting. Look for JSONL findings on stdout and the hunt summary on
+stderr.
+
+`hunt` is the single detection entry point. Without `--output`, private findings (including raw IPs, paths, hosts, and request evidence) go to stdout as JSONL; summaries and warnings go to stderr, and no files are created. Use `--output-format csv > findings.csv` for flattened CSV. `--no-nuclei` provides a setup-free Sigma-only run; `--no-sigma` provides the inverse, and both cannot be disabled together. Use `validate-rules` to check Sigma rule compatibility independently.
+
+### Run from source
+
+With a stable Rust toolchain, run the same checks from the repository root:
+
+```bash
+cargo run --bin shenron -- validate-rules --rules ./sigma-rules/
+cargo run --bin shenron -- hunt --input ./tests/fixtures/aws-waf/ --format aws-waf --rules ./tests/fixtures/rules/ --no-nuclei
+```
+
+For a release build, use `cargo build --release --bin shenron`. The Release
+workflow builds and attaches the archives when maintainers push a version tag.
+
+## How it works (architecture overview)
 
 In one line: **Shenron correlates public CTI with your own historical logs in an offline analysis pipeline, producing confidence-labeled evidence and COUNT-only WAF rule candidates that you review before deploying.** Explicit preparation commands `shenron nuclei update` and `shenron reputation update` may download public intelligence, but never upload customer logs, findings, IPs, request values, or other customer data.
 
@@ -48,6 +83,12 @@ Four design pillars: (1) static conversion — templates are never executed; (2)
 `shenron export --results-dir <run> --format stix|misp --output <file>` converts an existing run to a local CTI file without network transmission or log reprocessing. It is sanitized-only by default; `--include-observables` explicitly adds private peer IPs and URI paths and defaults the marking to TLP:RED. No threat actor, campaign, attack, exploitation, compromise, or attribution is inferred. See [CTI export](docs/cti-export.md).
 
 ## Capabilities
+
+For opt-in non-matching request context (`context`), original-line evidence,
+scoped dispositions and review deadlines, comparison-condition disclosures,
+multiple frozen reference runs, and `candidate evaluate`, see the
+[investigation workflow](docs/investigation-workflow.md). These are local review
+tools, not automatic classifications; existing defaults remain unchanged.
 
 `stack` counts observed field-value frequencies without CTI, including bounded
 rare/top lists, source counts and frequency histograms. Unsupported telemetry
@@ -188,38 +229,6 @@ post-hunt Slack notification).
 
 The full daily procedure and the reasoning behind each step are in the
 [daily-hunting runbook](docs/daily-hunting-runbook.md).
-
-## Prebuilt binaries
-
-Tagged releases ship one `shenron` binary for Linux
-(`x86_64`/`aarch64`, glibc and static musl), macOS (Intel and Apple Silicon),
-and Windows (`x86_64`) on the [Releases](../../releases) page. Each archive
-carries a `.sha256` checksum and bundles the license and READMEs. To cut a
-release, push a version tag and the `Release` workflow builds and attaches the
-assets:
-
-```bash
-git tag v0.1.0
-git push origin v0.1.0
-```
-
-Building from source needs a stable Rust toolchain; a release build is
-`cargo build --release --bin shenron`.
-
-## Quick start
-
-```bash
-cargo run --bin shenron -- hunt \
-  --input ./tests/fixtures/aws-waf/ \
-  --rules ./tests/fixtures/rules/ \
-  --no-nuclei
-```
-
-`hunt` is the single detection entry point. Without `--output`, private findings (including raw IPs, paths, hosts, and request evidence) go to stdout as JSONL; summaries and warnings go to stderr, and no files are created. Use `--output-format csv > findings.csv` for flattened CSV. `--no-nuclei` provides a setup-free Sigma-only run; `--no-sigma` provides the inverse, and both cannot be disabled together. Check Sigma rule compatibility independently with the retained command:
-
-```bash
-cargo run --bin shenron -- validate-rules --rules ./rules/
-```
 
 ## Quick hunt
 

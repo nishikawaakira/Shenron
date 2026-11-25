@@ -94,7 +94,7 @@ pub enum LabCommand {
         #[arg(long)]
         corpus: PathBuf,
     },
-    /// Update, inventory, and statically analyze public Nuclei templates. Templates are never executed.
+    /// Download public templates with `update`, or inspect Nuclei templates locally without executing them.
     Nuclei {
         #[command(subcommand)]
         command: NucleiCommand,
@@ -114,7 +114,7 @@ pub enum LabCommand {
         #[command(subcommand)]
         command: BotRangesCommand,
     },
-    /// Prepare public Nuclei, KEV, reputation, ASN, Sigma, and bot-range inputs.
+    /// Prepare public Nuclei, KEV, reputation, ASN, Sigma, and bot-range inputs, with network access.
     Setup {
         /// Skip the public Nuclei template checkout and frozen coverage report.
         #[arg(long)]

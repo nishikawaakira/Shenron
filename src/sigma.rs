@@ -1,5 +1,6 @@
 use std::{cell::OnceCell, collections::BTreeMap, fs, path::Path};
 
+use anyhow::Context;
 use regex::Regex;
 use serde::Deserialize;
 use serde_yaml::Value;
@@ -260,6 +261,23 @@ pub fn load_rules(path: &Path) -> RuleSet {
         }
     }
     rules
+}
+
+/// Load a user-specified rules path and require at least one rule file.
+pub fn load_explicit_rules(path: &Path) -> anyhow::Result<RuleSet> {
+    fs::metadata(path).with_context(|| {
+        format!(
+            "cannot access Sigma rules at {} (expected .yml or .yaml files)",
+            path.display()
+        )
+    })?;
+    let rules = load_rules(path);
+    anyhow::ensure!(
+        !rules.supported.is_empty() || !rules.unsupported.is_empty(),
+        "no Sigma rule files (.yml or .yaml) found at {}",
+        path.display()
+    );
+    Ok(rules)
 }
 
 fn compile_rule(input: &str, path: &Path) -> Result<CompiledRule, (Option<String>, CompileError)> {
