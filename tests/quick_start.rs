@@ -1,6 +1,7 @@
 use std::fs;
 
 use assert_cmd::Command;
+use predicates::prelude::PredicateBooleanExt;
 use predicates::str::{contains, starts_with};
 use tempfile::TempDir;
 
@@ -36,6 +37,43 @@ fn hunt_rejects_an_explicit_directory_without_rule_files() {
         .failure()
         .stderr(contains(rules.path().display().to_string()))
         .stderr(contains(".yml or .yaml"));
+}
+
+#[test]
+fn hunt_skips_missing_explicit_rules_only_when_sigma_is_disabled() {
+    let data = tempfile::tempdir().unwrap();
+    let args = [
+        "hunt",
+        "--input",
+        "./tests/fixtures/production/waf.jsonl",
+        "--format",
+        "aws-waf",
+        "--nuclei-templates",
+        "tests/fixtures/nuclei",
+        "--nuclei-report",
+        "tests/fixtures/production/nuclei-report.json",
+        "--rules",
+        "./no-such-dir/",
+    ];
+    let output = shenron(&data)
+        .args(args)
+        .arg("--no-sigma")
+        .assert()
+        .success()
+        .stdout(contains("synthetic-cve-2024-10001"));
+    let stderr = std::str::from_utf8(&output.get_output().stderr).unwrap();
+    assert_eq!(
+        stderr
+            .lines()
+            .filter(|line| line.starts_with("Sigma pass:"))
+            .collect::<Vec<_>>(),
+        ["Sigma pass: skipping --rules ./no-such-dir/ because --no-sigma is set."]
+    );
+    shenron(&data)
+        .args(args)
+        .assert()
+        .failure()
+        .stderr(contains("./no-such-dir/").and(contains(".yml or .yaml")));
 }
 
 #[test]
