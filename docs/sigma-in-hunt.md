@@ -19,11 +19,12 @@ required. `--no-nuclei` and `--no-sigma` cannot be combined.
 
 ## Default on
 
-Sigma evaluation is **on by default**. `hunt` loads its rules from the default
-rules directory (`<data-dir>/sigma-rules`) when present, or from an explicit
-`--rules <PATH>`. If neither exists, Sigma is skipped with a one-line note (not an
-error), so a hunt with no Sigma rules behaves exactly as before. `--no-sigma`
-disables the pass explicitly.
+Sigma evaluation is **on by default**. An explicit `--rules <PATH>` must name
+an existing path with at least one `.yml` or `.yaml` file. When every rule
+is unsupported, `hunt` reports the unsupported count and continues. If
+`--rules` is omitted, `hunt` uses the prepared `<data-dir>/sigma-rules`
+directory when present and skips Sigma with a note when it is missing.
+`--no-sigma` disables Sigma matching.
 
 Without `--output`, `hunt` writes private findings only to stdout as JSONL (or
 flattened CSV with `--output-format csv`) and creates no files. These records can

@@ -4,13 +4,46 @@
 
 [English README](README.md)
 
-非一致リクエストも確認する `context`、原本の行参照、スコープ付き判定と再レビュー期限、比較条件の開示、複数 run の基準値比較、`candidate evaluate` の使い方は [Investigation workflow](docs/investigation-workflow.md) を参照してください。すべて明示指定のローカルレビュー機能であり、自動判定は行わず、既定の動作も変更しません。
+Shenron は、AWS WAF・ALB・CloudFront・Apache／nginx の過去ログを、公開されている脅威情報と照らし合わせたい運用者向けのツールです。解析はオフラインで行い、ログは手元に残します。WAF 自体の変更は行わず、確認用のルールは COUNT でのみ出力します。
 
 Shenron は、Web アクセスログを対象にした Rust 製の「受動的（パッシブ）な脅威ハンティング・エンジン」です。公開されている脅威インテリジェンス（Nuclei テンプレートや CISA KEV Catalog）を、自組織のログと突き合わせ、防御ルールの候補作成を支援します。
 
 単一バイナリ `shenron` の解析コマンドは既定ではネットワーク接続せず、ターゲットへのスキャン、エクスプロイトの実行、AWS の変更や AWS API の呼び出し、WAF ルールの自動適用、`terraform plan/apply`、OSSEC の再起動を行いません。ログ・検出結果・IP・リクエスト値などの生の顧客データを外部へ送信・アップロードしません。ネットワークを使うのは、明示的に実行した `setup` / `nuclei update` / `kev` / `reputation update` / `bot-ranges update` と、`SHENRON_SLACK_WEBHOOK` を設定した hunt 完了後通知だけです。取得コマンドは公開インテリジェンスのダウンロードだけを行い、Slack 通知は sanitized 集計だけを送り、生 IP・パス・ホスト・ヘッダー・ログ値・private findings は含みません。出力は必ず人間のレビューを前提とした「提案」であり、Shenron 自身が何かをデプロイすることはありません。
 
 `shenron export --results-dir <run> --format stix|misp --output <file>` は、ログを再解析せず、既存 run をローカル CTI ファイルへ変換します。既定では sanitized 集計だけを扱い、`--include-observables` を明示した場合のみ private な観測 peer IP と URI パスを追加し、既定の marking は TLP:RED になります。ネットワーク送信は行わず、脅威アクター・campaign・攻撃・悪用・侵害・帰属を推定しません。詳細は [CTI export](docs/cti-export.md) を参照してください。
+
+## クイックスタート
+
+[Releases](../../releases) から OS と CPU に合うアーカイブをダウンロードし、
+別ファイルで配布される `.sha256` チェックサムと照合してください。展開した `shenron`
+（Windows では `shenron.exe`）を PATH の通った場所に置きます。タグ付きリリースは
+Linux（`x86_64`／`aarch64`、glibc および静的 musl）、macOS（Intel／Apple Silicon）、
+Windows（`x86_64`）に対応し、アーカイブにはライセンスと README を同梱します。
+
+Git を用意し、リポジトリを配置したい場所で次のコマンドを実行します。最後の2コマンドはローカルファイルだけを使います。
+
+```bash
+git clone https://github.com/nishikawaakira/Shenron.git
+cd Shenron
+shenron validate-rules --rules ./sigma-rules/
+shenron hunt --input ./tests/fixtures/aws-waf/ --format aws-waf --rules ./tests/fixtures/rules/ --no-nuclei
+```
+
+テスト用データには、パースエラーの表示を確認するため、意図的に不正な行を入れています。標準出力に JSONL の検出結果、標準エラーに hunt の要約が出ます。
+
+`hunt` が検出の唯一の入口です。`--output` を省略すると、生の IP・パス・ホスト・リクエスト証跡を含み得る private findings だけを JSONL で標準出力へ出し、要約と警告は標準エラーへ出します。このモードではファイルを作りません。CSV は `--output-format csv > findings.csv` で保存できます。`--no-nuclei` なら setup 不要の Sigma-only、`--no-sigma` なら Nuclei-only で動作し、両方を同時に無効化することはできません。Sigma ルールの対応状況を確認する `validate-rules` は引き続き利用できます。
+
+### ソースから実行
+
+stable の Rust ツールチェインがあれば、リポジトリのルートで同じ手順を実行できます。
+
+```bash
+cargo run --bin shenron -- validate-rules --rules ./sigma-rules/
+cargo run --bin shenron -- hunt --input ./tests/fixtures/aws-waf/ --format aws-waf --rules ./tests/fixtures/rules/ --no-nuclei
+```
+
+リリースビルドには `cargo build --release --bin shenron` を使います。メンテナーが
+バージョンタグを push すると、Release ワークフローがアーカイブをビルドして添付します。
 
 ## 仕組み（アーキテクチャ概要）
 
@@ -66,6 +99,8 @@ ALB と、先頭が `#Version: 1.0`・`#Fields:` の2行で始まる CloudFront 
 ログのディレクトリ探索では、形式ごとの対応拡張子に加えて、拡張子なしと数字だけの拡張子を持つローテーション済みログも読みます。ディレクトリ内の隠しファイル・隠しディレクトリ・非対応拡張子・シンボリックリンクは読み飛ばし、件数と理由を開示します（`context` はシンボリックリンクでエラー）。隠しディレクトリは中を走査せず1件と数えます。入力として直接指定したディレクトリは隠しディレクトリでも走査し、直接指定したファイルは拡張子にかかわらず読みます。拡張子なしのログ以外のファイルも解析対象になるため、ログ専用のディレクトリを推奨します。gzip は拡張子でなく magic bytes で判定し、連結された全メンバーを読みます。読み飛ばしたパスは private の provenance にだけ残します。新たに読み込み対象になったファイルは、一致する provenance が既に index にない限り、`--processed-index` では未処理として扱われます。詳細は [Production hunting](docs/production-hunting.md) を参照してください。
 
 ## できること
+
+非一致リクエストも確認する `context`、原本の行参照、スコープ付き判定と再レビュー期限、比較条件の開示、複数 run の基準値比較、`candidate evaluate` の使い方は [Investigation workflow](docs/investigation-workflow.md) を参照してください。すべて明示指定のローカルレビュー機能であり、自動判定は行わず、既定の動作も変更しません。
 
 - `stack`：CTI に依存せず、フィールドの値ごとの要求数・送信元数と度数分布を計数し、まれな値と多い値を上限付きで列挙します。プロファイルに無いフィールドはゼロとせず利用不可として開示します。完全な値は private に保持し、sanitized と既定表示にはメソッド・ステータスも含めて値を出しません。まれさはそのコーパス内の頻度であり、悪性・攻撃・自動化の判定ではありません。詳細は [Field frequency observations](docs/stack.md) を参照してください。
 - `rare-success`：少数の送信元だけに成功ステータスが観測されたパスと、探索の形の後に成功ステータスが観測された前後関係を、1回のオフライン読み込みで集計します。ID テンプレートと探索条件は既存処理を共有します。成功は設定したステータスクラスだけを意味し、アプリケーションの結果や因果関係の判定ではありません。管理画面や正規の連携も同じ形になります。既定の表示と sanitized 成果物は集計だけで、パスと送信元はそれぞれ明示指定時だけ表示します。詳細は [Rare response-status patterns](docs/rare-success.md) を参照してください。
@@ -145,38 +180,6 @@ Shenron は**単一バイナリ**です。準備系コマンドだけが公開�
 
 日次運用の手順と各ステップの理由は
 [日次ハンティング runbook](docs/daily-hunting-runbook.md) にあります。
-
-## ビルド済みバイナリ
-
-タグ付きリリースでは、Linux（`x86_64`/`aarch64`、glibc および静的 musl）、macOS
-（Intel / Apple Silicon）、Windows（`x86_64`）向けの単一 `shenron`
-バイナリを [Releases](../../releases) ページで配布します。各アーカイブには
-`.sha256` チェックサムが付き、ライセンスと README を同梱します。リリースを作成
-するには、バージョンタグを push すると `Release` ワークフローがビルドして成果物を
-添付します:
-
-```bash
-git tag v0.1.0
-git push origin v0.1.0
-```
-
-ソースからのビルドには stable の Rust ツールチェインが必要です。リリースビルドは
-`cargo build --release --bin shenron` です。
-
-## クイックスタート
-
-```bash
-cargo run --bin shenron -- hunt \
-  --input ./tests/fixtures/aws-waf/ \
-  --rules ./tests/fixtures/rules/ \
-  --no-nuclei
-```
-
-`hunt` が検出の唯一の入口です。`--output` を省略すると、生の IP・パス・ホスト・リクエスト証跡を含み得る private findings だけを JSONL で標準出力へ出し、要約と警告は標準エラーへ出します。このモードではファイルを作りません。CSV は `--output-format csv > findings.csv` で保存できます。`--no-nuclei` なら setup 不要の Sigma-only、`--no-sigma` なら Nuclei-only で動作し、両方を同時に無効化することはできません。Sigma ルールの対応状況を確認する `validate-rules` は引き続き利用できます。
-
-```bash
-cargo run --bin shenron -- validate-rules --rules ./rules/
-```
 
 ## Production hunt（本番ログのハンティング）
 

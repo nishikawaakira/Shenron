@@ -47,9 +47,9 @@ Select the source explicitly for standard Combined or when strict parsing is
 desired:
 
 ```bash
-shenron hunt --input ./logs --format nginx --rules ./rules --no-nuclei
-shenron hunt --input ./logs --format apache --rules ./rules --no-nuclei
-shenron hunt --input ./logs --format apache-vhost --rules ./rules --no-nuclei
+shenron hunt --input ./logs --format nginx --rules ./sigma-rules/ --no-nuclei
+shenron hunt --input ./logs --format apache --rules ./sigma-rules/ --no-nuclei
+shenron hunt --input ./logs --format apache-vhost --rules ./sigma-rules/ --no-nuclei
 shenron hunt --input ./logs --format apache ...
 shenron hunt --input ./other_vhosts_access.log --format apache ...
 shenron nuclei compare-telemetry --templates ./nuclei-templates --revision <sha>

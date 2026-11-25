@@ -59,7 +59,7 @@ use shenron::{
     },
     report::ReportLanguage,
     reputation::{load_asn_database, load_reputation_database, AsnDatabase, ReputationDatabase},
-    sigma::load_rules,
+    sigma::load_explicit_rules,
     trend::{path_trend, PathTrendReport},
     triage::{
         asn_entity_groups, entity_groups, EntityDimension, TriagePolicy,
@@ -2207,7 +2207,7 @@ fn run_candidate(command: CandidateCommand) -> Result<()> {
                 let rules = rules
                     .as_ref()
                     .ok_or_else(|| anyhow::anyhow!("--include-sigma-ttp requires --rules <DIR>"))?;
-                let ruleset = load_rules(rules);
+                let ruleset = load_explicit_rules(rules)?;
                 if ruleset.supported.is_empty() {
                     anyhow::bail!(
                         "no supported Sigma rules were found under {}",
@@ -4944,7 +4944,7 @@ fn format_triage_duration(duration: Duration) -> String {
 }
 
 fn validate(rules: &Path) -> Result<()> {
-    let ruleset = load_rules(rules);
+    let ruleset = load_explicit_rules(rules)?;
     for rule in &ruleset.supported {
         println!("SUPPORTED    {}", rule.title);
     }

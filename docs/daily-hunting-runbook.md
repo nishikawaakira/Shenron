@@ -91,7 +91,7 @@ Before wiring a source into the daily pipeline, take a fast, setup-free look
 with Sigma-only findings on stdout:
 
 ```bash
-shenron hunt --input /var/log/nginx --format nginx --rules ./rules --no-nuclei \
+shenron hunt --input /var/log/nginx --format nginx --rules ./sigma-rules/ --no-nuclei \
   | jq 'select(.response_status == 200)'
 ```
 

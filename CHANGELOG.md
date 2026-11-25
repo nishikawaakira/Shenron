@@ -3,9 +3,11 @@
 Notable, operator-facing changes. Dates are UTC. Analysis stays offline by
 default and COUNT-only; see the README for the full invariants.
 
-## [Unreleased]
+## [0.5.0] - 2026-11-25
 
 ### Changed
+
+- An explicit `--rules` path now exits with an error if it is missing or contains no `.yml` or `.yaml` rule files. Omitting the flag still uses the prepared default where applicable.
 
 - JSON artifact writes now use a shared buffered writer with explicit flush error reporting, preserving the existing serialized bytes. New-only outputs use `create_new` to avoid overwriting files created after preflight checks; processed-index writes are also buffered. Failed new-only writes remove incomplete files so they can be retried.
 

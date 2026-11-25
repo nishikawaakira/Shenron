@@ -28,7 +28,7 @@ use shenron::{
     },
     report::{render_report, ReportArtifacts, ReportTriageView, SensitiveSuccessFinding},
     reputation::{load_asn_database, load_reputation_database},
-    sigma::load_rules,
+    sigma::{load_explicit_rules, load_rules, RuleSet},
     slack::{
         notify_best_effort, SlackComparisonSummary, SlackNotificationConfig,
         SlackNotificationMetrics,
@@ -313,7 +313,7 @@ fn prepare_hunt(input: &Path, args: &mut HuntArgs) -> Result<PreparedHunt> {
         )?)
     };
     let kev_report = resolve_optional_local_dataset(args.kev_report.take(), default_kev_report);
-    let sigma_ruleset = resolve_sigma_ruleset(args.rules.take(), args.no_sigma);
+    let sigma_ruleset = resolve_sigma_ruleset(args.rules.take(), args.no_sigma)?;
     let bot_range_path = args.bot_ranges.take().or_else(|| {
         let path = default_bot_range_snapshot();
         path.is_file().then_some(path)
@@ -913,37 +913,39 @@ fn latest_baseline_run(run_root: &Path, current_output: &Path) -> Result<Option<
 
 /// Resolve the Sigma ruleset for a hunt. The Sigma pass is on by default: it
 /// uses `--rules` when given, otherwise the prepared `<data-dir>/sigma-rules`
-/// when present. A missing directory is not an error — the hunt continues with
-/// Nuclei CVE detection only. `--no-sigma` disables the pass explicitly.
-fn resolve_sigma_ruleset(
-    rules: Option<PathBuf>,
-    no_sigma: bool,
-) -> Option<shenron::sigma::RuleSet> {
+/// when present. Explicit paths must contain rule files. A missing default is
+/// allowed. `--no-sigma` disables the pass explicitly.
+fn resolve_sigma_ruleset(rules: Option<PathBuf>, no_sigma: bool) -> Result<Option<RuleSet>> {
+    let explicit = rules
+        .map(|path| load_explicit_rules(&path).map(|ruleset| (path, ruleset)))
+        .transpose()?;
     if no_sigma {
         eprintln!("Sigma pass: disabled with --no-sigma.");
-        return None;
+        return Ok(None);
     }
-    let rules_dir = rules.or_else(|| {
+    let ruleset = explicit.or_else(|| {
         let default = default_sigma_rules_dir();
-        default.is_dir().then_some(default)
+        default.is_dir().then(|| {
+            let ruleset = load_rules(&default);
+            (default, ruleset)
+        })
     });
-    match rules_dir {
-        Some(dir) => {
-            let ruleset = load_rules(&dir);
+    match ruleset {
+        Some((dir, ruleset)) => {
             eprintln!(
                 "Sigma pass: {} supported rules from {} ({} unsupported skipped).",
                 ruleset.supported.len(),
                 dir.display(),
                 ruleset.unsupported.len()
             );
-            Some(ruleset)
+            Ok(Some(ruleset))
         }
         None => {
             eprintln!(
                 "Sigma pass: no rules directory found (looked for {}). Pass --rules <dir> to enable it, or --no-sigma to silence this note. Continuing without Sigma matching.",
                 default_sigma_rules_dir().display()
             );
-            None
+            Ok(None)
         }
     }
 }
