@@ -4,13 +4,7 @@
 
 [English README](README.md)
 
-Shenron は、AWS WAF・ALB・CloudFront・Apache／nginx の過去ログを、公開されている脅威情報と照らし合わせたい運用者向けのツールです。解析はオフラインで行い、ログは手元に残します。WAF 自体の変更は行わず、確認用のルールは COUNT でのみ出力します。
-
-Shenron は、Web アクセスログを対象にした Rust 製の「受動的（パッシブ）な脅威ハンティング・エンジン」です。公開されている脅威インテリジェンス（Nuclei テンプレートや CISA KEV Catalog）を、自組織のログと突き合わせ、防御ルールの候補作成を支援します。
-
-単一バイナリ `shenron` の解析コマンドは既定ではネットワーク接続せず、ターゲットへのスキャン、エクスプロイトの実行、AWS の変更や AWS API の呼び出し、WAF ルールの自動適用、`terraform plan/apply`、OSSEC の再起動を行いません。ログ・検出結果・IP・リクエスト値などの生の顧客データを外部へ送信・アップロードしません。ネットワークを使うのは、明示的に実行した `setup` / `nuclei update` / `kev` / `reputation update` / `bot-ranges update` と、`SHENRON_SLACK_WEBHOOK` を設定した hunt 完了後通知だけです。取得コマンドは公開インテリジェンスのダウンロードだけを行い、Slack 通知は sanitized 集計だけを送り、生 IP・パス・ホスト・ヘッダー・ログ値・private findings は含みません。出力は必ず人間のレビューを前提とした「提案」であり、Shenron 自身が何かをデプロイすることはありません。
-
-`shenron export --results-dir <run> --format stix|misp --output <file>` は、ログを再解析せず、既存 run をローカル CTI ファイルへ変換します。既定では sanitized 集計だけを扱い、`--include-observables` を明示した場合のみ private な観測 peer IP と URI パスを追加し、既定の marking は TLP:RED になります。ネットワーク送信は行わず、脅威アクター・campaign・攻撃・悪用・侵害・帰属を推定しません。詳細は [CTI export](docs/cti-export.md) を参照してください。
+Shenron は、AWS WAF・ALB・CloudFront・Apache／nginx の過去ログを持つ運用者向けの、Rust 製の受動的な脅威ハンティング・エンジンです。公開されている脅威インテリジェンス（Nuclei テンプレートや CISA KEV Catalog）を自組織のログと照らし合わせ、確認用の AWS WAF ルール案を COUNT でのみ出力します。解析はオフラインで行い、ログは手元に残し、WAF 自体は変更しません。
 
 ## クイックスタート
 
@@ -49,6 +43,8 @@ cargo run --bin shenron -- hunt --input ./tests/fixtures/aws-waf/ --format aws-w
 
 一言でいうと、「公開CTI ＋ 自社のログ」をオフラインの解析パイプラインで照合し、確度を明示し、そのまま観測（COUNT）に使える WAF ルール案を作るツールです。公開 CTI の取得は準備用コマンドを明示的に実行した場合だけで、顧客データは外部へ送信しません。処理は次のようになっています。
 
+単一バイナリ `shenron` の解析コマンドは既定ではネットワーク接続せず、ターゲットへのスキャン、エクスプロイトの実行、AWS の変更や AWS API の呼び出し、WAF ルールの自動適用、`terraform plan/apply`、OSSEC の再起動を行いません。ログ・検出結果・IP・リクエスト値などの生の顧客データを外部へ送信・アップロードしません。ネットワークを使うのは、明示的に実行した `setup` / `nuclei update` / `kev` / `reputation update` / `bot-ranges update` と、`SHENRON_SLACK_WEBHOOK` を設定した hunt 完了後通知だけです。取得コマンドは公開インテリジェンスのダウンロードだけを行い、Slack 通知は sanitized 集計だけを送り、生 IP・パス・ホスト・ヘッダー・ログ値・private findings は含みません。出力は必ず人間のレビューを前提とした「提案」であり、Shenron 自身が何かをデプロイすることはありません。
+
 ```
 入力ログ ─▶ パーサ ─▶ 共通イベント(WebEvent) ─▶ 照合エンジン ─▶ 検出結果 ─▶ 集計・トリアージ・スコアリング ─▶ 防御候補 / COUNT ルール
 （AWS WAF /            （ソース非依存に          （Sigma もしくは            （private と                （IP・ASN・JA4 単位、          （人間がレビューして
@@ -74,6 +70,8 @@ cargo run --bin shenron -- hunt --input ./tests/fixtures/aws-waf/ --format aws-w
 | VALIDATE | コーパス全体で脅威カバレッジを測る | `replay` |
 
 **設計の柱**は、(1) テンプレを実行しない静的変換、(2) 確度を数値・ラベルで明示、(3) 入力を固定版（凍結スナップショット）にして SHA-256 で記録する再現性、(4) 「攻撃・悪用成功・侵害・攻撃者特定」を決して断定しないこと、の4点です。
+
+`shenron export --results-dir <run> --format stix|misp --output <file>` は、ログを再解析せず、既存 run をローカル CTI ファイルへ変換します。既定では sanitized 集計だけを扱い、`--include-observables` を明示した場合のみ private な観測 peer IP と URI パスを追加し、既定の marking は TLP:RED になります。ネットワーク送信は行わず、脅威アクター・campaign・攻撃・悪用・侵害・帰属を推定しません。詳細は [CTI export](docs/cti-export.md) を参照してください。
 
 `hunt` は [申告属性と観測事実の整合性](docs/declared-observed-consistency.md) も決定論的にラベル付けします。参照データなし・テレメトリ非対応・観測値欠落は、それぞれ区別された集計 `unavailable` であり不一致には数えません。申告値と観測値を保持する個別レコードは上限付きの不一致だけを private 成果物に保存し、結果から、なりすまし・自動化・攻撃・悪用・侵害・主体を断定しません。
 

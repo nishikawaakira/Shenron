@@ -19,12 +19,13 @@ required. `--no-nuclei` and `--no-sigma` cannot be combined.
 
 ## Default on
 
-Sigma evaluation is **on by default**. An explicit `--rules <PATH>` must name
-an existing path with at least one `.yml` or `.yaml` file. When every rule
-is unsupported, `hunt` reports the unsupported count and continues. If
+Sigma evaluation is **on by default**. When enabled, an explicit `--rules <PATH>`
+must name an existing path with at least one `.yml` or `.yaml` file. When every
+rule is unsupported, `hunt` reports the unsupported count and continues. If
 `--rules` is omitted, `hunt` uses the prepared `<data-dir>/sigma-rules`
 directory when present and skips Sigma with a note when it is missing.
-`--no-sigma` disables Sigma matching.
+`--no-sigma` disables Sigma matching. If `--rules` is also specified, `hunt`
+notes on stderr that it skipped the path without checking or reading it.
 
 Without `--output`, `hunt` writes private findings only to stdout as JSONL (or
 flattened CSV with `--output-format csv`) and creates no files. These records can

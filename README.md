@@ -4,12 +4,11 @@
 
 [日本語版 README](README.ja.md)
 
-Shenron is for operators who have historical AWS WAF, ALB, CloudFront,
-Apache, or nginx logs and want to compare them with public threat intelligence.
+Shenron is a passive Rust threat-hunting engine for operators with historical
+AWS WAF, ALB, CloudFront, Apache, or nginx logs. It matches those logs against
+public threat intelligence to surface local evidence and uses historical
+replay to validate COUNT-only AWS WAF rule candidates for human review.
 Analysis runs offline, keeps logs local, and leaves your WAF untouched.
-Exported WAF rules use COUNT only and are meant for human review.
-
-Shenron is a passive Rust threat-hunting engine for historical web telemetry. Its purpose is not merely to alert on suspicious requests: it helps analysts turn public threat intelligence into local evidence and into reviewable AWS WAF rule candidates validated by historical replay.
 
 ## Quick start
 

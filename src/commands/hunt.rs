@@ -914,15 +914,23 @@ fn latest_baseline_run(run_root: &Path, current_output: &Path) -> Result<Option<
 /// Resolve the Sigma ruleset for a hunt. The Sigma pass is on by default: it
 /// uses `--rules` when given, otherwise the prepared `<data-dir>/sigma-rules`
 /// when present. Explicit paths must contain rule files. A missing default is
-/// allowed. `--no-sigma` disables the pass explicitly.
+/// allowed. `--no-sigma` disables the pass and skips rule loading.
 fn resolve_sigma_ruleset(rules: Option<PathBuf>, no_sigma: bool) -> Result<Option<RuleSet>> {
+    if no_sigma {
+        if let Some(path) = rules {
+            eprintln!(
+                "Sigma pass: skipping --rules {} because --no-sigma is set.",
+                terminal_safe(&path.to_string_lossy())
+            );
+        } else {
+            eprintln!("Sigma pass: disabled with --no-sigma.");
+        }
+        return Ok(None);
+    }
+
     let explicit = rules
         .map(|path| load_explicit_rules(&path).map(|ruleset| (path, ruleset)))
         .transpose()?;
-    if no_sigma {
-        eprintln!("Sigma pass: disabled with --no-sigma.");
-        return Ok(None);
-    }
     let ruleset = explicit.or_else(|| {
         let default = default_sigma_rules_dir();
         default.is_dir().then(|| {

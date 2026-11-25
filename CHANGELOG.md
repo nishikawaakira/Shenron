@@ -7,7 +7,7 @@ default and COUNT-only; see the README for the full invariants.
 
 ### Changed
 
-- An explicit `--rules` path now exits with an error if it is missing or contains no `.yml` or `.yaml` rule files. Omitting the flag still uses the prepared default where applicable.
+- An explicit `--rules` path now exits with an error if it is missing or contains no `.yml` or `.yaml` rule files. Omitting the flag still uses the prepared default where applicable. With `hunt --no-sigma`, a note indicates that the explicit `--rules` path is skipped without checking or reading it.
 
 - JSON artifact writes now use a shared buffered writer with explicit flush error reporting, preserving the existing serialized bytes. New-only outputs use `create_new` to avoid overwriting files created after preflight checks; processed-index writes are also buffered. Failed new-only writes remove incomplete files so they can be retried.
 
